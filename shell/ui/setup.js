@@ -982,6 +982,10 @@ async function start() {
   for (const path of info.chosen) if (!rows.some((row) => same(row, path) || same(row, parentOf(path)))) addRow(path);
   selection.chosen = info.auto ? info.offered.map(canon) : info.chosen.map(canon);
   selection.skipped = (info.skipped || []).map(canon);
+  // The rules the folders already have (Settings → Folders): shown here, and kept when this window saves.
+  for (const [path, rule] of Object.entries(info.rootRules || {})) {
+    folderRules.set(key(path), { kinds: rule.kinds || [], shallow: Boolean(rule.shallow) });
+  }
   // A folder with some of its subfolders chosen or skipped starts open, so it shows which.
   for (const row of rows) {
     if ([...selection.chosen, ...selection.skipped].some((path) => same(parentOf(path), row))) open.add(key(row));

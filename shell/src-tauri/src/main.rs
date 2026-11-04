@@ -576,6 +576,8 @@ fn setup_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "offered": offered.iter().map(|folder| folder.display().to_string()).collect::<Vec<_>>(),
         "chosen": shell.folders(),
         "skipped": shell.settings.lock().unwrap().skipped.clone(),
+        // The rules the folders already have, so reopening this window shows them and saving keeps them.
+        "rootRules": shell.settings.lock().unwrap().root_rules.clone(),
         // A first launch asks about code search too when there's code (a step after the folders).
         "codeOffered": if shell.is_set_up() { Vec::new() } else { offered_code(&app, &shell) },
         "setUp": shell.is_set_up(),
