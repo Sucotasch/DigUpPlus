@@ -298,6 +298,12 @@ impl IndexService {
         self.sync_paths_as(launch, paths, "sync code")
     }
 
+    /// These folders' files are read again (their rows queued, segments dropped): Settings → Folders → Re-read.
+    pub fn reread_paths(&self, launch: &Launch, paths: &[PathBuf]) -> Result<(), String> {
+        let paths: Vec<String> = paths.iter().map(|path| path.to_string_lossy().replace('\\', "/")).collect();
+        self.request(launch, &format!("reread {}", json!(paths)))
+    }
+
     fn sync_paths_as(&self, launch: &Launch, paths: &[PathBuf], command: &str) -> Result<(), String> {
         if paths.is_empty() {
             // The system dropped events: anything may have changed, so walk everything.
@@ -320,7 +326,16 @@ impl IndexService {
                 }
             }
         }
-        self.run(launch)
+        self.run(launch)?;
+        // A helper that had to be started begins with a full sync; the command (a scoped sync, a re-read) is queued
+        // behind it, where the fresh process reads it like any other.
+        let mut running = self.running.lock().unwrap();
+        if let Some(indexing) = running.as_mut() {
+            indexing.owed = true;
+            writeln!(indexing.stdin, "{command}").and_then(|_| indexing.stdin.flush())
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     pub fn stop(&self) {

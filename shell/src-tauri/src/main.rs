@@ -629,6 +629,49 @@ async fn pick_folders(window: tauri::WebviewWindow, app: AppHandle) -> Vec<Strin
     picked.into_iter().filter_map(|folder| folder.into_path().ok()).map(|path| path.display().to_string()).collect()
 }
 
+/// Settings → Folders: walks this chosen folder again — new, gone and changed files — without reading anything again.
+/// The walk is the same one the watcher asks for when a file changes, scoped to the folder.
+#[tauri::command]
+fn rescan_folder(shell: State<'_, Arc<Shell>>, folder: String) -> Result<(), String> {
+    let path = chosen_folder(&shell, &folder)?;
+    if !may_read_folders(&shell) {
+        return Err("Indexing is paused, outside its hours, or the model isn't in yet.".into());
+    }
+    let shell = shell.inner().clone();
+    shell.index.sync_paths(&shell.index_launch(), &[path])
+        .map_err(|error| format!("can't look through the folder: {error}"))
+}
+
+/// Settings → Folders: every file in this chosen folder is read again (its row queued, its segments dropped), then the
+/// folder is walked: a file that's gone drops out instead of staying queued. A confirmation comes before this.
+#[tauri::command]
+fn reread_folder(shell: State<'_, Arc<Shell>>, folder: String) -> Result<(), String> {
+    let path = chosen_folder(&shell, &folder)?;
+    if !may_read_folders(&shell) {
+        return Err("Indexing is paused, outside its hours, or the model isn't in yet.".into());
+    }
+    let shell = shell.inner().clone();
+    shell.index.reread_paths(&shell.index_launch(), &[path])
+        .map_err(|error| format!("can't read the folder again: {error}"))
+}
+
+/// The folder a Settings action names, as it is stored; an error when it isn't searched any more.
+fn chosen_folder(shell: &Shell, folder: &str) -> Result<PathBuf, String> {
+    shell.settings.lock().unwrap().folders.iter()
+        .find(|path| models::same_path(Path::new(path), Path::new(folder)))
+        .map(PathBuf::from)
+        .ok_or_else(|| "That folder isn't searched any more.".to_string())
+}
+
+/// A person asked for work now: the model has to be in (the helper embeds what it reads), and indexing can't be paused
+/// or outside its hours. Unlike `may_index`, an indexing pass already running is fine — the helper queues this after it.
+fn may_read_folders(shell: &Shell) -> bool {
+    shell.model_ready() && !shell.measuring.load(Ordering::SeqCst) && !shell.quitting.load(Ordering::SeqCst) && {
+        let status = shell.status.lock().unwrap();
+        !status.paused && status.held_until.is_none()
+    }
+}
+
 /// Setup's folders, kept on leaving its folders step (or on Save, choosing folders later): indexing starts on them at
 /// once (once the model is in), while the rest of setup goes on, as on the Mac. `skipped`: folders inside them that
 /// aren't searched. `rules`: what each of them holds (`Rules…` on a row), written before indexing starts, so the first
@@ -998,7 +1041,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, set_confirm_move_copy,
             set_confirm_delete, set_include_datasets, hide_window, debug_query, debug_report, window_info, destination_conflicts, operation_confirmations,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
-            remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, set_search_settings, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
+            remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, set_search_settings, rescan_folder, reread_folder, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases,
             file_operation, cancel_file_operation, pick_destination_folder,

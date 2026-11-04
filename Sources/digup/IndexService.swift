@@ -11,7 +11,8 @@ import WinSDK
 /// screenshots, and stayed there), and all of it goes back to the system when this process exits.
 ///
 /// Protocol: one command per line on stdin, one JSON event per line on stdout.
-///   stdin:  sync [JSON paths] | sync code [JSON paths] | stop | backfill on | backfill off (EOF = stop)
+///   stdin:  sync [JSON paths] | sync code [JSON paths] | reread [JSON paths] | stop | backfill on | backfill off
+///           (EOF = stop)
 ///   stdout: {"event": "missing" | "pruned" | "scanning" | "sync" | "file" | "rest" | "summary" | "waiting" | "idle" | "error" |
 ///            "exit", ...}; events about the code index say "code": true
 ///
@@ -56,6 +57,8 @@ final class IndexService: @unchecked Sendable {
     private var syncRequested = true       // the first thing it does
     /// nil means a full walk; a set is the coalesced set of changed paths.
     private var changedPaths: Set<String>?
+    /// Folders asked to be read again (Settings → Folders → Re-read): their rows are queued before the next sync.
+    private var rereadRequested: [String]?
     private var codeSyncRequested = true
     private var codeChangedPaths: Set<String>?
     private var stopRequested = false
@@ -108,6 +111,19 @@ final class IndexService: @unchecked Sendable {
         var newFiles = Set<Int64>(), newCode = Set<Int64>()
         var codeCounted = code == nil
         while true {
+            // A folder asked for by Settings → Folders → Re-read: its rows go back to pending first, then the same
+            // folder is walked again (a file that's gone drops out instead of staying pending forever).
+            if let reread = lock.withLock({ () -> [String]? in
+                let paths = rereadRequested
+                rereadRequested = nil
+                return paths
+            }) {
+                for path in reread { _ = try? main.store.requeue(under: [path]) }
+                lock.withLock {
+                    syncRequested = true
+                    changedPaths = (changedPaths ?? []).union(reread)
+                }
+            }
             let mainChanges = lock.withLock { () -> (Bool, [String]?) in
                 let requested = syncRequested
                 let paths = changedPaths.map(Array.init)
@@ -134,6 +150,12 @@ final class IndexService: @unchecked Sendable {
                 }
             }
             if lock.withLock({ stopRequested }) { break }
+            // Work that needs no model (a scoped sync the watcher or Settings asked for, a folder to re-read) is
+            // applied before the helper decides it has nothing to do: a helper started just for that never starts a
+            // model, and must not exit with the command still queued.
+            if lock.withLock({ syncRequested || code != nil && codeSyncRequested || rereadRequested != nil }) {
+                continue
+            }
             guard modelReady() else {
                 // Nothing to embed with yet; the app starts another helper once the download is done.
                 emitCounts("waiting", ["for": "model"])
@@ -278,7 +300,7 @@ final class IndexService: @unchecked Sendable {
         do {
             let states = try part.indexer.run(only: ids, shouldStop: { [self] in
                 lock.withLock {
-                    stopRequested || (!isNew && !backfillAllowed)
+                    stopRequested || (!isNew && !backfillAllowed) || rereadRequested != nil
                         || Date() >= yieldAt && (syncRequested || part.code && codeSyncRequested)
                 }
             }, onEvent: { event in
@@ -328,11 +350,12 @@ final class IndexService: @unchecked Sendable {
     private func waitForWork() -> Bool {
         let deadline = DispatchTime.now() + linger
         while wake.wait(timeout: deadline) == .success {
-            let (sync, codeSync, stop, backfill) = lock.withLock {
-                (syncRequested, codeSyncRequested, stopRequested, backfillAllowed)
+            let (sync, codeSync, stop, backfill, reread) = lock.withLock {
+                (syncRequested, codeSyncRequested, stopRequested, backfillAllowed, rereadRequested != nil)
             }
             if stop { return false }
-            if sync || codeSync && code != nil { return true }
+            // A re-read has to be applied at the top of the loop even when nothing else is queued.
+            if sync || codeSync && code != nil || reread { return true }
             if backfill, parts.contains(where: { (try? $0.store.pendingCount()) ?? 0 > 0 })
                 || (try? main.store.unfinishedCount().files) ?? 0 > 0 {
                 return true
@@ -360,6 +383,11 @@ final class IndexService: @unchecked Sendable {
                     syncRequested = true
                     if !wasRequested { changedPaths = Set(paths) }
                     else if let current = changedPaths { changedPaths = current.union(paths) }
+                } else if command.hasPrefix("reread "), let data = command.dropFirst(7).data(using: .utf8),
+                          let paths = try? JSONSerialization.jsonObject(with: data) as? [String] {
+                    // The same folders are read again: their rows are queued here (in the loop, where the store is
+                    // ours), then a scoped sync of each.
+                    rereadRequested = (rereadRequested ?? []) + paths
                 } else if command == "sync code" {
                     codeSyncRequested = true
                     codeChangedPaths = nil

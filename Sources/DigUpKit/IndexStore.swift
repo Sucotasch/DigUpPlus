@@ -339,6 +339,15 @@ public final class IndexStore {
         return ids.count
     }
 
+    /// Every row under these folders is read again (its segments dropped, the row pending): Settings → Folders →
+    /// Re-read, where a person asks for a folder to be read from scratch. Returns how many.
+    @discardableResult
+    public func requeue(under roots: [String]) throws -> Int {
+        let files = try files(under: roots)
+        for file in files { try requeue(file.id) }
+        return files.count
+    }
+
     /// Same inode, size and date at a new path: a move or rename. Nothing is re-embedded (screenshot tools move
     /// screenshots into project folders all the time). Where the new place gives the file another identity — another
     /// volume has its own device and inode — those and its size and date go with the path, so the next sync knows the

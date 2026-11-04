@@ -22,6 +22,7 @@ const notes = {
 let info = {};
 let summaries = null;        // what's indexed under each folder (search-service's summaries)
 let removing = null;         // the folder whose removal is being confirmed
+let rereading = null;        // the folder whose re-read is being confirmed
 let ruling = null;           // the folder whose rule (kinds, top level only) is being edited
 let codeSummaries = null;    // what's indexed under each code folder
 let removingCode = null;     // the code folder whose removal is being confirmed
@@ -194,6 +195,7 @@ function renderFolders() {
     const summary = (summaries || []).find((item) => samePath(item.path, folder)) || null;
     rows.append(folderRow(folder, summary));
     if (removing && samePath(removing, folder)) rows.append(confirmRemoval(folder, summary));
+    if (rereading && samePath(rereading, folder)) rows.append(confirmReread(folder));
     if (ruling && samePath(ruling, folder)) rows.append(ruleEditor(folder));
   }
   const skipped = $("skipped-rows");
@@ -288,7 +290,7 @@ function folderRow(folder, summary, code = false) {
       side.append(line);
     }
   }
-  row.append(text, side, ...(code ? [] : [ruleButton(folder)]),
+  row.append(text, side, ...(code ? [] : [rescanButton(folder), rereadButton(folder), ruleButton(folder)]),
     removeButton(code ? "Stop searching the code in this folder" : "Stop searching this folder", () => {
     if (code) {
       removingCode = folder;
@@ -299,6 +301,64 @@ function folderRow(folder, summary, code = false) {
     }
   }));
   return row;
+}
+
+/// "Rescan": walks this folder again — new, gone and changed files — without reading anything again.
+function rescanButton(folder) {
+  const button = element("button", "link", "Rescan");
+  button.title = "Look through this folder again: new, gone and changed files";
+  button.onclick = async () => {
+    try {
+      await invoke("rescan_folder", { folder });
+    } catch (error) {
+      fail(error);
+    }
+    await refresh();
+  };
+  return button;
+}
+
+/// "Re-read…": asks first, then queues every file in the folder.
+function rereadButton(folder) {
+  const button = element("button", "link", "Re-read…");
+  button.title = "Read every file in this folder again";
+  button.onclick = () => {
+    rereading = rereading && samePath(rereading, folder) ? null : folder;
+    renderFolders();
+  };
+  return button;
+}
+
+/// The question before a folder is read again: what it holds and roughly how long, because its files leave the index
+/// while they are read (the estimate is the same one the folder list uses).
+function confirmReread(folder) {
+  const box = element("div", "confirm");
+  box.append(element("p", "", `Read every file in “${nameOf(folder)}” again? They leave the index while they are read.`));
+  const estimate = element("div", "note", "Looking at it…");
+  box.append(estimate);
+  invoke("estimate", { folders: [folder] }).then((answers) => {
+    const answer = answers?.[0];
+    const files = Object.values(answer?.files || {}).reduce((sum, count) => sum + count, 0);
+    estimate.textContent = answer
+      ? `${files.toLocaleString()} files · about ${Math.max(1, Math.round(answer.seconds || 0))} s to read`
+      : "";
+  }).catch(() => { estimate.textContent = ""; });
+  const actions = element("div", "actions");
+  const cancel = element("button", "", "Cancel");
+  cancel.onclick = () => { rereading = null; renderFolders(); };
+  const go = element("button", "danger", "Re-read");
+  go.onclick = async () => {
+    rereading = null;
+    try {
+      await invoke("reread_folder", { folder });
+    } catch (error) {
+      fail(error);
+    }
+    await refresh();
+  };
+  actions.append(cancel, go);
+  box.append(actions);
+  return box;
 }
 
 /// "Rules": what this folder holds, and whether its subfolders are walked.

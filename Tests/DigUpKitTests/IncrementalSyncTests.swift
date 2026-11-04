@@ -24,6 +24,38 @@ import Testing
                     makeEmbedder: { throw WorkerError.notFound("sync doesn't need a model") })
     }
 
+    @Test func rescanningOneChosenFolderWalksItsSubtreeOnly() throws {
+        let a = try write("A/one.txt")
+        let b = try write("B/one.txt")
+        let roots = [a.deletingLastPathComponent(), b.deletingLastPathComponent()]
+        let store = try IndexStore(directory: base.appendingPathComponent("index"))
+        let indexer = try indexer(store)
+        #expect(try indexer.sync(roots).added == 2)
+        _ = try write("A/sub/two.txt")
+        _ = try write("B/two.txt")
+        // Settings → Folders → Rescan sends the folder itself, not a file: its whole subtree is walked.
+        let rescan = try indexer.sync(roots, changedPaths: [roots[0].path])
+        #expect(rescan.added == 1)
+        #expect(try store.files(under: [roots[0].path]).count == 2)
+        #expect(try store.files(under: [roots[1].path]).count == 1)
+    }
+
+    @Test func rereadingAFolderQueuesOnlyItsRows() throws {
+        let a = try write("A/a.txt")
+        let b = try write("B/b.txt")
+        let roots = [a.deletingLastPathComponent(), b.deletingLastPathComponent()]
+        let store = try IndexStore(directory: base.appendingPathComponent("index"))
+        let indexer = try indexer(store)
+        #expect(try indexer.sync(roots).added == 2)
+        let idA = try #require(try store.files(under: [roots[0].path]).first?.id)
+        let idB = try #require(try store.files(under: [roots[1].path]).first?.id)
+        try store.finish(idA, state: "done")
+        try store.finish(idB, state: "done")
+        #expect(try store.requeue(under: [roots[0].path]) == 1)
+        #expect(try store.file(idA)?.state == "pending")
+        #expect(try store.file(idB)?.state == "done")
+    }
+
     @Test func syncLeavesOtherChosenFoldersAlone() throws {
         let a = try write("A/a.txt")
         let b = try write("B/b.txt")
