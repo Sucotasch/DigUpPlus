@@ -681,20 +681,32 @@ fn mcp_config(shell: State<'_, Arc<Shell>>) -> Result<String, String> {
     let mut args = vec!["mcp".to_string()];
     if let Some(index) = shell.options.index_folder(&settings) {
         args.push("--index".into());
-        args.push(index.display().to_string());
+        args.push(absolute(&index).display().to_string());
     }
     for folder in shell.folders() {
         args.push("--root".into());
         args.push(folder);
     }
-    let mut server = serde_json::json!({"command": shell.options.helper.display().to_string(), "args": args});
-    let env: serde_json::Map<String, serde_json::Value> =
-        shell.helper_env().into_iter().map(|(key, value)| (key, serde_json::Value::String(value))).collect();
+    let helper = absolute(&shell.options.helper);
+    let mut server = serde_json::json!({"command": helper.display().to_string(), "args": args});
+    let env: serde_json::Map<String, serde_json::Value> = shell.helper_env().into_iter().map(|(key, value)| {
+        // The model folder too: an agent starts the process wherever it likes.
+        let value = if key == "DIGUP_MODELS" { absolute(Path::new(&value)).display().to_string() } else { value };
+        (key, serde_json::Value::String(value))
+    }).collect();
     if !env.is_empty() {
         server["env"] = serde_json::Value::Object(env);
     }
     let config = serde_json::json!({"mcpServers": {"digup": server}});
     serde_json::to_string_pretty(&config).map_err(|error| error.to_string())
+}
+
+/// A path an agent's own process can use: absolute, whatever working folder this shell was started in.
+fn absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::env::current_dir().map(|cwd| cwd.join(path)).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Setup's folders, kept on leaving its folders step (or on Save, choosing folders later): indexing starts on them at
