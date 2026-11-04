@@ -48,20 +48,24 @@ for (const button of document.querySelectorAll("#tabs button")) button.onclick =
 
 /// How a search judges a match (Settings → Search): the meaning gate, and the Images filter's layer cutoffs.
 function renderSearch() {
-  $("zgate").value = info.zgate ?? 2;
-  $("image-tiers").value = info.imageTiers || "standard";
+  // A refresh (indexing reports every two seconds) must not overwrite a number being typed.
+  if (document.activeElement !== $("zgate")) $("zgate").value = info.zgate ?? 2;
+  if (document.activeElement !== $("image-tiers")) $("image-tiers").value = info.imageTiers || "standard";
   $("search-note").hidden = true;
 }
 
 let searchSaving = null;   // the change in flight: the fields stay as typed, then take the saved numbers back
 async function saveSearchSettings() {
-  const zgate = Number($("zgate").value);
+  const field = $("zgate");
+  const zgate = Number(field.value);
   const note = $("search-note");
-  if (!Number.isFinite(zgate)) {
+  // While the field is empty or half-typed there's nothing to save: typing "1.5" passes through "" and "1.".
+  if (field.value.trim() === "" || !Number.isFinite(zgate)) {
     note.hidden = false;
     note.textContent = "The threshold is a number, 0.5 to 5.";
     return;
   }
+  note.hidden = true;
   clearTimeout(searchSaving);
   // Typing a number shouldn't send a settings write per keystroke.
   searchSaving = setTimeout(async () => {
@@ -69,8 +73,7 @@ async function saveSearchSettings() {
       const saved = await invoke("set_search_settings", { zgate, imageTiers: $("image-tiers").value });
       info.zgate = saved.zgate;
       info.imageTiers = saved.imageTiers;
-      $("zgate").value = saved.zgate;
-      note.hidden = true;
+      if (document.activeElement !== field) field.value = saved.zgate;
     } catch (error) {
       fail(error);
     }
@@ -211,8 +214,8 @@ function renderFolders() {
 
 /// The fields: set from the settings when the window opens or they change, never while you're editing them.
 function renderFields() {
-  $("types").value = (info.skipTypes || []).join(", ");
-  $("tag-types").value = (info.tagTypes || []).join(", ");
+  if (document.activeElement !== $("types")) $("types").value = (info.skipTypes || []).join(", ");
+  if (document.activeElement !== $("tag-types")) $("tag-types").value = (info.tagTypes || []).join(", ");
   const hours = info.indexHours || { on: false, start: 60, end: 420 };
   $("hours").checked = hours.on;
   $("times").hidden = !hours.on;
