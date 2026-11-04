@@ -317,6 +317,8 @@ Rust (cargo):
   есть «Rules», панель даёт те же шесть галочек, строка показывает «pictures only · top level only», а
   `apply_setup_folders` с `rules` записал `rootRules` и запустил синк: 5 картинок остались, 2 записи и видео ушли
   (`removed: 2`, `left_out`: 2 «of a kind…», 1 «folders beyond the top level») — первый проход уже по правилу.
+- Повторное открытие окна добавления папок: `setup_info` отдаёт `rootRules`, строка показывает «pictures only · top
+  level only», а Save без изменений правило сохраняет (до этого окно о нём не знало и стёрло бы его).
 - Watcher и `search-service` — по коду и тестам: в аргументах `index-service`/`estimate` есть `--root-rule` (правило
   применилось в живом индексе: 5 картинок, видео в `left_out`), у процесса `search-service` флага нет (проверено по
   командной строке).
