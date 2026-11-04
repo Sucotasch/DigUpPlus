@@ -477,7 +477,9 @@ index-service (`note: tags only: …` в логе), 7 файлов / 5 вект�
   полями вместо плеера; в панели — та же строка в facts.
 - Проверено: Swift 152 теста (151, известный symlink-сбой), cargo 66; живой прогон — правило «by tags only» оставило
   2 записи, убрало 5 картинок (`removed 5`, `left_out` 6), 0 векторов, повторный синк `unchanged 2`; поиск «Testers»
-  вернул `info: {tags:1, title, artist, album}`, Properties «The Testers — Album One», превью «Read by its tags».
+  вернул `info: {tags:1, title, artist, album}`, Properties «The Testers — Album One», превью «Read by its tags»;
+  переключение правила на «by sound» дало `changed 2` и перечитало обе записи (без reindex); `estimate` с правилом
+  страницы — `audio_seconds 0` против `2` у сохранённого «by sound».
 - Осталось: клик «Add Folders…» проверен только сборкой/синтаксисом (нативный пикер нельзя нажать из CDP) — нужен
   ручной клик; вложенный выбранный корень по-прежнему не получает правило на экране добавления (только в Settings).
 
