@@ -16,6 +16,9 @@ let usage = """
                                               of long PDFs and documents
       digup search <words>... [--kind K,K] [-n 10] [--offset N] [--json]
                                               "code: <words>" searches the code index
+      digup mcp [--root DIR]... [--print-config claude-desktop|claude-code|cursor]
+                                              the read-only MCP server for agents (JSON-RPC on stdin/stdout;
+                                              see docs/agent-access.md)
       digup status                            what's in the index
       digup speed [--model [--if-needed] [--when-quiet S] [--tries N]] [--json]
                                               this machine's speed next to the M4 Pro behind the estimates, and
@@ -73,9 +76,9 @@ struct Arguments {
     var rootRules: [RootRule] = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--offset", "--zgate", "--word-weight", "--new-limit",
                                       "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
-                                      "--memory-limit", "--time-limit", "--tries", "--when-quiet"]
+                                      "--memory-limit", "--time-limit", "--tries", "--when-quiet", "--print-config"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--root-rule",
-                                        "--tag-type"]
+                                        "--tag-type", "--root"]
 
     init(_ raw: ArraySlice<String>) throws {
         var index = raw.startIndex
@@ -790,6 +793,7 @@ do {
     case "estimate": try estimate(args)
     case "index": try index(args)
     case "search": try search(args)
+    case "mcp": exit(try mcpService(args))
     case "status": try status(args)
     case "speed": try speed(args)
     case "eval": try evaluate(args)

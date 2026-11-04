@@ -672,6 +672,31 @@ fn may_read_folders(shell: &Shell) -> bool {
     }
 }
 
+/// Settings → Storage → Agents: the MCP config for Claude Desktop, Claude Code and Cursor, with this installation's
+/// helper, index folder, chosen folders (an agent reads only what DigUp Plus searches) and environment (where the model
+/// is, so meaning search works as it does in the app). Read-only: the server has no tool that writes.
+#[tauri::command]
+fn mcp_config(shell: State<'_, Arc<Shell>>) -> Result<String, String> {
+    let settings = shell.settings.lock().unwrap().clone();
+    let mut args = vec!["mcp".to_string()];
+    if let Some(index) = shell.options.index_folder(&settings) {
+        args.push("--index".into());
+        args.push(index.display().to_string());
+    }
+    for folder in shell.folders() {
+        args.push("--root".into());
+        args.push(folder);
+    }
+    let mut server = serde_json::json!({"command": shell.options.helper.display().to_string(), "args": args});
+    let env: serde_json::Map<String, serde_json::Value> =
+        shell.helper_env().into_iter().map(|(key, value)| (key, serde_json::Value::String(value))).collect();
+    if !env.is_empty() {
+        server["env"] = serde_json::Value::Object(env);
+    }
+    let config = serde_json::json!({"mcpServers": {"digup": server}});
+    serde_json::to_string_pretty(&config).map_err(|error| error.to_string())
+}
+
 /// Setup's folders, kept on leaving its folders step (or on Save, choosing folders later): indexing starts on them at
 /// once (once the model is in), while the rest of setup goes on, as on the Mac. `skipped`: folders inside them that
 /// aren't searched. `rules`: what each of them holds (`Rules…` on a row), written before indexing starts, so the first
@@ -1041,7 +1066,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, set_confirm_move_copy,
             set_confirm_delete, set_include_datasets, hide_window, debug_query, debug_report, window_info, destination_conflicts, operation_confirmations,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
-            remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, set_search_settings, rescan_folder, reread_folder, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
+            remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, set_search_settings, rescan_folder, reread_folder, set_index_hours, mcp_config, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases,
             file_operation, cancel_file_operation, pick_destination_folder,

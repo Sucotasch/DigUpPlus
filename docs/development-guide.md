@@ -210,7 +210,7 @@ runtime, Swift runtime, C++ CRT, ffmpeg/ffprobe) → `scripts/notices.py` → `n
 --bundles nsis` с `helper/` и `THIRD-PARTY-NOTICES.txt` как resources.
 
 Выход: `shell/src-tauri/target/release/bundle/nsis/DigUp Plus_<version>_x64-setup.exe` (~440 МБ).
-Версия берётся из `shell/src-tauri/tauri.conf.json` (сейчас `0.1.8`), не из `Cargo.toml` (там `0.1.0` у пакета
+Версия берётся из `shell/src-tauri/tauri.conf.json` (сейчас `0.1.9`), не из `Cargo.toml` (там `0.1.0` у пакета
 оболочки, но имя файла и настройки идут от `tauri.conf.json`). Подписи и update-артефактов больше нет: `signing` из
 скрипта убран вместе с плагином updater.
 
@@ -367,7 +367,7 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
 - `node --check` по всем `shell/ui/*.js` — чисто;
 - пер-корневые правила (типы, top-level-only), пороги поиска и записи по тегам проверены на живой сборке:
   `docs/per-folder-rules-plan.md` §1.8, «Фаза 2», «Фаза 3»;
-- версия в `tauri.conf.json` — `0.1.8` (0.1.6 выпущен 2026-11-04; 0.1.7 и 0.1.8 собраны для проверки, релиз — после теста);
+- версия в `tauri.conf.json` — `0.1.9` (0.1.6 выпущен 2026-11-04; 0.1.7–0.1.9 в дереве, сборки для проверки, релиз — после теста);
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
   (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` удалён. Default branch —
   `file-operations`; сборки только вручную (`scripts/package-portable.sh`).

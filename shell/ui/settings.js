@@ -1076,6 +1076,21 @@ $("model-download").onclick = () => downloadModelFiles();
 $("model-delete").onclick = () => askDeleteModelFiles();
 $("model-cleanup-delete").onclick = () => askDeleteOldModelFiles();
 $("model-links").onclick = () => copyModelLinks();
+
+/// The MCP config, as the agent apps take it: copied, with its file named, since nothing writes into their settings.
+$("agent-config").onclick = async () => {
+  const note = $("agent-note");
+  try {
+    const config = await invoke("mcp_config");
+    await navigator.clipboard.writeText(config);
+    note.textContent = "On the clipboard. Merge it into the “mcpServers” object of claude_desktop_config.json "
+      + "(Claude Desktop), .mcp.json (Claude Code) or ~/.cursor/mcp.json (Cursor), then restart that app.";
+    note.hidden = false;
+  } catch (error) {
+    note.textContent = String(error);
+    note.hidden = false;
+  }
+};
 $("model-confirm-cancel").onclick = () => closeModelConfirm();
 $("model-confirm-go").onclick = () => {
   const action = modelConfirm;
