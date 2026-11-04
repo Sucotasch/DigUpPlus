@@ -209,7 +209,11 @@ function run() {
                              strongTotal: layers ? tiers.visible : shown.strong_total ?? shown.strong,
                              nextOffset: shown.next_offset ?? shown.hits.length,
                              matchesGeneration: shown.generation ?? null, loadingMore: false, pageError: null });
-      if (!rows().some((hit) => hit.path === state.selection)) state.selection = rows()[0]?.path ?? null;
+      // A new query starts at its best result (the comment above `sameQuery`): the preview beside the list shows the
+      // first row. The same query run again stays on the file the person was on, if it's still there.
+      if (!sameQuery || !rows().some((hit) => hit.path === state.selection)) {
+        state.selection = rows()[0]?.path ?? null;
+      }
       render();
       if (sameQuery && previous && state.selection === previous) {
         $content.querySelector(`[data-path="${CSS.escape(previous)}"]`)?.scrollIntoView({ block: "center" });
