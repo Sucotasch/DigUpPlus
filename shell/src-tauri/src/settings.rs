@@ -4,6 +4,7 @@
 
 use crate::hours::Hours;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -15,6 +16,10 @@ pub struct Settings {
     pub skipped: Vec<String>,
     /// File extensions left out ("heic", "txt").
     pub skip_types: Vec<String>,
+    /// A rule for a searched folder (`Rules…` in Settings → Folders): which kinds it holds, and whether its
+    /// subfolders are walked (`--root-rule`). Folders without one are searched whole, as they always were. The kinds
+    /// are strings, not an enum: a name from a newer version must not make the whole settings file unreadable.
+    pub root_rules: BTreeMap<String, RootRule>,
     /// The panel's hotkey (Tauri's accelerator form); empty: the default.
     pub hotkey: String,
     /// Onboarding is done: the shell starts in the tray.
@@ -55,6 +60,14 @@ pub struct Settings {
     pub model_cleanup: Option<String>,
     /// Where the index lives (Settings → Storage). None: the default folder under the app's data folder.
     pub index_folder: Option<String>,
+}
+
+/// A folder's rule: the kinds it holds (empty: all), and whether its subfolders are walked.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RootRule {
+    pub kinds: Vec<String>,
+    pub shallow: bool,
 }
 
 /// The window's size inside its frame (logical pixels), where it was (physical; Wayland doesn't tell), whether it
@@ -142,6 +155,28 @@ mod tests {
         assert_eq!(loaded.window.and_then(|place| place.side), Some(412.0));
         std::fs::write(&path, br#"{"window": {"width": 1040.0, "height": 700.0}}"#).unwrap();
         assert_eq!(Settings::load(&path).window.and_then(|place| place.side), None);
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_folder_rule_survives_a_round_trip_and_older_files_have_none() {
+        let folder = std::env::temp_dir().join(format!("DigUp-rules-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("settings.json");
+        let mut settings = Settings::default();
+        settings.root_rules.insert("D:\\Photos".into(),
+                                   RootRule { kinds: vec!["image".into(), "screenshot".into()], shallow: false });
+        settings.root_rules.insert("D:\\Records".into(), RootRule { kinds: vec!["audio".into()], shallow: true });
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).root_rules, settings.root_rules);
+        // A file from before rules were a setting keeps working, with no rules.
+        std::fs::write(&path, br#"{"folders":["C:/One"]}"#).unwrap();
+        assert!(Settings::load(&path).root_rules.is_empty());
+        // A kind this version doesn't know stays in the file (the glue drops it) instead of losing the settings.
+        std::fs::write(&path, br#"{"folders":["C:/One"],"rootRules":{"C:/One":{"kinds":["hologram","audio"],"shallow":true}}}"#).unwrap();
+        let odd = Settings::load(&path);
+        assert_eq!(odd.folders, vec!["C:/One"]);
+        assert_eq!(odd.root_rules["C:/One"].kinds, vec!["hologram", "audio"]);
         let _ = std::fs::remove_dir_all(&folder);
     }
 

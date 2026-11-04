@@ -266,6 +266,7 @@ impl Shell {
         }
         args.extend(self.index_arguments_for(&settings));
         args.extend(folder_arguments(&settings, &self.code_folders()));
+        args.extend(rule_arguments(&settings));
         args.extend(self.folders());
         let mut launch = self.launch(args, "index.log");
         // One llama.cpp context leaves a fast graphics card mostly idle while indexing: the helper starts as many as
@@ -341,6 +342,35 @@ fn folder_arguments(settings: &Settings, code_folders: &[String]) -> Vec<String>
         args.push("--include-datasets".to_string());
     }
     args
+}
+
+/// The kinds the engine indexes (its `FileKind`), for the folder rules.
+const KINDS: [&str; 7] = ["screenshot", "image", "pdf", "doc", "audio", "video", "code"];
+
+/// The folders' own rules (`--root-rule`), for indexing and estimating only: a rule says what a crawl reads, and the
+/// search service never crawls (a bad rule must not take search down with it). An empty rule is no rule.
+fn rule_arguments(settings: &Settings) -> Vec<String> {
+    let mut args = Vec::new();
+    for (root, rule) in &settings.root_rules {
+        let kinds: Vec<&str> = rule.kinds.iter().map(String::as_str).filter(|kind| KINDS.contains(kind)).collect();
+        if kinds.is_empty() && !rule.shallow {
+            continue;
+        }
+        let mut rule = json!({ "root": root, "shallow": rule.shallow });
+        if !kinds.is_empty() {
+            rule["kinds"] = json!(kinds);
+        }
+        args.extend(["--root-rule".to_string(), rule.to_string()]);
+    }
+    args
+}
+
+/// `path` is `folder`, or inside it. Windows compares paths without case (`remove_folder` used `Path::starts_with`,
+/// which keeps `c:\one\photos\sub` when `C:\One\Photos` goes).
+fn inside(path: &str, folder: &str) -> bool {
+    let key = |text: &str| if cfg!(windows) { text.to_lowercase() } else { text.to_string() };
+    let (path, folder) = (key(path.trim_end_matches(['\\', '/'])), key(folder.trim_end_matches(['\\', '/'])));
+    path == folder || path.strip_prefix(&folder).is_some_and(|rest| rest.starts_with('\\') || rest.starts_with('/'))
 }
 
 // MARK: Commands
@@ -450,18 +480,32 @@ fn operation_confirmations(shell: State<'_, Arc<Shell>>) -> Value {
 #[tauri::command]
 async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>, code: Option<bool>) -> Result<Vec<Value>, String> {
     let helper = shell.options.helper.clone();
-    let include_datasets = shell.settings.lock().unwrap().include_datasets;
+    let settings = shell.settings.lock().unwrap().clone();
     // Code folders: what the code index would read in them (its time and size, repository by repository).
-    let code = if code == Some(true) { vec!["--code".to_string()] } else { Vec::new() };
+    let code_estimate = code == Some(true);
+    let code = if code_estimate { vec!["--code".to_string()] } else { Vec::new() };
+    // The estimate counts what the crawl will: the folders and types left out everywhere, and the folders' own rules
+    // (a code estimate has its own excludes and no rules).
+    let mut filters = Vec::new();
+    if !code_estimate {
+        for folder in &settings.skipped {
+            filters.extend(["--exclude".to_string(), folder.clone()]);
+        }
+        for extension in &settings.skip_types {
+            filters.extend(["--exclude-ext".to_string(), extension.clone()]);
+        }
+        if settings.include_datasets {
+            filters.push("--include-datasets".to_string());
+        }
+        filters.extend(rule_arguments(&settings));
+    }
     // The index's costs.json: what indexing costs on this computer, once it has indexed enough.
     let index = shell.index_arguments();
     shell.estimating.fetch_add(1, Ordering::SeqCst);
     let answers = tauri::async_runtime::spawn_blocking(move || {
         let mut command = std::process::Command::new(&helper);
-        command.arg("--protocol").arg(HELPER_PROTOCOL.to_string()).arg("estimate").args(&folders).args(&index).args(&code);
-        if include_datasets {
-            command.arg("--include-datasets");
-        }
+        command.arg("--protocol").arg(HELPER_PROTOCOL.to_string()).arg("estimate").args(&folders).args(&index).args(&code)
+            .args(&filters);
         command.arg("--json");
         #[cfg(windows)]
         {
@@ -530,8 +574,11 @@ fn apply_setup_folders(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Ve
     -> Result<(), String> {
     {
         let mut settings = shell.settings.lock().unwrap();
+        let kept = folders.clone();
         settings.folders = folders;
         settings.skipped = skipped;
+        settings.root_rules.retain(|root, _| kept.iter()
+            .any(|folder| models::same_path(Path::new(folder), Path::new(root))));
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
     }
     apply_folders(&app);
@@ -870,7 +917,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, set_confirm_move_copy,
             set_confirm_delete, set_include_datasets, hide_window, debug_query, debug_report, window_info, destination_conflicts, operation_confirmations,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
-            remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
+            remove_folder, set_skipped, set_skip_types, set_root_rule, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases,
             file_operation, cancel_file_operation, pick_destination_folder,
@@ -1137,16 +1184,18 @@ fn watch_folders(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>().inner().clone();
     let folders: Vec<PathBuf> = shell.folders().iter().map(PathBuf::from).collect();
     let code_folders: Vec<PathBuf> = shell.code_folders().iter().map(PathBuf::from).collect();
-    let (skipped, code_skipped, types) = {
+    let (skipped, code_skipped, types, shallow) = {
         let settings = shell.settings.lock().unwrap();
         (settings.skipped.iter().map(PathBuf::from).collect(), settings.code_skipped.iter().map(PathBuf::from).collect(),
-         Some(settings.skip_types.clone()))
+         Some(settings.skip_types.clone()),
+         settings.root_rules.iter().filter(|(_, rule)| rule.shallow).map(|(root, _)| PathBuf::from(root))
+             .collect::<Vec<PathBuf>>())
     };
     changed(app);
     let index = shell.index_folder();
     *shell.watcher.lock().unwrap() = (!folders.is_empty()).then(|| {
         let app = app.clone();
-        FolderWatcher::start(&folders, skipped, index.clone(), types, Duration::from_secs(2), Duration::MAX, move |paths| {
+        FolderWatcher::start(&folders, &shallow, skipped, index.clone(), types, Duration::from_secs(2), Duration::MAX, move |paths| {
             // A move or delete already told the index; its echo mustn't start a rescan. Anything else reconciles the
             // folders the changes are in, not every chosen folder.
             if !echo::ours(paths) {
@@ -1156,7 +1205,7 @@ fn watch_folders(app: &AppHandle) {
     });
     *shell.code_watcher.lock().unwrap() = (!code_folders.is_empty()).then(|| {
         let app = app.clone();
-        FolderWatcher::start(&code_folders, code_skipped, index, None, Duration::from_secs(60), Duration::from_secs(600),
+        FolderWatcher::start(&code_folders, &[], code_skipped, index, None, Duration::from_secs(60), Duration::from_secs(600),
                              move |paths| code_changed(&app, paths))
     });
     if !folders.is_empty() || !code_folders.is_empty() || shell.prune.load(Ordering::SeqCst) {
@@ -1556,6 +1605,7 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "folders": shell.folders(),
         "skipped": settings.skipped,
         "skipTypes": settings.skip_types,
+        "rootRules": settings.root_rules,
         "indexHours": {"on": settings.index_hours_on, "start": settings.index_hours.start, "end": settings.index_hours.end},
         "storage": storage(&shell),
         "transfer": shell.transfer_state.lock().unwrap().clone(),
@@ -2406,9 +2456,10 @@ fn set_hotkey(app: AppHandle, shell: State<'_, Arc<Shell>>, hotkey: String) -> R
 fn remove_folder(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String) -> Result<(), String> {
     {
         let mut settings = shell.settings.lock().unwrap();
-        let inside = |path: &str| Path::new(path).starts_with(&folder);
+        let inside = |path: &str| inside(path, &folder);
         settings.folders.retain(|path| path != &folder);
         settings.skipped.retain(|path| !inside(path));
+        settings.root_rules.retain(|root, _| !inside(root));
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
     }
     shell.prune.store(true, Ordering::SeqCst);
@@ -2538,6 +2589,31 @@ fn set_skipped(app: AppHandle, shell: State<'_, Arc<Shell>>, skipped: Vec<String
     {
         let mut settings = shell.settings.lock().unwrap();
         settings.skipped = skipped;
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    apply_folders(&app);
+    Ok(())
+}
+
+/// Settings → Folders → Rules: what a searched folder holds (the kinds; none sent: every kind) and whether its
+/// subfolders are walked. An empty rule is no rule at all: the folder is searched as it always was.
+#[tauri::command]
+fn set_root_rule(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, kinds: Vec<String>, shallow: bool)
+    -> Result<(), String> {
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        let Some(chosen) = settings.folders.iter()
+            .find(|path| models::same_path(Path::new(path), Path::new(&folder))).cloned() else {
+            return Err("That folder isn't searched any more.".into());
+        };
+        // The engine's order, without repeats, and nothing it doesn't know.
+        let kinds: Vec<String> = KINDS.iter().filter(|kind| kinds.iter().any(|sent| sent == *kind))
+            .map(|kind| kind.to_string()).collect();
+        if kinds.is_empty() && !shallow {
+            settings.root_rules.remove(&chosen);
+        } else {
+            settings.root_rules.insert(chosen, settings::RootRule { kinds, shallow });
+        }
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
     }
     apply_folders(&app);
@@ -3198,10 +3274,47 @@ fn reload(app: &AppHandle, now: bool) {
 
 #[cfg(test)]
 mod tests {
+    use crate::settings::{RootRule, Settings};
+
     #[test]
     fn login_entry_exec_is_replaced() {
         let entry = "[Desktop Entry]\nType=Application\nExec=/home/me/.local/opt/digup/usr/bin/digup-shell --at-login\nName=DigUp\n";
         let fixed = super::with_exec(entry, "\"/home/me/.local/opt/digup/AppRun\" --at-login");
         assert_eq!(fixed, "[Desktop Entry]\nType=Application\nExec=\"/home/me/.local/opt/digup/AppRun\" --at-login\nName=DigUp\n");
+    }
+
+    #[test]
+    fn folder_rules_become_root_rule_arguments_and_empty_ones_are_dropped() {
+        let mut settings = Settings::default();
+        settings.root_rules.insert("D:\\Photos".into(),
+                                   RootRule { kinds: vec!["image".into(), "screenshot".into()], shallow: false });
+        settings.root_rules.insert("D:\\Records".into(), RootRule { kinds: vec!["audio".into()], shallow: true });
+        settings.root_rules.insert("D:\\None".into(), RootRule { kinds: vec!["hologram".into()], shallow: false });
+        settings.root_rules.insert("D:\\All".into(), RootRule { kinds: Vec::new(), shallow: false });
+        let args = super::rule_arguments(&settings);
+        // Each rule is one flag and one JSON object; nothing empty or unknown is sent.
+        assert_eq!(args.len(), 4);
+        let rules: Vec<serde_json::Value> = args.chunks(2).map(|pair| {
+            assert_eq!(pair[0], "--root-rule");
+            serde_json::from_str(&pair[1]).unwrap()
+        }).collect();
+        let photos = rules.iter().find(|rule| rule["root"] == "D:\\Photos").unwrap();
+        assert_eq!(photos["kinds"], serde_json::json!(["image", "screenshot"]));
+        assert_eq!(photos["shallow"], false);
+        let records = rules.iter().find(|rule| rule["root"] == "D:\\Records").unwrap();
+        assert_eq!(records["kinds"], serde_json::json!(["audio"]));
+        assert_eq!(records["shallow"], true);
+        assert!(rules.iter().all(|rule| rule["root"] != "D:\\None" && rule["root"] != "D:\\All"));
+    }
+
+    #[test]
+    fn a_path_inside_a_folder_is_found_without_case() {
+        assert!(super::inside("C:/One/Photos", "C:/One/Photos"));
+        assert!(super::inside("C:/One/Photos/a.jpg", "C:/One/Photos/"));
+        assert!(!super::inside("C:/One/Photoshop/a.jpg", "C:/One/Photos"));
+        assert!(!super::inside("C:/One", "C:/One/Photos"));
+        // Windows compares paths without case (`FolderSelection.isInside` does too).
+        #[cfg(windows)]
+        assert!(super::inside("c:/one/photos/a.jpg", "C:/One/Photos"));
     }
 }

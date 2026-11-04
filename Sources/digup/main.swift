@@ -46,6 +46,7 @@ let usage = """
       --include-datasets   don't skip folders that look like datasets
       --exclude DIR        don't index this folder (repeatable)
       --exclude-ext EXT    don't index files with this extension (repeatable, or comma-separated: "heic,txt")
+      --root-rule JSON     a chosen folder's rule (repeatable): {"root":DIR,"kinds":["image"],"shallow":true}
       --reindex            drop vectors and embed everything again (after changing settings or model)
       --zgate Z            how far a meaning match must stand out (default 2.0)
       --word-weight W      bonus for containing all of the query's words (default 2.0, and for code see Searcher)
@@ -67,10 +68,12 @@ struct Arguments {
     var values: [String: String] = [:]
     var lists: [String: [String]] = [:]
     var flags: Set<String> = []
+    /// The folder rules, decoded where a bad one stops the run (the shell sends only rules it validated).
+    var rootRules: [RootRule] = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--offset", "--zgate", "--word-weight", "--new-limit",
                                       "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
                                       "--memory-limit", "--time-limit", "--tries", "--when-quiet"]
-    static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude"]
+    static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--root-rule"]
 
     init(_ raw: ArraySlice<String>) throws {
         var index = raw.startIndex
@@ -91,6 +94,13 @@ struct Arguments {
                 positional.append(argument)
                 index += 1
             }
+        }
+        for text in lists["--root-rule"] ?? [] {
+            guard let data = text.data(using: .utf8),
+                  let rule = try? JSONDecoder().decode(RootRule.self, from: data) else {
+                throw CLIError("--root-rule isn't a folder rule: \(text)")
+            }
+            rootRules.append(rule)
         }
     }
 
@@ -113,6 +123,7 @@ struct Arguments {
         options.includeDatasets = flags.contains("--include-datasets")
         options.excludedFolders = (lists["--exclude"] ?? []).map { Self.folderURL($0).path }
         options.excludedExtensions = IndexOptions.extensions((lists["--exclude-ext"] ?? []).joined(separator: ","))
+        options.rootRules = rootRules
         if let tokens = values["--shot-tokens"].flatMap(Int.init) { options.screenshotBudget = tokens }
         if let characters = values["--code-stretch"].flatMap(Int.init) { options.codeStretch = characters }
         return options

@@ -53,6 +53,10 @@ main.settings h3:first-child { margin-top: 14px; }
 .confirm p { margin: 0 0 8px; font-size: 12px; line-height: 1.45; }
 .confirm .actions { display: flex; justify-content: flex-end; gap: 8px; }
 .confirm .danger { background: #c4441c; color: white; border-color: transparent; }
+/* A folder's rule (Rules…): the same in-place panel, without the warning colour. */
+.confirm.rules { background: var(--card); }
+.confirm .choice { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px; }
+.confirm .choice input { margin: 0; accent-color: var(--moss); }
 
 input.field {
   width: 100%; font: inherit; font-size: 13px; color: var(--text); background: var(--card);

@@ -22,6 +22,7 @@ const notes = {
 let info = {};
 let summaries = null;        // what's indexed under each folder (search-service's summaries)
 let removing = null;         // the folder whose removal is being confirmed
+let ruling = null;           // the folder whose rule (kinds, top level only) is being edited
 let codeSummaries = null;    // what's indexed under each code folder
 let removingCode = null;     // the code folder whose removal is being confirmed
 let modelMessage = "";      // what the last model action said ("2 of 2 files verified", a failure)
@@ -156,6 +157,7 @@ function renderFolders() {
     const summary = (summaries || []).find((item) => samePath(item.path, folder)) || null;
     rows.append(folderRow(folder, summary));
     if (removing && samePath(removing, folder)) rows.append(confirmRemoval(folder, summary));
+    if (ruling && samePath(ruling, folder)) rows.append(ruleEditor(folder));
   }
   const skipped = $("skipped-rows");
   skipped.replaceChildren();
@@ -197,6 +199,8 @@ function reasonLines(leftOut, skippedReasons) {
     "dataset": "in folders that look like datasets",
     "code or data file": "code or data files",
     "excluded type": "of the file types you skip",
+    "of a kind this folder doesn't index": "of a kind this folder doesn't index",
+    "beyond the top level": "below the top level you chose",
   };
   const byCount = (a, b) => b[1] - a[1];
   const left = Object.entries(leftOut).sort(byCount).map(([reason, count]) =>
@@ -212,6 +216,9 @@ function folderRow(folder, summary, code = false) {
   if (summary?.missing || summary?.unreadable) name.append(element("span", "flag", summary.missing ? "Not connected" : "No access"));
   text.append(name, element("div", "path", shown(folder)));
   if (summary && Object.keys(summary.kinds || {}).length) text.append(element("div", "counts", countsText(summary.kinds)));
+  // A rule of its own (Rules…): what it takes, so the folder's line says why it holds fewer files.
+  const rule = Object.entries(info.rootRules || {}).find(([path]) => samePath(path, folder))?.[1];
+  if (rule) text.append(element("div", "counts", ruleText(rule)));
   const side = element("div", "side");
   if (summary) {
     side.append(element("div", "indexed", summary.missing || summary.unreadable ? "Kept for when it's back"
@@ -243,7 +250,8 @@ function folderRow(folder, summary, code = false) {
       side.append(line);
     }
   }
-  row.append(text, side, removeButton(code ? "Stop searching the code in this folder" : "Stop searching this folder", () => {
+  row.append(text, side, ...(code ? [] : [ruleButton(folder)]),
+    removeButton(code ? "Stop searching the code in this folder" : "Stop searching this folder", () => {
     if (code) {
       removingCode = folder;
       renderCode();
@@ -253,6 +261,77 @@ function folderRow(folder, summary, code = false) {
     }
   }));
   return row;
+}
+
+/// "Rules": what this folder holds, and whether its subfolders are walked.
+function ruleButton(folder) {
+  const button = element("button", "link", "Rules");
+  button.title = "Choose what this folder indexes, and how deep to look";
+  button.onclick = () => {
+    ruling = ruling && samePath(ruling, folder) ? null : folder;
+    renderFolders();
+  };
+  return button;
+}
+
+// What a folder's rule offers: the engine's kinds, with screenshots counted as pictures (a screenshot is a picture
+// with a rule of its own in the index, and "only pictures" must not drop them).
+const RULE_KINDS = [["image", "Pictures"], ["pdf", "PDFs"], ["doc", "Documents"], ["audio", "Recordings"],
+                    ["video", "Videos"]];
+
+/// A folder's rule, in place under its row: the kinds it holds (none checked apart: no rule) and "top level only".
+function ruleEditor(folder) {
+  const saved = Object.entries(info.rootRules || {}).find(([path]) => samePath(path, folder));
+  const rule = saved ? saved[1] : { kinds: [], shallow: false };
+  const box = element("div", "confirm rules");
+  box.append(element("p", "", `What “${nameOf(folder)}” holds:`));
+  const checks = RULE_KINDS.map(([kind, label]) => {
+    const choice = element("label", "choice");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    // No kinds in the rule: everything. Pictures send the screenshot kind too.
+    input.checked = rule.kinds.length === 0 || rule.kinds.includes(kind);
+    input.dataset.kind = kind;
+    choice.append(input, label);
+    box.append(choice);
+    return input;
+  });
+  const shallow = element("label", "choice");
+  const depth = document.createElement("input");
+  depth.type = "checkbox";
+  depth.checked = rule.shallow;
+  shallow.append(depth, "Top level only (don't look in its subfolders)");
+  box.append(shallow);
+  const actions = element("div", "actions");
+  const cancel = element("button", "", "Cancel");
+  cancel.onclick = () => { ruling = null; renderFolders(); };
+  const save = element("button", "", "Save");
+  save.onclick = async () => {
+    const chosen = checks.filter((input) => input.checked).map((input) => input.dataset.kind);
+    // Every kind checked is no rule at all; Pictures means pictures and screenshots.
+    const everyKind = RULE_KINDS.every(([kind]) => chosen.includes(kind));
+    const kinds = everyKind ? [] : (chosen.includes("image") ? [...chosen, "screenshot"] : chosen);
+    try {
+      await invoke("set_root_rule", { folder, kinds, shallow: depth.checked });
+      ruling = null;
+      await refresh();
+    } catch (error) {
+      fail(error);
+    }
+  };
+  actions.append(cancel, save);
+  box.append(actions);
+  return box;
+}
+
+/// A folder's rule in words, for its line: "pictures only · top level only".
+function ruleText(rule) {
+  const names = { image: "pictures", pdf: "PDFs", doc: "documents", audio: "recordings", video: "videos" };
+  const kinds = (rule.kinds || []).filter((kind) => kind !== "screenshot").map((kind) => names[kind] || kind);
+  const parts = [];
+  if (kinds.length) parts.push(`${kinds.join(", ")} only`);
+  if (rule.shallow) parts.push("top level only");
+  return parts.join(" · ");
 }
 
 /// "Stop searching “Pictures”?", in place, as the Mac app asks.
@@ -273,6 +352,7 @@ function confirmRemoval(folder, summary, code = false) {
   const remove = element("button", "danger", "Remove");
   remove.onclick = async () => {
     removing = removingCode = null;
+    if (!code) ruling = null;
     try {
       await invoke(code ? "remove_code_folder" : "remove_folder", { folder });
     } catch (error) {

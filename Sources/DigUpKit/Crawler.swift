@@ -54,6 +54,9 @@ public enum Crawler {
         var found: [Candidate] = []
         var foundRoot: [String: String] = [:]   // path → the chosen folder it was found under (a folder inside
                                                 // another root would be walked twice)
+        // A folder chosen inside another is walked twice too (once by each), so a file of the wrong kind is counted
+        // once, by the walk that first meets it.
+        var kindSkips = Set<String>()
         func leftOut(_ reason: String, under root: String) {
             report.skipped[reason, default: 0] += 1
             report.leftOut[root, default: [:]][reason, default: 0] += 1
@@ -61,6 +64,25 @@ public enum Crawler {
         let chosen = (chosenRoots ?? roots).map { FolderSelection.crawlPath($0.path) }
         let rootPaths = Set(chosen)
         let excluded = options.excludedFolders.map(FolderSelection.crawlPath)
+        var rules: [String: RootRule] = [:]
+        if !options.code {
+            for rule in options.rootRules { rules[FolderSelection.crawlPath(rule.root)] = rule }
+        }
+        // The chosen folder a path is searched as: the nearest one that contains it. A nested chosen folder keeps its
+        // own rule, and a partial sync's walk scope (a changed folder) never becomes one. Cached by folder: a file
+        // asks for its folder's owner, so the answer costs one pass over the chosen folders per folder walked.
+        var owners: [String: String] = [:]   // folder → owner ("" for none)
+        func owner(of path: String) -> String? {
+            let found: String
+            if let known = owners[path] {
+                found = known
+            } else {
+                found = chosen.filter { $0 == path || FolderSelection.isInside(path, $0) }
+                    .max(by: { $0.count < $1.count }) ?? ""
+                owners[path] = found
+            }
+            return found.isEmpty ? nil : found
+        }
         var checked = 0
         let clock = ContinuousClock()
         var lastUpdate = clock.now
@@ -117,12 +139,30 @@ public enum Crawler {
                 let isDirectory = values?.isDirectory == true
                 #endif
                 let isPackage = FileSystem.isPackage(url, values)
+                // The chosen folder this entry is searched as, for its rule and for the reasons Settings shows.
+                let container = isDirectory ? url.path : (url.path as NSString).deletingLastPathComponent
+                let owned = owner(of: container) ?? root.path
+                // "Top level only": a folder's own files are read, nothing below it — not while walking it, and not
+                // when a partial sync walks a folder deeper inside it on its own.
+                if let ruleOwner = owner(of: container), let rule = rules[ruleOwner], rule.shallow,
+                   FolderSelection.isInside(container, ruleOwner) {
+                    // Nothing below a "top level only" folder is read: a subfolder stops where it is, and a partial
+                    // sync's scope (a folder deeper inside) reads none of its files.
+                    walker.skipDescendants()
+                    if isDirectory, !isPackage {
+                        report.skippedFolders["beyond the top level", default: 0] += 1
+                        report.leftOut[ruleOwner, default: [:]]["folders beyond the top level", default: 0] += 1
+                    } else {
+                        leftOut("beyond the top level", under: ruleOwner)
+                    }
+                    return
+                }
                 if isDirectory, !isPackage {
                     if let reason = Rules.skipReason(forFolder: url, home: home, excluded: skips)
                         ?? (options.code ? Rules.codeSkipReason(forFolder: url) : nil) {
                         walker.skipDescendants()
                         report.skippedFolders[reason, default: 0] += 1
-                        report.leftOut[root.path, default: [:]]["folders " + reason, default: 0] += 1
+                        report.leftOut[owned, default: [:]]["folders " + reason, default: 0] += 1
                     } else if options.code {
                         repos.enter(url.path)
                     } else if Rules.isProjectRoot(url.path) {
@@ -133,24 +173,32 @@ public enum Crawler {
                 if isPackage {
                     walker.skipDescendants()   // macOS's enumerator never enters one; elsewhere it would
                     let library = ["photoslibrary", "photolibrary"].contains(url.pathExtension.lowercased())
-                    leftOut(library ? "Photos library" : "app or bundle", under: root.path)
+                    leftOut(library ? "Photos library" : "app or bundle", under: owned)
                     return
                 }
                 let classification = options.code ? Rules.classifyCode(url, options: options)
                     : Rules.classify(url, values: values, options: options)
                 switch classification {
                 case .ignore:
-                    leftOut("other type", under: root.path)
+                    leftOut("other type", under: owned)
                 case .skip(let reason):
-                    leftOut(reason, under: root.path)
+                    leftOut(reason, under: owned)
                 case .index(let kind):
+                    // The folder's kinds ("" kinds in a rule: every kind, as no rule). Checked before the stat: a
+                    // file of a kind the folder doesn't index isn't worth a look at the disk.
+                    if let rule = rules[owned], let kinds = rule.kinds.flatMap({ $0.isEmpty ? nil : $0 }),
+                       !kinds.contains(kind) {
+                        guard kindSkips.insert(url.path).inserted else { return }
+                        leftOut("of a kind this folder doesn't index", under: owned)
+                        return
+                    }
                     guard let info = FileSystem.info(of: url.path), info.isRegular else {
-                        leftOut("link or special file", under: root.path)
+                        leftOut("link or special file", under: owned)
                         return
                     }
                     // Reading a dataless placeholder (iCloud "Optimize Mac Storage", File Providers) downloads it.
                     if info.dataless {
-                        leftOut("in the cloud, not downloaded", under: root.path)
+                        leftOut("in the cloud, not downloaded", under: owned)
                         return
                     }
                     if options.code {
@@ -158,16 +206,16 @@ public enum Crawler {
                         let limit = url.pathExtension.lowercased() == "ipynb" ? options.maxNotebookBytes
                             : options.maxCodeBytes
                         if info.size > limit {
-                            leftOut("too big to be written by hand", under: root.path)
+                            leftOut("too big to be written by hand", under: owned)
                             return
                         }
                         if repos.ignores(url.path) {
-                            leftOut("ignored by git", under: root.path)
+                            leftOut("ignored by git", under: owned)
                             return
                         }
                     }
                     guard foundRoot[url.path] == nil else { return }
-                    foundRoot[url.path] = root.path
+                    foundRoot[url.path] = owned
                     found.append(Candidate(path: url.path, kind: kind, size: info.size, mtime: info.mtime,
                                            inode: info.inode, device: info.device))
                 }

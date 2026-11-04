@@ -67,6 +67,9 @@ public struct IndexOptions: Sendable {
     public var audioHop = 25.0
     public var excludedFolders: [String] = []
     public var excludedExtensions: Set<String> = []
+    /// A rule for each chosen folder that doesn't take everything under it (Settings → Folders → Rules). Not in the
+    /// fingerprint: a rule changes what a walk leaves out, never a vector.
+    public var rootRules: [RootRule] = []
 
     public init() {}
 
@@ -82,6 +85,20 @@ public struct IndexOptions: Sendable {
         // number, and every code index is read again.
         if code { return "code1 lines\(codeStretch)" }
         return "photo\(photoBudget) shot\(screenshotBudget) page\(pageBudget) frame\(frameBudget)/\(frameInterval)s audio\(audioWindow)/\(audioHop)s"
+    }
+}
+
+/// What a chosen folder holds: the kinds to index (nil: every kind), and whether its subfolders are walked. The
+/// crawler applies it to the nearest chosen folder of each path, so a folder chosen inside another keeps its own rule.
+public struct RootRule: Codable, Sendable, Equatable {
+    public var root: String
+    public var kinds: Set<FileKind>?
+    public var shallow: Bool
+
+    public init(root: String, kinds: Set<FileKind>? = nil, shallow: Bool = false) {
+        self.root = root
+        self.kinds = kinds
+        self.shallow = shallow
     }
 }
 

@@ -57,13 +57,19 @@ impl Status {
         }
         match event["event"].as_str().unwrap_or_default() {
             "scanning" if !matches!(self.activity, Activity::Failed(_)) => self.activity = Activity::Scanning,
-            "sync" if count("new") > 0 => self.activity = Activity::Indexing { done: 0, total: count("new") },
-            "sync" if event["left_out"].is_object() => {
-                self.left_out = event["left_out"].clone();
-                if matches!(self.activity, Activity::Scanning) { self.activity = Activity::Idle; }
+            // The reasons are recorded on every sync: the one that queues new files is the usual first pass, and it
+            // is exactly when Settings first has something to explain (a rule's left-out kinds).
+            "sync" => {
+                if event["left_out"].is_object() {
+                    self.left_out = event["left_out"].clone();
+                }
+                if count("new") > 0 {
+                    self.activity = Activity::Indexing { done: 0, total: count("new") };
+                } else if matches!(self.activity, Activity::Scanning | Activity::Failed(_)) {
+                    // A sync after a failure, or after a scan: the helper works again, or has found nothing new.
+                    self.activity = Activity::Idle;
+                }
             }
-            // A sync after a failure, or after a scan: the helper works again, or has found nothing new.
-            "sync" if matches!(self.activity, Activity::Failed(_) | Activity::Scanning) => self.activity = Activity::Idle,
             "file" => {
                 self.activity = Activity::Indexing { done: count("done"), total: count("total") };
                 // The counts come with a sync; each file read since leaves "waiting".
@@ -297,6 +303,21 @@ mod tests {
         held.held_until = None;
         held.paused = true;
         assert_eq!(held.line(true, &ready), "Paused · 4 files waiting");
+    }
+
+    /// The first pass queues new files and carries the reasons in the same event: both must land.
+    #[test]
+    fn a_sync_that_queues_files_still_records_what_it_left_out() {
+        let mut status = Status::default();
+        status.apply(&json!({"event": "sync", "new": 2,
+                             "left_out": {"C:/Photos": {"of a kind this folder doesn't index": 3}}}));
+        assert_eq!(status.left_out["C:/Photos"]["of a kind this folder doesn't index"], 3);
+        assert!(matches!(status.activity, Activity::Indexing { .. }));
+        // A later sync with nothing new replaces them, and one with no reasons at all keeps the last report.
+        status.apply(&json!({"event": "sync", "new": 0, "left_out": {"C:/Photos": {}}}));
+        assert_eq!(status.left_out["C:/Photos"], json!({}));
+        status.apply(&json!({"event": "sync", "new": 4}));
+        assert_eq!(status.left_out["C:/Photos"], json!({}));
     }
 
     #[test]

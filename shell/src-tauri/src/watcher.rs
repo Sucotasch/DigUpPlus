@@ -21,13 +21,17 @@ pub struct FolderWatcher {
 }
 
 impl FolderWatcher {
-    /// Watches `folders` (less `skipped` inside them); `changed` runs on the watcher's own thread after each burst of
-    /// changes, with every path of the burst (none when the system dropped events): once nothing has changed for
-    /// `quiet`, or `longest` after the burst began. `types` are the extensions the crawl skips; a change to a type it
-    /// never indexes doesn't ask for a sync. A code watcher passes None: its types are the code index's. Dropping it
-    /// stops.
-    pub fn start(folders: &[PathBuf], skipped: Vec<PathBuf>, ignore: Option<PathBuf>, types: Option<Vec<String>>,
-                 quiet: Duration, longest: Duration, changed: impl Fn(&[PathBuf]) + Send + 'static) -> FolderWatcher {
+    /// Watches `folders` (less `skipped` inside them); `shallow` ones are watched one level deep (their rule is "top
+    /// level only": changes far inside are dropped by the crawl anyway, and a deep tree would ask for syncs all day).
+    /// `changed` runs on the watcher's own thread after each burst of changes, with every path of the burst (none when
+    /// the system dropped events): once nothing has changed for `quiet`, or `longest` after the burst began. `types`
+    /// are the extensions the crawl skips; a change to a type it never indexes doesn't ask for a sync. A code watcher
+    /// passes None: its types are the code index's. Dropping it stops.
+    /// shortcut: a change of a type one folder's rule doesn't index still asks for a sync (the game isn't worth
+    /// copying the engine's extension tables here); upgrade when a big library shows the cost.
+    pub fn start(folders: &[PathBuf], shallow: &[PathBuf], skipped: Vec<PathBuf>, ignore: Option<PathBuf>,
+                 types: Option<Vec<String>>, quiet: Duration, longest: Duration,
+                 changed: impl Fn(&[PathBuf]) + Send + 'static) -> FolderWatcher {
         let (sender, receiver) = mpsc::channel::<Vec<PathBuf>>();
         let roots = folders.to_vec();
         let watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
@@ -54,7 +58,8 @@ impl FolderWatcher {
             }
         };
         for folder in folders {
-            if let Err(error) = watcher.watch(folder, RecursiveMode::Recursive) {
+            let mode = if shallow.contains(folder) { RecursiveMode::NonRecursive } else { RecursiveMode::Recursive };
+            if let Err(error) = watcher.watch(folder, mode) {
                 eprintln!("digup-shell: can't watch {}: {error}", folder.display());
             }
         }
