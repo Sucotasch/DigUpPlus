@@ -96,6 +96,9 @@ public enum Estimator {
                     estimate.laterSeconds += Double(all - first) * costs.docChunk
                 }
             case .audio:
+                // Read by its tags alone (Settings → Folders → Recordings): an ffprobe, not a decode per window — and no
+                // duration to ask for either.
+                if options.tagTypes.contains((file.path as NSString).pathExtension.lowercased()) { break }
                 let seconds = duration(of: file.path)
                 estimate.audioSeconds += seconds
                 estimate.seconds += seconds * costs.audioSecond

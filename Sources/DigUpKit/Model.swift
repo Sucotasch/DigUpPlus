@@ -48,6 +48,9 @@ public struct IndexOptions: Sendable {
     public var maxNotebookBytes = 20 << 20
     public var includeCode = false
     public var includeDatasets = false
+    /// Recording extensions (lowercase, no dot: "mp3") read by their tags alone — title, artist, album, genre, year into
+    /// the keywords, no sound decoded and nothing embedded (Settings → Folders → Recordings). Absent: read in full.
+    public var tagTypes: Set<String> = []
     public var minImageSide = 256
     /// Long files are read a step at a time: the first step in the first pass (every file gets searchable sooner), the
     /// rest after everything else (`Indexer.finishLongFiles`). PDFs up to `bigPDFPages` are read whole at once.

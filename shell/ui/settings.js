@@ -46,6 +46,40 @@ function showTab(name) {
 
 for (const button of document.querySelectorAll("#tabs button")) button.onclick = () => showTab(button.dataset.tab);
 
+/// How a search judges a match (Settings → Search): the meaning gate, and the Images filter's layer cutoffs.
+function renderSearch() {
+  $("zgate").value = info.zgate ?? 2;
+  $("image-tiers").value = info.imageTiers || "standard";
+  $("search-note").hidden = true;
+}
+
+let searchSaving = null;   // the change in flight: the fields stay as typed, then take the saved numbers back
+async function saveSearchSettings() {
+  const zgate = Number($("zgate").value);
+  const note = $("search-note");
+  if (!Number.isFinite(zgate)) {
+    note.hidden = false;
+    note.textContent = "The threshold is a number, 0.5 to 5.";
+    return;
+  }
+  clearTimeout(searchSaving);
+  // Typing a number shouldn't send a settings write per keystroke.
+  searchSaving = setTimeout(async () => {
+    try {
+      const saved = await invoke("set_search_settings", { zgate, imageTiers: $("image-tiers").value });
+      info.zgate = saved.zgate;
+      info.imageTiers = saved.imageTiers;
+      $("zgate").value = saved.zgate;
+      note.hidden = true;
+    } catch (error) {
+      fail(error);
+    }
+  }, 400);
+}
+$("zgate").addEventListener("input", saveSearchSettings);
+$("zgate").addEventListener("change", saveSearchSettings);
+$("image-tiers").addEventListener("change", saveSearchSettings);
+
 // MARK: General
 
 function renderGeneral() {
@@ -178,6 +212,7 @@ function renderFolders() {
 /// The fields: set from the settings when the window opens or they change, never while you're editing them.
 function renderFields() {
   $("types").value = (info.skipTypes || []).join(", ");
+  $("tag-types").value = (info.tagTypes || []).join(", ");
   const hours = info.indexHours || { on: false, start: 60, end: 420 };
   $("hours").checked = hours.on;
   $("times").hidden = !hours.on;
@@ -399,6 +434,18 @@ async function applyTypes() {
 }
 $("types").addEventListener("keydown", (event) => { if (event.key === "Enter") applyTypes(); });
 $("types").addEventListener("blur", applyTypes);
+
+// Recording types read by their tags alone: applied the same way.
+async function applyTagTypes() {
+  try {
+    info.tagTypes = await invoke("set_tag_types", { types: $("tag-types").value });
+    $("tag-types").value = info.tagTypes.join(", ");
+  } catch (error) {
+    fail(error);
+  }
+}
+$("tag-types").addEventListener("keydown", (event) => { if (event.key === "Enter") applyTagTypes(); });
+$("tag-types").addEventListener("blur", applyTagTypes);
 
 async function applyHours() {
   const on = $("hours").checked;
@@ -957,6 +1004,7 @@ async function refresh() {
   renderStatus();
   renderFolders();
   renderFields();
+  renderSearch();
   renderStorage();
   renderCode();
   if (!$("folders").hidden) loadSummaries();

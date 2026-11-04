@@ -298,6 +298,23 @@ public final class IndexStore {
         }
     }
 
+    /// Recordings of these extensions (lowercase, no dot) are read again: their rule changed (Settings → Folders →
+    /// Recordings, tags instead of sound or the other way around). Audio rows only, since that is the one kind the tags
+    /// rule applies to; a rule for any other type is the crawl's to apply (it stops queueing the file at all).
+    /// Returns how many.
+    @discardableResult
+    public func requeueRecordings(of extensions: Set<String>) throws -> Int {
+        guard !extensions.isEmpty else { return 0 }
+        var ids: [Int64] = []
+        try db.query("SELECT id, path FROM files WHERE kind = 'audio'") { row in
+            let path = row.text(1) ?? ""
+            if extensions.contains((path as NSString).pathExtension.lowercased()) { ids.append(row.int(0)) }
+        }
+        // One transaction per row: `requeue` opens its own, and a rule change is rare enough not to batch them.
+        for id in ids { try requeue(id) }
+        return ids.count
+    }
+
     /// Same inode, size and date at a new path: a move or rename. Nothing is re-embedded (screenshot tools move
     /// screenshots into project folders all the time). Where the new place gives the file another identity — another
     /// volume has its own device and inode — those and its size and date go with the path, so the next sync knows the

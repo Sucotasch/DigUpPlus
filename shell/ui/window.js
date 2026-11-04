@@ -7,14 +7,17 @@
 
 const TYPING_PAUSE = 120;   // ms after the last keystroke until the search runs (the query was embedded meanwhile)
 const LIMIT = 120;          // the first page, as before: the window opens on the best results at once
-// The Images filter's cosine layers: shown at once, the middle folded as weaker matches, and the tail behind its own
-// fold. The cutoffs come from live results (2026-10-27, 3 772 images): 0.648 is where "not quite" begins for Asian
-// and Anime, 0.600 where their single irrelevant images end. A query whose whole scale sits lower has both cutoffs
-// moved down under its own top image (TIER_MIN_VISIBLE).
-const IMAGE_TIERS = { visible: 0.648, weak: 0.600 };
+// The Images filter's cosine layers, by profile (Settings → Search → Images): shown at once, the middle folded as
+// weaker matches, and the tail behind its own fold. The standard cutoffs come from live results (2026-10-27, 3 772
+// images): 0.648 is where "not quite" begins for Asian and Anime, 0.600 where their single irrelevant images end. A
+// query whose whole scale sits lower has both cutoffs moved down under its own top image (TIER_MIN_VISIBLE).
+const IMAGE_TIER_PROFILES = {
+  standard: { visible: 0.648, weak: 0.600 },
+  loose: { visible: 0.600, weak: 0.550 },     // more weaker matches: a small or uneven collection
+  strict: { visible: 0.680, weak: 0.640 },    // fewer: only what's clearly close
+};
 const TIER_MIN_VISIBLE = 30;   // fewer visible images than this: the cutoffs come down to the query's own top
 const TIER_FALL = 0.05;        // how far under the top image the lowered visible cutoff sits
-const TIER_GAP = 0.048;        // how far under that the weak cutoff sits (the same span as 0.648 → 0.600)
 const PAGE_SIZE = 300;      // later pages: measured at ~13–18 ms of DOM each
 const MORE_MARGIN = 400;    // px from the end of the list that asks for the next page
 const FILTERS = [
@@ -151,7 +154,7 @@ function run() {
       // The chips count the whole query; a helper too old to send its kind totals falls back to this first page.
       const all = await ask({ op: "search", q: text, code, meaning: !state.like, limit: LIMIT,
                               ...(state.like && !code ? { like: state.like } : {}) });
-      let cutoffs = layered ? { ...IMAGE_TIERS } : null;
+      let cutoffs = layered ? { ...imageTiers() } : null;
       let shown = all;
       let tiers = null;
       if (filtered) {
@@ -172,7 +175,9 @@ function run() {
             top = probe.hits[0]?.cosine;
           }
           if (top != null) {
-            cutoffs = { visible: Math.max(0, top - TIER_FALL), weak: Math.max(0, top - TIER_FALL - TIER_GAP) };
+            const base = imageTiers();
+            cutoffs = { visible: Math.max(0, top - TIER_FALL),
+                        weak: Math.max(0, top - TIER_FALL - (base.visible - base.weak)) };
             shown = await ask({ op: "search", q: text, code, meaning: true, limit: LIMIT, kinds: filter.kinds,
                                 ...tierRequest(cutoffs) });
             tiers = shown.tier_counts ?? tiers;
@@ -222,6 +227,11 @@ function run() {
 function pageFilter() {
   if (isCode()) return null;
   return FILTERS.find((item) => item.key === state.filter) ?? null;
+}
+
+/// The Images layers' cutoffs in use: the chosen profile (Settings → Search), or Standard.
+function imageTiers() {
+  return IMAGE_TIER_PROFILES[state.info?.imageTiers] || IMAGE_TIER_PROFILES.standard;
 }
 
 /// The helper's request for the Images layers: ranked by cosine, with the hidden tail left out (its fold fetches

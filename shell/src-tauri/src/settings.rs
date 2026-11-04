@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Serde defaults for settings that older files don't have: the engine's own gate, and the measured layer cutoffs.
+fn default_zgate() -> f64 { 2.0 }
+fn default_image_tiers() -> String { "standard".to_string() }
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
@@ -16,10 +20,21 @@ pub struct Settings {
     pub skipped: Vec<String>,
     /// File extensions left out ("heic", "txt").
     pub skip_types: Vec<String>,
+    /// Recording extensions read by their tags alone (Settings → Folders → Recordings): the words of their title,
+    /// artist and album, no sound decoded (`--tag-type`). Changing it queues those files again.
+    pub tag_types: Vec<String>,
     /// A rule for a searched folder (`Rules…` in Settings → Folders): which kinds it holds, and whether its
     /// subfolders are walked (`--root-rule`). Folders without one are searched whole, as they always were. The kinds
     /// are strings, not an enum: a name from a newer version must not make the whole settings file unreadable.
     pub root_rules: BTreeMap<String, RootRule>,
+    /// How far a meaning match must stand out to count (`Searcher.zGate`, 2.0 by default): lower finds more, weaker
+    /// matches. Sent to the search service with the folders, so the panel and the window agree.
+    #[serde(default = "default_zgate")]
+    pub zgate: f64,
+    /// Where the Images filter cuts its cosine layers: "standard" (the measured 0.648/0.600), "loose" or "strict".
+    /// The window counts from it (`IMAGE_TIER_PROFILES` in window.js); the panel has no layers.
+    #[serde(default = "default_image_tiers")]
+    pub image_tiers: String,
     /// The panel's hotkey (Tauri's accelerator form); empty: the default.
     pub hotkey: String,
     /// Onboarding is done: the shell starts in the tray.
@@ -84,6 +99,23 @@ pub struct WindowPlace {
 }
 
 impl Settings {
+    /// The Images layers' cutoffs by profile (the window's `IMAGE_TIER_PROFILES` holds the same numbers).
+    pub fn tier_profile(name: &str) -> &'static str {
+        match name {
+            "loose" => "loose",
+            "strict" => "strict",
+            _ => "standard",
+        }
+    }
+
+    /// What a settings change asks for: a number the engine can use, and a profile it knows. A value out of range is
+    /// brought back into it rather than rejected — a person typing "1" meaning a looser gate shouldn't lose it to a
+    /// silent no-op.
+    pub fn search_settings(zgate: f64, image_tiers: &str) -> (f64, String) {
+        let zgate = if zgate.is_finite() { zgate.clamp(0.5, 5.0) } else { default_zgate() };
+        (zgate, Self::tier_profile(image_tiers).to_string())
+    }
+
     /// The file's settings, or the defaults when there's none (or it can't be read). A file that can't be parsed is
     /// kept as `settings.json.bad`: the choices in it are the person's, and the next save would overwrite them for
     /// good. A file that can't be read at all (permissions) stays where it is; the log line is the only trace.
@@ -177,6 +209,30 @@ mod tests {
         let odd = Settings::load(&path);
         assert_eq!(odd.folders, vec!["C:/One"]);
         assert_eq!(odd.root_rules["C:/One"].kinds, vec!["hologram", "audio"]);
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn search_settings_default_to_the_engine_and_keep_a_chosen_gate() {
+        let folder = std::env::temp_dir().join(format!("DigUp-search-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("settings.json");
+        // A file from before these settings: the engine's gate and the measured layer cutoffs.
+        std::fs::write(&path, br#"{"folders":["C:/One"]}"#).unwrap();
+        let older = Settings::load(&path);
+        assert_eq!(older.zgate, 2.0);
+        assert_eq!(older.image_tiers, "standard");
+        // A chosen gate and profile ride along, and an unknown profile reads as standard.
+        let settings = Settings { zgate: 1.4, image_tiers: "hologram".into(), ..Settings::default() };
+        settings.save(&path).unwrap();
+        let loaded = Settings::load(&path);
+        assert_eq!(loaded.zgate, 1.4);
+        assert_eq!(Settings::tier_profile(&loaded.image_tiers), "standard");
+        // What a change is kept as: a usable number and a known profile.
+        assert_eq!(Settings::search_settings(1.4, "loose"), (1.4, "loose".to_string()));
+        assert_eq!(Settings::search_settings(0.0, "strict"), (0.5, "strict".to_string()));
+        assert_eq!(Settings::search_settings(99.0, "nope"), (5.0, "standard".to_string()));
+        assert_eq!(Settings::search_settings(f64::NAN, "loose"), (2.0, "loose".to_string()));
         let _ = std::fs::remove_dir_all(&folder);
     }
 

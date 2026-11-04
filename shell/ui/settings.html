@@ -10,6 +10,7 @@
   <nav class="tabs" id="tabs" role="tablist">
     <button role="tab" data-tab="general">General</button>
     <button role="tab" data-tab="folders">Folders</button>
+    <button role="tab" data-tab="search">Search</button>
     <button role="tab" data-tab="code">Code</button>
     <button role="tab" data-tab="storage">Storage</button>
   </nav>
@@ -117,6 +118,11 @@
       <p class="note">DigUp Plus reads pictures, PDFs, documents (txt, md, typ, rtf, docx, odt, html), audio and video. Keys,
         certificates and password files are never read, nor are hidden folders.</p>
 
+      <h3>Recordings read by their tags</h3>
+      <input class="field" id="tag-types" type="text" placeholder="e.g. mp3, m4a" spellcheck="false" autocomplete="off">
+      <p class="note">These are found by the words of their title, artist and album instead of by their sound, and
+        indexing one takes a moment rather than minutes. Leave it empty to listen to every recording.</p>
+
       <label class="option hours-option">
         <input type="checkbox" id="hours">
         <span class="text">
@@ -127,6 +133,35 @@
             <input type="time" id="hours-end"></span>
         </span>
       </label>
+    </section>
+
+    <section class="tab" id="search" role="tabpanel" hidden>
+      <h3>How close a match must be</h3>
+      <label class="option">
+        <span class="text">
+          <span class="name">Meaning match threshold</span>
+          <span class="info">How far a result must stand out from the rest to count as a meaning match. Lower finds
+            more, including weaker matches; higher keeps only the clearest. Tiny collections already fall back to a
+            fixed cutoff of their own.</span>
+        </span>
+        <input id="zgate" type="number" min="0.5" max="5" step="0.1" value="2" aria-label="Meaning match threshold">
+      </label>
+
+      <h3>Images: the weaker matches</h3>
+      <label class="option">
+        <span class="text">
+          <span class="name">How much of the image ranking the Images filter shows at once</span>
+          <span class="info">Pictures below the cutoff fold away as weaker matches, and ones further down as a hidden
+            tail. Standard is where “not quite” begins on a real collection; More suits small or uneven ones, Fewer
+            keeps only pictures that clearly match.</span>
+        </span>
+        <select class="field" id="image-tiers">
+          <option value="standard">Standard</option>
+          <option value="loose">More (looser cutoff)</option>
+          <option value="strict">Fewer (stricter cutoff)</option>
+        </select>
+      </label>
+      <p class="note" id="search-note" hidden></p>
     </section>
 
     <section class="tab" id="code" role="tabpanel" hidden>

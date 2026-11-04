@@ -40,8 +40,9 @@ import Foundation
 ///   {"op":"summaries","code":bool}            → {"roots":[{"path","missing","unreadable","files","indexed","pending",
 ///                                               "failed","skipped","unfinished","kinds":{kind: n}}]}: what's indexed
 ///                                               under each chosen folder (each code folder, with `code`)
-///   {"op":"folders","roots":[…],"skipped":[…],"types":[…],"code_roots":[…],"code_skipped":[…]} → {"ok":true}: each
-///                                               optional; no code folders closes the code index
+///   {"op":"folders","roots":[…],"skipped":[…],"types":[…],"code_roots":[…],"code_skipped":[…],"zgate":n} → {"ok":true}: each
+///                                               optional; no code folders closes the code index; `zgate` is how far a
+///                                               meaning match must stand out from now on (2.0 otherwise)
 ///   {"op":"prewarm"}                          → {"ok":true}: starts the encoder and loads the vectors (the panel opening)
 ///   {"op":"status"}                           → {"encoder":"stopped|starting|ready|unavailable","vectors":n,"files":n,
 ///                                               "searchable":n,"pending":n,"unfinished":n,…}
@@ -56,6 +57,9 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     private var codeStore: IndexStore?
     private var codeSearcher: Searcher?
     private var roots: [String], skipped: [String], types: Set<String>, codeRoots: [String], codeSkipped: [String]
+    /// How far a meaning match must stand out (`Searcher.zGate`), as Settings → Search has it: a request may still
+    /// override it, which is what the window's and the panel's own requests do when they try a looser gate.
+    private var zGate = 2.0
     private let idleSeconds: Double
     private let log: URL
 
@@ -151,8 +155,8 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let offset = request["offset"] as? Int ?? 0
             let wantMeaning = request["meaning"] as? Bool ?? true
             let prefixLast = request["prefix_last"] as? Bool ?? false
-            // Dev knobs and the window's image layers; ordinary requests keep the meaning gate and score order.
-            let zGate = (request["zgate"] as? NSNumber)?.doubleValue ?? 2.0
+            // Dev knobs and the window's image layers; ordinary requests use the gate Settings → Search sets.
+            let zGate = (request["zgate"] as? NSNumber)?.doubleValue ?? self.zGate
             let byCosine = request["by_cosine"] as? Bool ?? false
             let cosineFloor = (request["cosine_floor"] as? NSNumber)?.doubleValue
             let cosineCeiling = (request["cosine_ceiling"] as? NSNumber)?.doubleValue
@@ -307,6 +311,8 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             if let value = request["types"] as? [String] { types = IndexOptions.extensions(value.joined(separator: ",")) }
             if let value = request["code_roots"] as? [String] { codeRoots = value.map { Arguments.folderURL($0).path } }
             if let value = request["code_skipped"] as? [String] { codeSkipped = value.map { Arguments.folderURL($0).path } }
+            // Settings → Search: the gate the panel's and the window's ordinary requests use from now on.
+            if let value = request["zgate"] as? NSNumber { zGate = value.doubleValue }
             if codeRoots.isEmpty {
                 codeSearcher = nil
                 codeStore = nil

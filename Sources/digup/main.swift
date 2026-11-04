@@ -47,6 +47,7 @@ let usage = """
       --exclude DIR        don't index this folder (repeatable)
       --exclude-ext EXT    don't index files with this extension (repeatable, or comma-separated: "heic,txt")
       --root-rule JSON     a chosen folder's rule (repeatable): {"root":DIR,"kinds":["image"],"shallow":true}
+      --tag-type EXT       read files of this extension by their tags alone, not their sound (repeatable: "mp3")
       --reindex            drop vectors and embed everything again (after changing settings or model)
       --zgate Z            how far a meaning match must stand out (default 2.0)
       --word-weight W      bonus for containing all of the query's words (default 2.0, and for code see Searcher)
@@ -73,7 +74,8 @@ struct Arguments {
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--offset", "--zgate", "--word-weight", "--new-limit",
                                       "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
                                       "--memory-limit", "--time-limit", "--tries", "--when-quiet"]
-    static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--root-rule"]
+    static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--root-rule",
+                                        "--tag-type"]
 
     init(_ raw: ArraySlice<String>) throws {
         var index = raw.startIndex
@@ -123,6 +125,7 @@ struct Arguments {
         options.includeDatasets = flags.contains("--include-datasets")
         options.excludedFolders = (lists["--exclude"] ?? []).map { Self.folderURL($0).path }
         options.excludedExtensions = IndexOptions.extensions((lists["--exclude-ext"] ?? []).joined(separator: ","))
+        options.tagTypes = IndexOptions.extensions((lists["--tag-type"] ?? []).joined(separator: ","))
         options.rootRules = rootRules
         if let tokens = values["--shot-tokens"].flatMap(Int.init) { options.screenshotBudget = tokens }
         if let characters = values["--code-stretch"].flatMap(Int.init) { options.codeStretch = characters }

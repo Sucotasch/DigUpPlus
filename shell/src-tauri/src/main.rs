@@ -267,6 +267,7 @@ impl Shell {
         args.extend(self.index_arguments_for(&settings));
         args.extend(folder_arguments(&settings, &self.code_folders()));
         args.extend(rule_arguments(&settings));
+        args.extend(tag_arguments(&settings));
         args.extend(self.folders());
         let mut launch = self.launch(args, "index.log");
         // One llama.cpp context leaves a fast graphics card mostly idle while indexing: the helper starts as many as
@@ -363,6 +364,12 @@ fn rule_arguments(settings: &Settings) -> Vec<String> {
         args.extend(["--root-rule".to_string(), rule.to_string()]);
     }
     args
+}
+
+/// The recording types read by their tags alone (`--tag-type`), for indexing and estimating only: the crawl doesn't
+/// change, so the search service has no use for them.
+fn tag_arguments(settings: &Settings) -> Vec<String> {
+    settings.tag_types.iter().flat_map(|kind| ["--tag-type".to_string(), kind.clone()]).collect()
 }
 
 /// `path` is `folder`, or inside it. Windows compares paths without case (`remove_folder` used `Path::starts_with`,
@@ -498,6 +505,7 @@ async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>, code: Opti
             filters.push("--include-datasets".to_string());
         }
         filters.extend(rule_arguments(&settings));
+        filters.extend(tag_arguments(&settings));
     }
     // The index's costs.json: what indexing costs on this computer, once it has indexed enough.
     let index = shell.index_arguments();
@@ -770,6 +778,7 @@ fn window_info(shell: State<'_, Arc<Shell>>) -> Value {
         "state": shell.snapshot(),
         "search": search.map(|(query, kind)| json!({"query": query, "kind": kind})),
         "hasCode": !shell.code_folders().is_empty(),
+        "imageTiers": settings::Settings::tier_profile(&shell.settings.lock().unwrap().image_tiers),
         "debugQuery": shell.options.debug_window,
         "debugSettings": shell.options.debug_settings,
         "debugCopy": shell.options.debug_copy,
@@ -917,7 +926,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, set_confirm_move_copy,
             set_confirm_delete, set_include_datasets, hide_window, debug_query, debug_report, window_info, destination_conflicts, operation_confirmations,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
-            remove_folder, set_skipped, set_skip_types, set_root_rule, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
+            remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, set_search_settings, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases,
             file_operation, cancel_file_operation, pick_destination_folder,
@@ -1172,11 +1181,12 @@ fn apply_folders(app: &AppHandle) {
     watch_folders(app);
 }
 
-/// The search service's "folders": what it searches (without code folders, it closes the code index).
+/// The search service's "folders": what it searches (without code folders, it closes the code index), and how far a
+/// meaning match must stand out (`zgate`, per request unless a request overrides it).
 fn folders_request(shell: &Shell) -> Value {
     let settings = shell.settings.lock().unwrap().clone();
     json!({"op": "folders", "roots": shell.folders(), "skipped": settings.skipped, "types": settings.skip_types,
-           "code_roots": shell.code_folders(), "code_skipped": settings.code_skipped})
+           "code_roots": shell.code_folders(), "code_skipped": settings.code_skipped, "zgate": settings.zgate})
 }
 
 /// Watches the folders and code search's, and indexes them now when the model is in.
@@ -1605,7 +1615,10 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "folders": shell.folders(),
         "skipped": settings.skipped,
         "skipTypes": settings.skip_types,
+        "tagTypes": settings.tag_types,
         "rootRules": settings.root_rules,
+        "zgate": settings.zgate,
+        "imageTiers": Settings::tier_profile(&settings.image_tiers),
         "indexHours": {"on": settings.index_hours_on, "start": settings.index_hours.start, "end": settings.index_hours.end},
         "storage": storage(&shell),
         "transfer": shell.transfer_state.lock().unwrap().clone(),
@@ -2583,6 +2596,30 @@ fn set_code_editor(shell: State<'_, Arc<Shell>>, editor: String) -> Result<(), S
     settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))
 }
 
+/// Settings → Search: how far a meaning match must stand out, and where the Images filter cuts its layers. Both are
+/// read by the pages as they run (the service gets the gate with the folders; the window reads the profile from
+/// `window_info`), so nothing restarts.
+#[tauri::command]
+fn set_search_settings(shell: State<'_, Arc<Shell>>, zgate: f64, image_tiers: String)
+    -> Result<Value, String> {
+    let (zgate, image_tiers) = Settings::search_settings(zgate, &image_tiers);
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        if settings.zgate == zgate && settings.image_tiers == image_tiers {
+            return Ok(json!({"zgate": zgate, "imageTiers": image_tiers}));
+        }
+        settings.zgate = zgate;
+        settings.image_tiers = image_tiers.clone();
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    let request = folders_request(&shell);
+    let search = shell.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = search.search.ask(request).await;
+    });
+    Ok(json!({"zgate": zgate, "imageTiers": image_tiers}))
+}
+
 /// Settings → Folders: the folders skipped inside the ones searched.
 #[tauri::command]
 fn set_skipped(app: AppHandle, shell: State<'_, Arc<Shell>>, skipped: Vec<String>) -> Result<(), String> {
@@ -2623,12 +2660,7 @@ fn set_root_rule(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, k
 /// Settings → Folders: file types to leave out, as typed ("heic, .txt").
 #[tauri::command]
 fn set_skip_types(app: AppHandle, shell: State<'_, Arc<Shell>>, types: String) -> Result<Vec<String>, String> {
-    let mut list: Vec<String> = types
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .map(|kind| kind.trim().trim_start_matches('.').to_lowercase())
-        .filter(|kind| !kind.is_empty())
-        .collect();
-    list.dedup();
+    let list = type_list(&types);
     {
         let mut settings = shell.settings.lock().unwrap();
         if settings.skip_types == list {
@@ -2639,6 +2671,36 @@ fn set_skip_types(app: AppHandle, shell: State<'_, Arc<Shell>>, types: String) -
     }
     apply_folders(&app);
     Ok(list)
+}
+
+/// Settings → Folders: the recording types to read by their tags alone ("mp3, m4a"). Everything else about them is
+/// unchanged: they stay audio files, found by their tags and their name.
+#[tauri::command]
+fn set_tag_types(app: AppHandle, shell: State<'_, Arc<Shell>>, types: String) -> Result<Vec<String>, String> {
+    let list = type_list(&types);
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        if settings.tag_types == list {
+            return Ok(list);
+        }
+        settings.tag_types = list.clone();
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    // A recording is read according to this rule, so indexing follows it (the indexer queues the rows of a type whose
+    // rule changed; the rest of the index is untouched).
+    apply_folders(&app);
+    Ok(list)
+}
+
+/// What a typed list of file types is kept as: "heic, .txt" → ["heic", "txt"], without repeats.
+fn type_list(text: &str) -> Vec<String> {
+    let mut list: Vec<String> = text
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(|kind| kind.trim().trim_start_matches('.').to_lowercase())
+        .filter(|kind| !kind.is_empty())
+        .collect();
+    list.dedup();
+    list
 }
 
 /// Settings → Folders: "Index only at set hours".
@@ -2974,6 +3036,13 @@ fn search_event(app: &AppHandle, event: Value) {
         if let Some(index) = event["index"].as_str() {
             let _ = app.asset_protocol_scope().allow_directory(Path::new(index).join("previews"), false);
         }
+        // A fresh process starts from the launch it was given; what Settings says now is sent again, so a restart
+        // (after the idle exit, say) never brings back an older meaning gate or older folders.
+        let shell = app.state::<Arc<Shell>>().inner().clone();
+        let request = folders_request(&shell);
+        tauri::async_runtime::spawn(async move {
+            let _ = shell.search.ask(request).await;
+        });
     }
     let _ = app.emit("helper", json!({"from": "search", "event": event}));
 }
@@ -3305,6 +3374,15 @@ mod tests {
         assert_eq!(records["kinds"], serde_json::json!(["audio"]));
         assert_eq!(records["shallow"], true);
         assert!(rules.iter().all(|rule| rule["root"] != "D:\\None" && rule["root"] != "D:\\All"));
+    }
+
+    #[test]
+    fn recording_tag_types_become_arguments_and_typing_is_forgiven() {
+        let mut settings = Settings::default();
+        settings.tag_types = vec!["mp3".into(), "m4a".into()];
+        assert_eq!(super::tag_arguments(&settings), vec!["--tag-type", "mp3", "--tag-type", "m4a"]);
+        // What is typed becomes the same list both fields keep: dots, case, commas and spaces forgiven.
+        assert_eq!(super::type_list(" .MP3, m4a  ,, "), vec!["mp3", "m4a"]);
     }
 
     #[test]
