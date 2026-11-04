@@ -176,7 +176,8 @@ command, args, timeout_ms 100..7000, max_output_bytes ≤4 MiB, enabled }`.
 1. **0.1.7** — уже запланированное в `docs/per-folder-rules-plan.md` (аудио двумя битами, теги в UI, оценка с
    правилами). MCP не смешивать.
 2. **0.1.8** — надёжность и свежесть: кулдаун overflow, fresh-retry, фолбэк-синк + видимый статус, junk-фильтр,
-   `indexAge`/`asOf` в статусе, строка «index N old». Риск низкий, всё внутри shell/краулера.
+   `indexAge`/`asOf` в статусе, строка «index N old»; плюс **Rescan и Re-read одной папки**
+   (`docs/per-folder-rules-plan.md`, «После 0.1.7»). Риск низкий, всё внутри shell/краулера.
 3. **0.1.9** — MCP read-only (`digup mcp`, 3 инструмента, скоуп, бюджеты, `--print-config`). Отдельный релиз:
    новая поверхность, нужна обкатка на Claude/Cursor.
 4. **Frecency** — после MCP, только с evals до/после и настройкой «забыть историю».
