@@ -2134,20 +2134,26 @@ function momentBar(start, end, duration, playhead) {
   return bar;
 }
 
-/// A recording read by its tags alone: its fields, not a player. Nothing was decoded, so there is no length and no
-/// moment to play from; the tags are what the file says about itself.
+/// A recording read by its tags alone: it plays like any other recording, and the fields read from it are what the
+/// index knows about it. Rows written before 0.1.7 carried only the marker, no fields: the tag line the search matched
+/// stands in until they are read again.
 function audioTagsCard(hit) {
   const card = element("div", "tags-card");
-  const icon = element("div", "tags-icon");
-  icon.innerHTML = ICONS.audio;
-  card.append(icon);
+  const player = document.createElement("audio");
+  player.controls = true;
+  player.preload = "metadata";
+  player.src = fileURL(hit.path);
+  card.append(player);
   const lines = element("div", "tags-lines");
   const fields = [["title", "Title"], ["artist", "Artist"], ["album", "Album"], ["genre", "Genre"],
                   ["date", "Year"], ["track", "Track"]];
   for (const [key, label] of fields) {
     if (hit.info?.[key]) lines.append(element("div", "tag-line", `${label}: ${hit.info[key]}`));
   }
-  if (!lines.childElementCount) lines.append(element("div", "tag-line", "No tags in the file: found by its name."));
+  if (!lines.childElementCount) {
+    const matched = (hit.excerpt || "").replace(/[<>]/g, "").trim();
+    lines.append(element("div", "tag-line", matched || "No tags in the file: found by its name."));
+  }
   card.append(lines, element("div", "tags-note", "Read by its tags"));
   return card;
 }

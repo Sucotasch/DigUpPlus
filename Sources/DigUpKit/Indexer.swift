@@ -175,7 +175,17 @@ public final class Indexer {
                 summary.removed += 1
             }
         }
+        try backfillTagFields()
         return summary
+    }
+
+    /// 0.1.6 wrote a recording's tags into the keywords but kept only `"tags": 1` in its `info`. Once, on the first
+    /// sync after this version, those rows are read again (an ffprobe each) so the window can show the fields; nothing
+    /// else about them changes, and the meta key keeps it from happening again.
+    private func backfillTagFields() throws {
+        guard !options.code, try store.meta("tag_fields") == nil else { return }
+        _ = try store.requeueTagsWithoutFields()
+        try store.setMeta("tag_fields", "1")
     }
 
     // MARK: Run

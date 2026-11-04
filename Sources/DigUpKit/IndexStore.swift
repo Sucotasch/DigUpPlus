@@ -325,6 +325,20 @@ public final class IndexStore {
         }
     }
 
+    /// Recordings read by tags whose rows carry only the old `"tags": 1` marker (0.1.6 kept no fields): they are read
+    /// again once, so the window and the panel can show title, artist and album. Returns how many.
+    @discardableResult
+    public func requeueTagsWithoutFields() throws -> Int {
+        var ids: [Int64] = []
+        try db.query("""
+            SELECT id FROM files WHERE tags_only = 1 AND json_extract(info, '$.tags') = '1'
+                AND json_extract(info, '$.title') IS NULL AND json_extract(info, '$.artist') IS NULL
+                AND json_extract(info, '$.album') IS NULL
+            """) { ids.append($0.int(0)) }
+        for id in ids { try requeue(id) }
+        return ids.count
+    }
+
     /// Same inode, size and date at a new path: a move or rename. Nothing is re-embedded (screenshot tools move
     /// screenshots into project folders all the time). Where the new place gives the file another identity — another
     /// volume has its own device and inode — those and its size and date go with the path, so the next sync knows the

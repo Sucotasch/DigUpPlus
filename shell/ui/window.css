@@ -403,6 +403,7 @@ svg { display: block; }
   color: var(--secondary); background: var(--line); vertical-align: middle;
 }
 .tags-card { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; max-width: 100%; }
+.tags-card audio { width: 320px; max-width: 100%; }
 .tags-card .tags-icon svg { width: 40px; height: 40px; fill: none; stroke: var(--tertiary); stroke-width: 1.4; }
 .tags-card .tags-lines { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .tags-card .tag-line { color: var(--text); }

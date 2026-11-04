@@ -82,6 +82,36 @@ import Testing
     }
     #endif
 
+    /// A row from 0.1.6 kept only `"tags": 1` in its info (no fields): the first sync after upgrading reads it again
+    /// once, so the window can show the fields, and the meta key keeps it from happening twice.
+    @Test func recordingRowsFromBeforeTheFieldsAreReadAgainOnce() throws {
+        #if canImport(AVFoundation)
+        return   // the Mac app's Settings don't offer the tag rule
+        #else
+        guard FFmpeg.ffprobe != nil else { return }
+        let file = folder.appendingPathComponent("Night Drive.wav")
+        try Self.writeTaggedWAV(file)
+        let store = try IndexStore(directory: folder.appendingPathComponent("index"))
+        let indexer = try Indexer(store: store, options: options(["wav"]),
+                                  makeEmbedder: { throw WorkerError.notFound("a tags read needs no model") })
+        #expect(try indexer.sync([folder]).added == 1)
+        let id = try #require(try store.files(under: [folder.path]).first?.id)
+        // What 0.1.6 left: the marker, the tag text, no fields.
+        try store.addSegment(file: id, kind: .chunk, modality: .text, text: "Night Drive — The Testers")
+        try store.finish(id, state: "done", info: ["tags": "1"])
+        try store.setMeta("tag_fields", nil)   // an index from before this version has no such key
+        #expect(try indexer.sync([folder]).unchanged == 1)
+        #expect(try store.file(id)?.state == "pending")
+        // Once: the key is written, so the next sync leaves it alone.
+        #expect(try indexer.sync([folder]).unchanged == 1)
+        #expect(try store.file(id)?.state == "pending")
+        #expect(try indexer.run()["done"] == 1)
+        let info = try store.info(of: id)
+        #expect(info["artist"] == "The Testers")
+        #expect(info["album"] == "Album One")
+        #endif
+    }
+
     @Test func theEstimateCountsNoListeningForARecordingReadByItsTags() {
         let full = Candidate(path: "/music/song.mp3", kind: .audio, size: 1_000_000, mtime: 1, inode: 1, device: 1)
         let tagged = Candidate(path: "/music/song.mp3", kind: .audio, size: 1_000_000, mtime: 1, inode: 1, device: 1,
