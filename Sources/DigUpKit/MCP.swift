@@ -28,9 +28,9 @@ public final class MCPServer {
     static let maxOffset = 10_000
     static let readTokens = 32...1024
 
-    public let index: URL
+    let index: URL
     /// Folders every path must be under (`--root`): none means anything the index holds.
-    public let roots: [String]
+    let roots: [String]
     /// A query vector for a meaning search: nil when there's no model, and the search is by words alone.
     let vectors: (String, Bool) throws -> [Float]?
     /// The model the vectors would come from (`LlamaEmbedder.modelInfo.vectorSource`), to refuse to mix models.
@@ -75,11 +75,9 @@ public final class MCPServer {
         }
     }
 
-    /// The version an agent sees: the build's own, as `digup status` shows it.
-    static var version: String {
-        let info = Bundle.main.infoDictionary
-        return info?["CFBundleShortVersionString"] as? String ?? "0.1.8"
-    }
+    /// The version an agent sees. The helper has no bundle of its own to read it from: keep this in step with
+    /// `shell/src-tauri/tauri.conf.json` (a test in `MCPTests` checks the two match).
+    static let version = "0.1.9"
 
     // MARK: Tools
 
@@ -164,7 +162,7 @@ public final class MCPServer {
             }
             kinds.insert(kind)
         }
-        return try searchPage(query, kinds: kinds, code: code, arguments)
+        return try searchPage(query, kinds: kinds.isEmpty ? nil : kinds, code: code, arguments)
     }
 
     private func searchPage(_ query: String, kinds: Set<FileKind>?, code: Bool, _ arguments: [String: Any]) throws -> [String: Any] {

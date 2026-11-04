@@ -210,6 +210,14 @@ working on code, the index catches up a minute after things go quiet.
 On a Mac, reading code takes about 20 seconds for a small app, and about 20 minutes and 130 MB of index for all of
 llama.cpp.
 
+## Agents
+
+Claude Desktop, Claude Code and Cursor can search your files themselves through an MCP server built into DigUp Plus.
+It is read-only: an agent can search this index and read a window of the text of files already in it, and nothing else —
+no writes, moves or deletes, and no file outside the folders you chose. Settings → Storage → Agents copies the config
+(its command, index, folders and model location) for the agent you use; `docs/agent-access.md` has the tools, limits and
+scope.
+
 ## How it works
 
 ```

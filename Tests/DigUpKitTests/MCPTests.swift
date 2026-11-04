@@ -45,6 +45,16 @@ import Testing
         return (answer, false)
     }
 
+    /// The helper has no bundle to read its version from: this must match the app's `tauri.conf.json`, and a release
+    /// that bumps one must bump both.
+    @Test func theServerVersionIsTheAppsVersion() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let config = URL(fileURLWithPath: root.path).appendingPathComponent("shell/src-tauri/tauri.conf.json")
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: config)) as? [String: Any]
+        #expect(json?["version"] as? String == MCPServer.version)
+    }
+
     @Test func initializeAndToolsWorkWithoutAnIndex() throws {
         let server = MCPServer(index: folder.appendingPathComponent("no-index"))
         let ready = call(server, "initialize", ["protocolVersion": "2024-11-05"])
@@ -110,6 +120,9 @@ import Testing
         let narrow = try tool(server, "search", ["query": "budgetword", "limit": 2, "offset": 0])
         #expect((narrow.answer["results"] as? [[String: Any]])?.count == 2)
         #expect((narrow.answer["next_offset"] as? Int) == 2)
+        // An empty kinds list means no filter, as an agent that has none would send it.
+        let unfiltered = try tool(server, "search", ["query": "budgetword", "kinds": []])
+        #expect((unfiltered.answer["results"] as? [[String: Any]])?.isEmpty == false)
     }
 
     @Test func readSnippetGivesAWindowAndStaysInTheIndex() throws {
