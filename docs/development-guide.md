@@ -331,8 +331,9 @@ FTS5 → страница результатов. Каждый сегмент н
 
 Пороговые значения получены на живом индексе (3 772 изображения, запросы Asian/Anime): 0.648 — начало «не совсем
 того», 0.600 — конец единичных нерелевантных. Если у запроса вся шкала ниже (visible < 30 изображений), окно
-опускает оба порога под собственный топ: `visible = top - 0.05`, `weak = top - 0.05 - 0.048`. Это защита от
-пустого первого экрана; менять константы — только с новым замером.
+опускает оба порога под собственный топ: `visible = top - 0.05`, `weak = visible - (visible профиля - weak профиля)`
+(для Standard это прежние 0.048). Это защита от пустого первого экрана; профили — Settings → Search, константы
+менять только с новым замером.
 
 Запрос слоёв: `by_cosine: true`, `cosine_floor: weak`, `tier_cutoffs: [visible, weak]`. Скрытый хвост:
 `cosine_ceiling: weak`. Файлы, попавшие по словам и не имеющие вектора (`keyword_rank != null`), показываются
@@ -356,10 +357,11 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
 
 Проверено на 2026-11-04:
 
-- `python .build/swift_test.py` — 145 тестов, 144 прошли (единственный сбой — symlink-тест 1314 выше);
-- `cargo test --locked` в `shell/src-tauri` — 62 теста, все прошли;
+- `python .build/swift_test.py` — 148 тестов, 147 прошли (единственный сбой — symlink-тест 1314 выше);
+- `cargo test --locked` в `shell/src-tauri` — 64 теста, все прошли;
 - `node --check` по всем `shell/ui/*.js` — чисто;
-- пер-корневые правила (типы, top-level-only) проверены на живой сборке: `docs/per-folder-rules-plan.md` §1.8;
+- пер-корневые правила (типы, top-level-only), пороги поиска и записи по тегам проверены на живой сборке:
+  `docs/per-folder-rules-plan.md` §1.8, «Фаза 2», «Фаза 3»;
 - версия в `tauri.conf.json` — `0.1.5`;
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
   (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` удалён. Default branch —
