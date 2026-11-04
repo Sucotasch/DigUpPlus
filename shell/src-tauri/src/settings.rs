@@ -75,12 +75,33 @@ pub struct Settings {
     pub index_folder: Option<String>,
 }
 
-/// A folder's rule: the kinds it holds (empty: all), and whether its subfolders are walked.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// A folder's rule: the kinds it holds (empty: all), whether its subfolders are walked, and how its recordings are
+/// read (by tags, by their sound, or both). The bits are optional: a rule saved before they existed (0.1.6) has
+/// neither, and reads them from `kinds` — recordings were included exactly when `audio` was.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RootRule {
     pub kinds: Vec<String>,
     pub shallow: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_tags: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_content: Option<bool>,
+}
+
+impl Default for RootRule {
+    fn default() -> Self {
+        RootRule { kinds: Vec::new(), shallow: false, audio_tags: None, audio_content: None }
+    }
+}
+
+impl RootRule {
+    /// Recordings are in this rule's kinds at all.
+    fn reads_audio(&self) -> bool { self.kinds.iter().any(|kind| kind == "audio") }
+
+    /// The bits as they act, with a 0.1.6 file's rule reading recordings exactly when it included them.
+    pub fn tags_bit(&self) -> bool { self.audio_tags.unwrap_or_else(|| self.reads_audio()) }
+    pub fn content_bit(&self) -> bool { self.audio_content.unwrap_or_else(|| self.reads_audio()) }
 }
 
 /// The window's size inside its frame (logical pixels), where it was (physical; Wayland doesn't tell), whether it
@@ -198,8 +219,10 @@ mod tests {
         let path = folder.join("settings.json");
         let mut settings = Settings::default();
         settings.root_rules.insert("D:\\Photos".into(),
-                                   RootRule { kinds: vec!["image".into(), "screenshot".into()], shallow: false });
-        settings.root_rules.insert("D:\\Records".into(), RootRule { kinds: vec!["audio".into()], shallow: true });
+                                   RootRule { kinds: vec!["image".into(), "screenshot".into()], shallow: false,
+                                              ..RootRule::default() });
+        settings.root_rules.insert("D:\\Records".into(),
+                                   RootRule { kinds: vec!["audio".into()], shallow: true, ..RootRule::default() });
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path).root_rules, settings.root_rules);
         // A file from before rules were a setting keeps working, with no rules.

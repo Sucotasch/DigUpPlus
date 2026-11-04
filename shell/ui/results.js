@@ -125,6 +125,11 @@ function details(hit) {
   } else if (readTo != null) parts.push("partly read so far");
   if (info.lines) parts.push(Number(info.lines) === 1 ? "1 line" : `${Number(info.lines).toLocaleString()} lines`);
   if (info.duration) parts.push(clock(Number(info.duration)));
+  // A recording read by its tags has no length (nothing was decoded): its artist and album say more.
+  if (info.tags === "1") {
+    const tags = [info.artist, info.album].filter(Boolean).join(" — ");
+    if (tags) parts.push(tags);
+  }
   if (hit.size > 0) parts.push(bytes(hit.size));
   return parts.join(" · ");
 }

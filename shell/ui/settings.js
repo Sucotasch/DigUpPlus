@@ -312,16 +312,20 @@ function ruleButton(folder) {
   return button;
 }
 
-// What a folder's rule offers: the engine's kinds, with screenshots counted as pictures (a screenshot is a picture
-// with a rule of its own in the index, and "only pictures" must not drop them).
-const RULE_KINDS = [["image", "Pictures"], ["pdf", "PDFs"], ["doc", "Documents"], ["audio", "Recordings"],
-                    ["video", "Videos"]];
+// What a folder's rule offers: the file kinds, with screenshots counted as pictures (a screenshot is a picture with a
+// kind of its own in the index, and "only pictures" must not drop them). Recordings are not a box here: their two bits
+// decide whether they're in the rule at all (either one puts `audio` in the kinds).
+const RULE_KINDS = [["image", "Pictures"], ["pdf", "PDFs"], ["doc", "Documents"], ["video", "Videos"]];
 
-/// A folder's rule, in place under its row: the kinds it holds (none checked apart: no rule) and whether its
-/// subfolders are read.
+/// A folder's rule, in place under its row: the kinds it holds, how its recordings are read, and whether its
+/// subfolders are.
 function ruleEditor(folder) {
   const saved = Object.entries(info.rootRules || {}).find(([path]) => samePath(path, folder));
   const rule = saved ? saved[1] : { kinds: [], shallow: false };
+  const inKinds = (rule.kinds || []).includes("audio");
+  // A rule saved before the bits existed read recordings exactly when its kinds included them.
+  const tags = rule.audioTags ?? inKinds;
+  const content = rule.audioContent ?? inKinds;
   const box = element("div", "confirm rules");
   box.append(element("p", "", `What “${nameOf(folder)}” holds:`));
   const checks = RULE_KINDS.map(([kind, label]) => {
@@ -335,6 +339,21 @@ function ruleEditor(folder) {
     box.append(choice);
     return input;
   });
+  const audioChoice = (label, checked) => {
+    const choice = element("label", "choice");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = checked;
+    choice.append(input, label);
+    box.append(choice);
+    return input;
+  };
+  const tagsBox = audioChoice("Recordings by their tags", tags);
+  const contentBox = audioChoice("Recordings by their sound", content);
+  const hint = element("p", "note", "No types are set in “Audio types read by tags” above: recordings will be skipped.");
+  hint.hidden = !(tags && !info.tagTypes?.length);
+  box.append(hint);
+  tagsBox.onchange = contentBox.onchange = () => { hint.hidden = !(tagsBox.checked && !info.tagTypes?.length); };
   const shallow = element("label", "choice");
   const depth = document.createElement("input");
   depth.type = "checkbox";
@@ -348,11 +367,17 @@ function ruleEditor(folder) {
   const save = element("button", "", "Save");
   save.onclick = async () => {
     const chosen = checks.filter((input) => input.checked).map((input) => input.dataset.kind);
-    // Every kind checked is no rule at all; Pictures means pictures and screenshots.
-    const everyKind = RULE_KINDS.every(([kind]) => chosen.includes(kind));
-    const kinds = everyKind ? [] : (chosen.includes("image") ? [...chosen, "screenshot"] : chosen);
+    // Pictures means pictures and screenshots; recordings join the kinds when either of their bits is on.
+    let kinds = chosen.includes("image") ? [...chosen, "screenshot"] : chosen;
+    if (tagsBox.checked || contentBox.checked) kinds = [...kinds, "audio"];
+    if (!kinds.length) {
+      hint.hidden = false;
+      hint.textContent = "Choose at least one kind of file to search in this folder.";
+      return;
+    }
     try {
-      await invoke("set_root_rule", { folder, kinds, shallow: !depth.checked });
+      await invoke("set_root_rule", { folder, kinds, shallow: !depth.checked,
+                                      audioTags: tagsBox.checked, audioContent: contentBox.checked });
       ruling = null;
       await refresh();
     } catch (error) {
@@ -364,12 +389,19 @@ function ruleEditor(folder) {
   return box;
 }
 
-/// A folder's rule in words, for its line: "pictures only · top level only".
+/// A folder's rule in words, for its line: "pictures only · recordings by tags · top level only".
 function ruleText(rule) {
-  const names = { image: "pictures", pdf: "PDFs", doc: "documents", audio: "recordings", video: "videos" };
-  const kinds = (rule.kinds || []).filter((kind) => kind !== "screenshot").map((kind) => names[kind] || kind);
+  const names = { image: "pictures", pdf: "PDFs", doc: "documents", video: "videos" };
+  const inKinds = (rule.kinds || []).includes("audio");
+  const tags = rule.audioTags ?? inKinds;
+  const content = rule.audioContent ?? inKinds;
+  const kinds = (rule.kinds || []).filter((kind) => kind !== "screenshot" && kind !== "audio")
+    .map((kind) => names[kind] || kind);
   const parts = [];
   if (kinds.length) parts.push(`${kinds.join(", ")} only`);
+  if (tags && content) parts.push("recordings by tags and sound");
+  else if (tags) parts.push("recordings by tags only");
+  else if (content) parts.push("recordings by sound");
   if (rule.shallow) parts.push("top level only");
   return parts.join(" · ");
 }

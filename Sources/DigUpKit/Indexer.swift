@@ -145,7 +145,10 @@ public final class Indexer {
         try store.db.transaction {
             for file in crawl.candidates {
                 if let row = byPath[file.path] {
-                    if row.size != file.size || abs(row.mtime - file.mtime) > 0.001 || row.kind != file.kind {
+                    // tagsOnly is part of the row's identity: a folder's audio bits or the tag list changed, so this
+                    // recording must be read the other way (sound instead of tags, or back).
+                    if row.size != file.size || abs(row.mtime - file.mtime) > 0.001 || row.kind != file.kind
+                        || row.tagsOnly != file.tagsOnly {
                         try store.requeue(row.id, as: file)
                         summary.changed += 1
                         summary.queued.append(row.id)
@@ -172,28 +175,7 @@ public final class Indexer {
                 summary.removed += 1
             }
         }
-        try applyTagTypes()
         return summary
-    }
-
-    /// Settings → Folders → Recordings: a type whose rule changed is read again — by its tags instead of its sound, or
-    /// the other way around. The rules are kept in the index (`meta` "tag_types") so a sync can tell what changed; the
-    /// rows a rule just stopped covering are removed by the sync itself (the crawl no longer queues them).
-    private func applyTagTypes() throws {
-        guard !options.code else { return }
-        let now = Self.tagTypesText(options.tagTypes)
-        let before = try store.meta("tag_types") ?? Self.tagTypesText([])
-        guard now != before else { return }
-        let old = (try? JSONDecoder().decode(Set<String>.self, from: Data(before.utf8))) ?? []
-        let changed = old.symmetricDifference(options.tagTypes)
-        if !changed.isEmpty { try store.requeueRecordings(of: changed) }
-        try store.setMeta("tag_types", now)
-    }
-
-    /// The tag rules as the index keeps them: sorted, so the same settings always compare equal.
-    static func tagTypesText(_ types: Set<String>) -> String {
-        let sorted = types.sorted()
-        return (try? JSONEncoder().encode(sorted)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
     }
 
     // MARK: Run
@@ -428,8 +410,8 @@ public final class Indexer {
         /// `chunks`: the ones in `read` (from 0) of the document's `total` (counted up to `IndexOptions.maxChunks` + 1).
         case doc(chunks: [String], read: Range<Int>, total: Int, characters: Int)
         case audio(pieces: [MediaPiece], duration: Double)
-        /// A recording read by its tags alone: what the file says about itself, for the keywords.
-        case audioTags(String)
+        /// A recording read by its tags alone: what the file says about itself, for the keywords and the rows.
+        case audioTags([String: String])
         case video(frames: [MediaPiece], sound: [MediaPiece], duration: Double)
         case code(CodeExtractor.File)
     }
@@ -543,10 +525,11 @@ public final class Indexer {
                 prepared.payload = .doc(chunks: Array(chunks[read]), read: read, total: chunks.count,
                                         characters: text.count)
             case .audio:
-                // Settings → Folders → Recordings: a type read by its tags alone costs an ffprobe, not a decode and an
-                // embedding per window.
-                if options.tagTypes.contains(url.pathExtension.lowercased()) {
-                    prepared.payload = .audioTags(MediaInfo.tags(of: url).joined(separator: " — "))
+                // The folder's rule: a recording read by its tags alone costs an ffprobe, not a decode and an
+                // embedding per window. The flag travels with the row (Candidate.tagsOnly), so a restart reads it the
+                // same way.
+                if batch[0].tagsOnly {
+                    prepared.payload = .audioTags(MediaInfo.tags(of: url))
                     break
                 }
                 let (window, hop) = (options.audioWindow, options.audioHop)
@@ -628,9 +611,9 @@ public final class Indexer {
             case .audio(let pieces, let duration):
                 guard current[0] else { break }
                 results[0] = try audio(batch[0], pieces: pieces, duration: duration)
-            case .audioTags(let text):
+            case .audioTags(let tags):
                 guard current[0] else { break }
-                results[0] = try audioTags(batch[0], text: text)
+                results[0] = try audioTags(batch[0], tags: tags)
             case .video(let frames, let sound, let duration):
                 guard current[0] else { break }
                 results[0] = try video(batch[0], frames: frames, sound: sound, duration: duration)
@@ -821,14 +804,23 @@ public final class Indexer {
                 + (worded.count < code.pieces.count ? ", \(code.pieces.count - worded.count) for keywords only" : ""))
     }
 
+    /// The tag fields the index keeps, in the order a line of them is written: `title — artist — album — …`.
+    static let tagKeys = ["title", "artist", "album", "album_artist", "genre", "date", "track", "composer"]
+
     /// A recording read by its tags alone: what the file says about itself goes to the keywords (`store.addSegment`
-    /// leaves it without a vector, so it's found by words and not by meaning), and nothing is decoded or embedded.
-    private func audioTags(_ file: FileRecord, text: String) throws -> (String, String?) {
+    /// leaves it without a vector, so it's found by words and not by meaning), the same fields go to the row's `info`
+    /// (the window and the panel show them), and nothing is decoded or embedded.
+    private func audioTags(_ file: FileRecord, tags: [String: String]) throws -> (String, String?) {
+        let text = Self.tagKeys.compactMap { tags[$0] }.joined(separator: " — ")
+        var info = ["tags": "1"]
+        for key in Self.tagKeys {
+            if let value = tags[key] { info[key] = value }
+        }
         try store.db.transaction {
             if !text.isEmpty {
                 try store.addSegment(file: file.id, kind: .chunk, modality: .text, text: text)
             }
-            try store.finish(file.id, state: "done", info: ["tags": "1"])
+            try store.finish(file.id, state: "done", info: info)
         }
         return ("done", text.isEmpty ? "tags only, none found" : "tags only: \(text.prefix(60))")
     }

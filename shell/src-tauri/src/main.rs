@@ -102,6 +102,8 @@ struct Shell {
     preview_width: Mutex<Option<f64>>,
     /// A search the panel hands the window (its query, and the kind of results to show): taken when the window opens.
     window_search: Mutex<Option<(String, Option<String>)>>,
+    /// Folders picked for the setup window before it exists (Add Folders… opens the picker first): taken by setup_info.
+    pending_folders: Mutex<Vec<String>>,
     /// Debug runs with setup: the panel's query waits until the first index is in.
     debug_query_sent: AtomicBool,
     /// Quit was chosen: no helper starts again (an index event arriving meanwhile would start the search service).
@@ -349,14 +351,23 @@ fn folder_arguments(settings: &Settings, code_folders: &[String]) -> Vec<String>
 /// The kinds the engine indexes (its `FileKind`), for the folder rules.
 const KINDS: [&str; 7] = ["screenshot", "image", "pdf", "doc", "audio", "video", "code"];
 
-/// A rule as the engine takes it: the kinds it knows, in its order, or none at all when nothing is left of it.
-fn clean_rule(kinds: Vec<String>, shallow: bool) -> Option<settings::RootRule> {
-    let kinds: Vec<String> = KINDS.iter().filter(|kind| kinds.iter().any(|sent| sent == *kind))
-        .map(|kind| kind.to_string()).collect();
+/// A rule as the engine takes it: the kinds it knows, in its order, or none at all when nothing is left of it. Audio is
+/// included when either of its bits is on, and left out when neither is — the editor has no "Audio" box of its own.
+fn clean_rule(kinds: Vec<String>, shallow: bool, audio_tags: bool, audio_content: bool)
+    -> Option<settings::RootRule> {
+    let kinds: Vec<String> = KINDS.iter().filter(|kind| {
+        if **kind == "audio" { audio_tags || audio_content } else { kinds.iter().any(|sent| sent == *kind) }
+    }).map(|kind| kind.to_string()).collect();
+    // Everything the main index holds, all the way down: no rule at all (the code index has kinds of its own and
+    // never gets a folder rule).
+    if !shallow && !kinds.iter().any(|kind| kind == "code") && kinds.len() == KINDS.len() - 1 {
+        return None;
+    }
     if kinds.is_empty() && !shallow {
         None
     } else {
-        Some(settings::RootRule { kinds, shallow })
+        Some(settings::RootRule { kinds, shallow, audio_tags: Some(audio_tags),
+                                  audio_content: Some(audio_content) })
     }
 }
 
@@ -367,7 +378,8 @@ fn rules_for(folders: &[String], sent: BTreeMap<String, settings::RootRule>) -> 
     for (path, rule) in sent {
         let Some(chosen) = folders.iter().find(|folder| models::same_path(Path::new(folder), Path::new(&path)))
         else { continue };
-        if let Some(rule) = clean_rule(rule.kinds, rule.shallow) {
+        let (tags, content) = (rule.tags_bit(), rule.content_bit());
+        if let Some(rule) = clean_rule(rule.kinds, rule.shallow, tags, content) {
             out.insert(chosen.clone(), rule);
         }
     }
@@ -377,13 +389,19 @@ fn rules_for(folders: &[String], sent: BTreeMap<String, settings::RootRule>) -> 
 /// The folders' own rules (`--root-rule`), for indexing and estimating only: a rule says what a crawl reads, and the
 /// search service never crawls (a bad rule must not take search down with it). An empty rule is no rule.
 fn rule_arguments(settings: &Settings) -> Vec<String> {
+    rules_to_arguments(&settings.root_rules)
+}
+
+/// The same for a set of rules: each one flag and one JSON object; nothing empty or unknown.
+fn rules_to_arguments(rules: &BTreeMap<String, settings::RootRule>) -> Vec<String> {
     let mut args = Vec::new();
-    for (root, rule) in &settings.root_rules {
+    for (root, rule) in rules {
         let kinds: Vec<&str> = rule.kinds.iter().map(String::as_str).filter(|kind| KINDS.contains(kind)).collect();
         if kinds.is_empty() && !rule.shallow {
             continue;
         }
-        let mut rule = json!({ "root": root, "shallow": rule.shallow });
+        let mut rule = json!({ "root": root, "shallow": rule.shallow,
+                               "audioTags": rule.tags_bit(), "audioContent": rule.content_bit() });
         if !kinds.is_empty() {
             rule["kinds"] = json!(kinds);
         }
@@ -509,9 +527,11 @@ fn operation_confirmations(shell: State<'_, Arc<Shell>>) -> Value {
 }
 
 /// What indexing these folders would take, one answer per folder (`digup estimate --json`): files by kind, the first
-/// pass's seconds, the rest of long files, subfolders. For setup.
+/// pass's seconds, the rest of long files, subfolders. For setup, which sends the rules it hasn't saved yet (`rules`),
+/// so an excluded kind or a recording read by its tags shows its real cost before indexing starts.
 #[tauri::command]
-async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>, code: Option<bool>) -> Result<Vec<Value>, String> {
+async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>, code: Option<bool>,
+                  rules: Option<BTreeMap<String, settings::RootRule>>) -> Result<Vec<Value>, String> {
     let helper = shell.options.helper.clone();
     let settings = shell.settings.lock().unwrap().clone();
     // Code folders: what the code index would read in them (its time and size, repository by repository).
@@ -531,6 +551,9 @@ async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>, code: Opti
             filters.push("--include-datasets".to_string());
         }
         filters.extend(rule_arguments(&settings));
+        // The rules of the folders being estimated, as the setup window has them now: sent after the saved ones, so
+        // they win for the same folder (the engine keeps the last rule for a root).
+        filters.extend(rules_to_arguments(&rules_for(&folders, rules.unwrap_or_default())));
         filters.extend(tag_arguments(&settings));
     }
     // The index's costs.json: what indexing costs on this computer, once it has indexed enough.
@@ -578,6 +601,10 @@ fn setup_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "skipped": shell.settings.lock().unwrap().skipped.clone(),
         // The rules the folders already have, so reopening this window shows them and saving keeps them.
         "rootRules": shell.settings.lock().unwrap().root_rules.clone(),
+        // The types a folder rule can read by tags (the "by tags" hint when the list is empty).
+        "tagTypes": shell.settings.lock().unwrap().tag_types.clone(),
+        // Folders picked before this window existed (Add Folders… opens the picker first), taken once.
+        "pending": shell.pending_folders.lock().unwrap().drain(..).collect::<Vec<_>>(),
         // A first launch asks about code search too when there's code (a step after the folders).
         "codeOffered": if shell.is_set_up() { Vec::new() } else { offered_code(&app, &shell) },
         "setUp": shell.is_set_up(),
@@ -840,11 +867,26 @@ fn open_settings(app: AppHandle) {
     });
 }
 
+/// Settings → Add Folders…: the system picker comes first (one click, not "open a window and click again there"), and
+/// the folders are shown in the setup window as chosen — with their rules and estimate — before indexing starts.
 #[tauri::command]
-fn choose_folders(app: AppHandle) {
+async fn choose_folders(app: AppHandle, window: tauri::WebviewWindow, shell: State<'_, Arc<Shell>>)
+    -> Result<(), String> {
+    let picked = pick_folders(window, app.clone()).await;
+    if picked.is_empty() {
+        return Ok(());
+    }
+    if app.get_webview_window("setup").is_some() {
+        // Already open: its page adds them as they come.
+        let _ = app.emit_to("setup", "pending-folders", picked);
+    } else {
+        // A new window reads them as it starts (setup_info takes them once).
+        *shell.pending_folders.lock().unwrap() = picked;
+    }
     later(&app, |app| {
         let _ = show_setup(app);
     });
+    Ok(())
 }
 
 #[tauri::command]
@@ -1076,6 +1118,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         window_inner: Mutex::new(None),
         preview_width: Mutex::new(None),
         window_search: Mutex::new(None),
+        pending_folders: Mutex::new(Vec::new()),
         debug_query_sent: AtomicBool::new(false),
         quitting: AtomicBool::new(false),
         measuring: AtomicBool::new(false),
@@ -2662,11 +2705,12 @@ fn set_skipped(app: AppHandle, shell: State<'_, Arc<Shell>>, skipped: Vec<String
     Ok(())
 }
 
-/// Settings → Folders → Rules: what a searched folder holds (the kinds; none sent: every kind) and whether its
-/// subfolders are walked. An empty rule is no rule at all: the folder is searched as it always was.
+/// Settings → Folders → Rules: what a searched folder holds (the kinds; none sent: every kind), whether its subfolders
+/// are walked, and how its recordings are read (by tags, by their sound, or both). An empty rule is no rule at all: the
+/// folder is searched as it always was.
 #[tauri::command]
-fn set_root_rule(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, kinds: Vec<String>, shallow: bool)
-    -> Result<(), String> {
+fn set_root_rule(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, kinds: Vec<String>, shallow: bool,
+                 audio_tags: bool, audio_content: bool) -> Result<(), String> {
     {
         let mut settings = shell.settings.lock().unwrap();
         let Some(chosen) = settings.folders.iter()
@@ -2674,7 +2718,7 @@ fn set_root_rule(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, k
             return Err("That folder isn't searched any more.".into());
         };
         // The engine's order, without repeats, and nothing it doesn't know.
-        match clean_rule(kinds, shallow) {
+        match clean_rule(kinds, shallow, audio_tags, audio_content) {
             Some(rule) => settings.root_rules.insert(chosen, rule),
             None => settings.root_rules.remove(&chosen),
         };
@@ -3383,10 +3427,14 @@ mod tests {
     fn folder_rules_become_root_rule_arguments_and_empty_ones_are_dropped() {
         let mut settings = Settings::default();
         settings.root_rules.insert("D:\\Photos".into(),
-                                   RootRule { kinds: vec!["image".into(), "screenshot".into()], shallow: false });
-        settings.root_rules.insert("D:\\Records".into(), RootRule { kinds: vec!["audio".into()], shallow: true });
-        settings.root_rules.insert("D:\\None".into(), RootRule { kinds: vec!["hologram".into()], shallow: false });
-        settings.root_rules.insert("D:\\All".into(), RootRule { kinds: Vec::new(), shallow: false });
+                                   RootRule { kinds: vec!["image".into(), "screenshot".into()], shallow: false,
+                                              ..RootRule::default() });
+        settings.root_rules.insert("D:\\Records".into(),
+                                   RootRule { kinds: vec!["audio".into()], shallow: true, ..RootRule::default() });
+        settings.root_rules.insert("D:\\None".into(),
+                                   RootRule { kinds: vec!["hologram".into()], shallow: false, ..RootRule::default() });
+        settings.root_rules.insert("D:\\All".into(),
+                                   RootRule { kinds: Vec::new(), shallow: false, ..RootRule::default() });
         let args = super::rule_arguments(&settings);
         // Each rule is one flag and one JSON object; nothing empty or unknown is sent.
         assert_eq!(args.len(), 4);
@@ -3397,9 +3445,14 @@ mod tests {
         let photos = rules.iter().find(|rule| rule["root"] == "D:\\Photos").unwrap();
         assert_eq!(photos["kinds"], serde_json::json!(["image", "screenshot"]));
         assert_eq!(photos["shallow"], false);
+        // A rule from before the audio bits: no recordings in its kinds, so it reads none.
+        assert_eq!(photos["audioTags"], false);
+        assert_eq!(photos["audioContent"], false);
         let records = rules.iter().find(|rule| rule["root"] == "D:\\Records").unwrap();
         assert_eq!(records["kinds"], serde_json::json!(["audio"]));
         assert_eq!(records["shallow"], true);
+        assert_eq!(records["audioTags"], true);
+        assert_eq!(records["audioContent"], true);
         assert!(rules.iter().all(|rule| rule["root"] != "D:\\None" && rule["root"] != "D:\\All"));
     }
 
@@ -3417,17 +3470,38 @@ mod tests {
         let folders = vec!["C:\\Photos".to_string(), "D:/Music".to_string()];
         let mut sent = std::collections::BTreeMap::new();
         // Typed with another spelling and case: the rule lands on the folder as it is stored.
-        sent.insert("c:/photos".to_string(), RootRule { kinds: vec!["image".into(), "hologram".into()], shallow: false });
+        sent.insert("c:/photos".to_string(), RootRule { kinds: vec!["image".into(), "hologram".into()], shallow: false,
+                                                       audio_tags: Some(false), audio_content: Some(false) });
         // Everything, and nothing below it: only the shallow part is a rule.
-        sent.insert("D:/Music".to_string(), RootRule { kinds: Vec::new(), shallow: true });
+        sent.insert("D:/Music".to_string(), RootRule { kinds: Vec::new(), shallow: true,
+                                                       audio_tags: Some(false), audio_content: Some(false) });
         // A folder that isn't being added, and a rule that says everything: both dropped.
-        sent.insert("E:/Elsewhere".to_string(), RootRule { kinds: vec!["video".into()], shallow: true });
-        sent.insert("D:/Music/Sub".to_string(), RootRule { kinds: Vec::new(), shallow: false });
+        sent.insert("E:/Elsewhere".to_string(), RootRule { kinds: vec!["video".into()], shallow: true,
+                                                           audio_tags: Some(true), audio_content: Some(true) });
+        sent.insert("D:/Music/Sub".to_string(), RootRule { kinds: Vec::new(), shallow: false,
+                                                           audio_tags: Some(false), audio_content: Some(false) });
         let rules = super::rules_for(&folders, sent);
         assert_eq!(rules.len(), 2);
         assert_eq!(rules["C:\\Photos"].kinds, vec!["image"]);
         assert!(!rules["C:\\Photos"].shallow);
-        assert_eq!(rules["D:/Music"], RootRule { kinds: Vec::new(), shallow: true });
+        assert_eq!(rules["D:/Music"].kinds, Vec::<String>::new());
+        assert!(rules["D:/Music"].shallow);
+    }
+
+    #[test]
+    fn the_audio_bits_put_audio_into_the_folder_kinds() {
+        // Both bits: recordings are in the kinds, whatever the page sent for them.
+        let rule = super::clean_rule(vec!["image".into()], false, true, true).unwrap();
+        assert_eq!(rule.kinds, vec!["image", "audio"]);
+        assert_eq!(rule.audio_tags, Some(true));
+        assert_eq!(rule.audio_content, Some(true));
+        // Neither: recordings leave the kinds, and nothing else is left but the depth rule.
+        let off = super::clean_rule(vec!["audio".into()], true, false, false).unwrap();
+        assert_eq!(off.kinds, Vec::<String>::new());
+        assert!(off.shallow);
+        // Everything, all the way down: no rule at all, so the crawl is the ordinary one.
+        let all = vec!["screenshot".into(), "image".into(), "pdf".into(), "doc".into(), "video".into()];
+        assert!(super::clean_rule(all, false, true, true).is_none());
     }
 
     #[test]

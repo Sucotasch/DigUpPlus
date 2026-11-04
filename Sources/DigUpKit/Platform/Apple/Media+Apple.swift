@@ -135,6 +135,6 @@ extension MediaInfo {
 
     /// Recordings read by their tags alone are a Windows/Linux setting (`MediaInfo.tags` there): the Mac app's Settings
     /// don't offer it, so nothing asks for tags here. Titles still come from the file name in the keywords.
-    static func tags(of url: URL) -> [String] { [] }
+    static func tags(of url: URL) -> [String: String] { [:] }
 }
 #endif

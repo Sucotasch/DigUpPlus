@@ -68,21 +68,23 @@ extension MediaInfo {
         return (text.contains("audio"), text.contains("video"))
     }
 
-    /// What a recording says about itself (Settings → Folders → Recordings, read by tags alone): title, artist, album,
-    /// genre, year and track from the container, as one line for the keywords. No sound is decoded. Empty: no tags.
-    static func tags(of url: URL) -> [String] {
+    /// What a recording says about itself (`RootRule.audioTags`: read by tags alone): title, artist, album, genre, year,
+    /// track and composer from the container, keyed as ffprobe names them. No sound is decoded. Empty: no tags.
+    static func tags(of url: URL) -> [String: String] {
         guard let text = try? FFmpeg.output(FFmpeg.ffprobe, ["-v", "error", "-show_entries", "format_tags", "-of", "json",
                                                              url.path]),
               let data = text.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tags = (root["format"] as? [String: Any])?["tags"] as? [String: Any]
-        else { return [] }
+        else { return [:] }
         // ffprobe's keys are lowercased; a few containers use their own spelling.
-        let keys = ["title", "artist", "album_artist", "album", "genre", "date", "track", "composer"]
-        var seen = Set<String>()
-        return keys.compactMap { key in
-            (tags[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        }.filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+        let keys = ["title", "artist", "album", "album_artist", "genre", "date", "track", "composer"]
+        var found: [String: String] = [:]
+        for key in keys {
+            let value = (tags[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let value, !value.isEmpty { found[key] = value }
+        }
+        return found
     }
 }
 

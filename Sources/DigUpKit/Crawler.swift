@@ -8,6 +8,21 @@ public struct Candidate: Sendable {
     public let mtime: Double
     public let inode: UInt64
     public let device: UInt64
+    /// A recording its folder reads by tags alone (`RootRule.audioTags` and the type is in `IndexOptions.tagTypes`).
+    /// Kept in the index (`files.tags_only`), so `Indexer.prepare` reads it the same way after a restart, and so a rule
+    /// change re-reads exactly the recordings whose way of being read changed.
+    public let tagsOnly: Bool
+
+    public init(path: String, kind: FileKind, size: Int64, mtime: Double, inode: UInt64, device: UInt64,
+                tagsOnly: Bool = false) {
+        self.path = path
+        self.kind = kind
+        self.size = size
+        self.mtime = mtime
+        self.inode = inode
+        self.device = device
+        self.tagsOnly = tagsOnly
+    }
 }
 
 public struct CrawlReport: Sendable {
@@ -192,6 +207,24 @@ public enum Crawler {
                         leftOut("of a kind this folder doesn't index", under: owned)
                         return
                     }
+                    // A recording's folder says how it's read: by tags (its type is in the tag list), by its sound,
+                    // both (tags for the listed types, sound for the rest), or neither. Checked before the stat.
+                    var tagsOnly = false
+                    if !options.code, kind == .audio {
+                        let rule = rules[owned]
+                        let byTags = rule?.readsAudioByTags ?? true
+                        let byContent = rule?.readsAudioByContent ?? true
+                        if !byTags && !byContent {
+                            leftOut("audio isn't read here", under: owned)
+                            return
+                        }
+                        if byTags && options.tagTypes.contains(url.pathExtension.lowercased()) {
+                            tagsOnly = true
+                        } else if !byContent {
+                            leftOut("audio not in the tag list here", under: owned)
+                            return
+                        }
+                    }
                     guard let info = FileSystem.info(of: url.path), info.isRegular else {
                         leftOut("link or special file", under: owned)
                         return
@@ -217,7 +250,7 @@ public enum Crawler {
                     guard foundRoot[url.path] == nil else { return }
                     foundRoot[url.path] = owned
                     found.append(Candidate(path: url.path, kind: kind, size: info.size, mtime: info.mtime,
-                                           inode: info.inode, device: info.device))
+                                           inode: info.inode, device: info.device, tagsOnly: tagsOnly))
                 }
             }
 

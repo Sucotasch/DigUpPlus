@@ -716,6 +716,7 @@ function tableRow(hit) {
   icon.innerHTML = ICONS[hit.kind] || ICONS.doc;
   const text = element("span", "name", "‎" + nameOf(hit.path));
   text.title = nameOf(hit.path);
+  if (hit.info?.tags === "1") text.append(element("span", "tags-badge", "by tags"));
   name.append(icon, text);
   const place = placeOf(hit);
   if (place) name.append(element("span", "place", place));
@@ -782,6 +783,11 @@ function propertiesOf(hit) {
   else if (info.read_to != null) parts.push("partly read");
   if (info.lines) parts.push(Number(info.lines) === 1 ? "1 line" : `${Number(info.lines).toLocaleString()} lines`);
   if (info.duration) parts.push(clock(Number(info.duration)));
+  // A recording read by its tags has no length (nothing was decoded): its artist and album say more.
+  if (info.tags === "1") {
+    const tags = [info.artist, info.album].filter(Boolean).join(" — ");
+    if (tags) parts.push(tags);
+  }
   return parts.join(" · ");
 }
 
@@ -814,7 +820,9 @@ function cell(hit) {
   }
   const place = placeOf(hit);
   if (place) picture.append(element("span", "place on-image", place));
-  item.append(picture, element("div", "name", "‎" + nameOf(hit.path)), folderLine(folderOf(hit)));
+  const name = element("div", "name", "‎" + nameOf(hit.path));
+  if (hit.info?.tags === "1") name.append(element("span", "tags-badge", "by tags"));
+  item.append(picture, name, folderLine(folderOf(hit)));
   wire(item, hit);
   return item;
 }
@@ -1957,6 +1965,11 @@ function selectionSummary(hits) {
 function previewPicture(hit) {
   const box = element("div", "preview-picture");
   if (hit.kind === "audio") {
+    // Read by its tags: nothing was listened to, so there is no moment to play from — the tags are the preview.
+    if (hit.info?.tags === "1") {
+      box.append(audioTagsCard(hit));
+      return box;
+    }
     box.append(audioMoment(hit));
     box.style.height = "150px";
     box.style.flex = "none";
@@ -2119,6 +2132,24 @@ function momentBar(start, end, duration, playhead) {
   }
   bar.title = `At ${clock(start)} of ${clock(duration)}`;
   return bar;
+}
+
+/// A recording read by its tags alone: its fields, not a player. Nothing was decoded, so there is no length and no
+/// moment to play from; the tags are what the file says about itself.
+function audioTagsCard(hit) {
+  const card = element("div", "tags-card");
+  const icon = element("div", "tags-icon");
+  icon.innerHTML = ICONS.audio;
+  card.append(icon);
+  const lines = element("div", "tags-lines");
+  const fields = [["title", "Title"], ["artist", "Artist"], ["album", "Album"], ["genre", "Genre"],
+                  ["date", "Year"], ["track", "Track"]];
+  for (const [key, label] of fields) {
+    if (hit.info?.[key]) lines.append(element("div", "tag-line", `${label}: ${hit.info[key]}`));
+  }
+  if (!lines.childElementCount) lines.append(element("div", "tag-line", "No tags in the file: found by its name."));
+  card.append(lines, element("div", "tags-note", "Read by its tags"));
+  return card;
 }
 
 /// An audio result: the stretch that matched on the file's timeline, and ▶ to hear it from there.

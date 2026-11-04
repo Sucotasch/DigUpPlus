@@ -91,17 +91,30 @@ public struct IndexOptions: Sendable {
     }
 }
 
-/// What a chosen folder holds: the kinds to index (nil: every kind), and whether its subfolders are walked. The
-/// crawler applies it to the nearest chosen folder of each path, so a folder chosen inside another keeps its own rule.
+/// What a chosen folder holds: the kinds to index (nil: every kind), whether its subfolders are walked, and how its
+/// recordings are read. The crawler applies it to the nearest chosen folder of each path, so a folder chosen inside
+/// another keeps its own rule.
 public struct RootRule: Codable, Sendable, Equatable {
     public var root: String
     public var kinds: Set<FileKind>?
     public var shallow: Bool
+    /// Recordings whose type is in `IndexOptions.tagTypes` are read by their tags. nil (a rule saved before this was a
+    /// setting) means yes, which is what 0.1.6 did for every folder.
+    public var audioTags: Bool?
+    /// The rest of the recordings are read by their sound. nil means yes, as above.
+    public var audioContent: Bool?
 
-    public init(root: String, kinds: Set<FileKind>? = nil, shallow: Bool = false) {
+    /// The two bits, with the "not stored yet" default of yes.
+    public var readsAudioByTags: Bool { audioTags ?? true }
+    public var readsAudioByContent: Bool { audioContent ?? true }
+
+    public init(root: String, kinds: Set<FileKind>? = nil, shallow: Bool = false, audioTags: Bool? = nil,
+                audioContent: Bool? = nil) {
         self.root = root
         self.kinds = kinds
         self.shallow = shallow
+        self.audioTags = audioTags
+        self.audioContent = audioContent
     }
 }
 

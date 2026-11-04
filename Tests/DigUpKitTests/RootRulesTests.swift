@@ -22,9 +22,10 @@ import Testing
         return url
     }
 
-    func options(_ rules: [RootRule]) -> IndexOptions {
+    func options(_ rules: [RootRule], tagTypes: Set<String> = []) -> IndexOptions {
         var options = IndexOptions()
         options.rootRules = rules
+        options.tagTypes = tagTypes
         options.includeDatasets = true   // a dataset-shaped folder isn't the subject here
         return options
     }
@@ -33,8 +34,49 @@ import Testing
         report.candidates.map { String($0.path.dropFirst(folder.path.count + 1)) }.sorted()
     }
 
-    @Test func aFolderWithKindsIndexesOnlyThem() throws {
-        try write("photo.jpg")
+    // MARK: How a folder's recordings are read (`audioTags`/`audioContent`)
+
+    /// tags only: listed types by tags, everything else skipped (the music-library case).
+    @Test func audioByTagsAloneSkipsTheRestOfTheRecordings() throws {
+        try write("song.wav")
+        try write("podcast.mp3")
+        let rule = RootRule(root: folder.path, kinds: [.audio], audioTags: true, audioContent: false)
+        let report = Crawler.crawl([folder], options: options([rule], tagTypes: ["wav"]))
+        #expect(names(report) == ["song.wav"])
+        #expect(report.candidates.first?.tagsOnly == true)
+        #expect(report.leftOut[folder.path]?["audio not in the tag list here"] == 1)
+    }
+
+    /// content only: the tag list is ignored, every recording is read by its sound.
+    @Test func audioByContentIgnoresTheTagList() throws {
+        try write("song.wav")
+        let rule = RootRule(root: folder.path, kinds: [.audio], audioTags: false, audioContent: true)
+        let report = Crawler.crawl([folder], options: options([rule], tagTypes: ["wav"]))
+        #expect(names(report) == ["song.wav"])
+        #expect(report.candidates.first?.tagsOnly == false)
+    }
+
+    /// Neither bit: no recordings at all, with a reason of its own.
+    @Test func audioCanBeLeftOutEntirely() throws {
+        try write("song.wav")
+        let rule = RootRule(root: folder.path, kinds: [.audio], audioTags: false, audioContent: false)
+        let report = Crawler.crawl([folder], options: options([rule], tagTypes: ["wav"]))
+        #expect(report.candidates.isEmpty)
+        #expect(report.leftOut[folder.path]?["audio isn't read here"] == 1)
+    }
+
+    /// A rule saved before the bits existed (nil) reads listed types by tags and the rest by sound, as 0.1.6 did.
+    @Test func aRuleWithoutTheAudioBitsKeepsTheOldBehaviour() throws {
+        try write("song.wav")
+        try write("podcast.mp3")
+        let rule = RootRule(root: folder.path, kinds: [.audio])
+        let report = Crawler.crawl([folder], options: options([rule], tagTypes: ["wav"]))
+        #expect(names(report) == ["podcast.mp3", "song.wav"])
+        #expect(report.candidates.first { $0.path.hasSuffix("song.wav") }?.tagsOnly == true)
+        #expect(report.candidates.first { $0.path.hasSuffix("podcast.mp3") }?.tagsOnly == false)
+    }
+
+    @Test func aFolderWithKindsIndexesOnlyThem() throws {        try write("photo.jpg")
         try write("clip.mp4")
         try write("notes.txt", "notes")
         let report = Crawler.crawl([folder], options: options([RootRule(root: folder.path, kinds: [.image, .screenshot])]))

@@ -110,7 +110,8 @@ async function estimate(paths) {
   estimating += 1;
   renderFolders();
   try {
-    const answers = await invoke("estimate", { folders: paths.map(native), code: codeMode });
+    const answers = await invoke("estimate", { folders: paths.map(native), code: codeMode,
+                                               rules: codeMode ? {} : rulesObject() });
     for (const answer of answers) {
       estimates.set(key(answer.folder), answer);
       if (answer.readable !== false) calibrated = answer.calibrated !== false;
@@ -179,46 +180,61 @@ function renderFolders() {
 // MARK: What a folder holds (Rules… on a row)
 
 // The settings' root rules, chosen here so the first pass already leaves out what the person doesn't want: the kinds a
-// folder holds (Pictures is pictures and screenshots), and "top level only". Kept per canonical folder, sent on Save.
-const RULE_KINDS = [["image", "Pictures"], ["pdf", "PDFs"], ["doc", "Documents"], ["audio", "Recordings"],
-                    ["video", "Videos"]];
-const folderRules = new Map();   // canonical folder → { kinds: [...], shallow: bool }
+// folder holds (Pictures is pictures and screenshots), how its recordings are read, and "scan subfolders". Kept per
+// canonical folder, sent on Save. Recordings are not a kind box: their two bits decide whether `audio` is in the kinds.
+const RULE_KINDS = [["image", "Pictures"], ["pdf", "PDFs"], ["doc", "Documents"], ["video", "Videos"]];
+const folderRules = new Map();   // canonical folder → { kinds: [...], shallow: bool, audioTags, audioContent }
 let ruling = null;               // the folder whose rule is being edited, or null
 
 function ruleOf(folder) { return folderRules.get(key(folder)) || null; }
 
-/// A folder's rule in words, for its line: "pictures only · top level only".
+/// The two audio bits of a rule, with a rule from before they existed reading recordings exactly when it included
+/// them.
+function audioBits(rule) {
+  const inKinds = (rule.kinds || []).includes("audio");
+  return { tags: rule.audioTags ?? inKinds, content: rule.audioContent ?? inKinds };
+}
+
+/// A folder's rule in words, for its line: "pictures only · recordings by tags · top level only".
 function ruleText(rule) {
-  const names = { image: "pictures", pdf: "PDFs", doc: "documents", audio: "recordings", video: "videos" };
-  const kinds = (rule.kinds || []).filter((kind) => kind !== "screenshot").map((kind) => names[kind] || kind);
+  const names = { image: "pictures", pdf: "PDFs", doc: "documents", video: "videos" };
+  const { tags, content } = audioBits(rule);
+  const kinds = (rule.kinds || []).filter((kind) => kind !== "screenshot" && kind !== "audio")
+    .map((kind) => names[kind] || kind);
   const parts = [];
   if (kinds.length) parts.push(`${kinds.join(", ")} only`);
+  if (tags && content) parts.push("recordings by tags and sound");
+  else if (tags) parts.push("recordings by tags only");
+  else if (content) parts.push("recordings by sound");
   if (rule.shallow) parts.push("top level only");
   return parts.join(" · ");
 }
 
-/// What goes with the folders on Save: the rules of the chosen ones, unchanged in form from the settings'.
+/// What goes with the folders on Save: the rules of the chosen ones, unchanged in form from the settings'. A rule that
+/// keeps every kind, both audio bits and every subfolder is no rule at all.
 function rulesObject() {
   const out = {};
   for (const folder of selection.folders()) {
     const rule = ruleOf(folder);
     if (!rule) continue;
-    const everyKind = !rule.kinds.length || RULE_KINDS.every(([kind]) => rule.kinds.includes(kind));
-    if (everyKind && !rule.shallow) continue;   // everything, all the way down: no rule to send
-    out[native(folder)] = { kinds: everyKind ? [] : rule.kinds, shallow: rule.shallow };
+    const { tags, content } = audioBits(rule);
+    const everyKind = RULE_KINDS.every(([kind]) => rule.kinds.includes(kind));
+    if (everyKind && tags && content && !rule.shallow) continue;
+    const kinds = [...rule.kinds];
+    out[native(folder)] = { kinds, shallow: rule.shallow, audioTags: tags, audioContent: content };
   }
   return out;
 }
 
-/// The editor under a row: the kinds it holds and how deep it's read. Nothing checked apart is every kind; Pictures
-/// sends the screenshot kind too (a screenshot is a picture with a kind of its own in the index). Every change is kept
-/// as it is made: nothing is sent until Save/Start indexing.
+/// The editor under a row: the kinds it holds, how its recordings are read, and how deep it's read. Every change is
+/// kept as it is made: nothing is sent until Save/Start indexing.
 ///
 /// "Scan subfolders" is the one depth control: on, the subfolders are listed and each is read or left out by its
 /// checkbox; off, nothing below the folder is read (the engine's shallow rule) — and a subfolder checked before stops
 /// being a chosen folder of its own, so no hidden exception survives from the two mechanisms.
 function rulePanel(row) {
   const rule = ruleOf(row) || { kinds: [], shallow: false };
+  const bits = audioBits(rule);
   const panel = element("div", "rule");
   panel.append(element("p", "", `What “${nameOf(row)}” holds:`));
   const boxes = RULE_KINDS.map(([kind, label]) => {
@@ -232,6 +248,20 @@ function rulePanel(row) {
     panel.append(choice);
     return input;
   });
+  const audioChoice = (label, checked) => {
+    const choice = element("label", "choice");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = checked;
+    input.onchange = () => store();
+    choice.append(input, label);
+    panel.append(choice);
+    return input;
+  };
+  const tagsBox = audioChoice("Recordings by their tags", bits.tags);
+  const contentBox = audioChoice("Recordings by their sound", bits.content);
+  const hint = element("p", "note", "");
+  panel.append(hint);
   const scan = element("label", "choice");
   const scanBox = document.createElement("input");
   scanBox.type = "checkbox";
@@ -249,12 +279,23 @@ function rulePanel(row) {
   };
   function store() {
     const chosen = boxes.filter((input) => input.checked).map((input) => input.dataset.kind);
-    const everyKind = RULE_KINDS.every(([kind]) => chosen.includes(kind));
-    // Every kind checked is no kinds filter at all; pictures mean pictures and screenshots.
-    const kinds = everyKind ? [] : (chosen.includes("image") ? [...chosen, "screenshot"] : chosen);
+    // Pictures mean pictures and screenshots; recordings join the kinds when either of their bits is on.
+    let kinds = chosen.includes("image") ? [...chosen, "screenshot"] : chosen;
+    const tags = tagsBox.checked, content = contentBox.checked;
+    if (tags || content) kinds = [...kinds, "audio"];
+    if (!kinds.length) {
+      hint.hidden = false;
+      hint.textContent = "Choose at least one kind of file to search in this folder.";
+      return;
+    }
+    if (tags && !(info.tagTypes || []).length) {
+      hint.hidden = false;
+      hint.textContent = "No types are set in Settings → Folders → “Audio types read by tags”: recordings will be skipped.";
+    } else {
+      hint.hidden = true;
+    }
     const shallow = !scanBox.checked;
-    if (!kinds.length && !shallow) folderRules.delete(key(row));
-    else folderRules.set(key(row), { kinds, shallow });
+    folderRules.set(key(row), { kinds, shallow, audioTags: tags, audioContent: content });
     renderFolders();
   }
   const done = element("button", "link", "Done");
@@ -410,11 +451,11 @@ function roughDuration(seconds) {
   return `${(seconds / 3600).toFixed(1)} h`;
 }
 
-$("add-folder").addEventListener("click", async () => {
-  const picked = (await invoke("pick_folders")).map(canon);
+/// Folders picked in the system dialog (here, or in Settings before this window existed), shown as chosen: a subfolder
+/// of a folder listed is chosen there, any other is a row of its own; both are estimated.
+function addPicked(paths) {
   const added = [];
-  for (const path of picked) {
-    // A subfolder of a folder listed is chosen there, checked; any other folder is listed, checked.
+  for (const path of (paths || []).map(canon)) {
     const listed = rows.find((row) => inside(path, row) && same(parentOf(path), row));
     if (!listed && !rows.some((row) => same(row, path))) {
       addRow(path);
@@ -424,7 +465,14 @@ $("add-folder").addEventListener("click", async () => {
   }
   renderFolders();
   estimate(added);
+}
+
+$("add-folder").addEventListener("click", async () => {
+  addPicked(await invoke("pick_folders"));
 });
+
+// Settings picked folders while this window was open (Add Folders… opens the picker first).
+tauri.event.listen("pending-folders", ({ payload }) => addPicked(payload));
 
 // MARK: The code step (a first launch that finds folders with code)
 
@@ -996,8 +1044,11 @@ async function start() {
   selection.skipped = (info.skipped || []).map(canon);
   // The rules the folders already have (Settings → Folders): shown here, and kept when this window saves.
   for (const [path, rule] of Object.entries(info.rootRules || {})) {
-    folderRules.set(key(path), { kinds: rule.kinds || [], shallow: Boolean(rule.shallow) });
+    folderRules.set(key(path), { kinds: rule.kinds || [], shallow: Boolean(rule.shallow),
+                                 audioTags: rule.audioTags, audioContent: rule.audioContent });
   }
+  // Folders picked before this page loaded (Add Folders… opens the picker first).
+  if (info.pending?.length) addPicked(info.pending);
   if (!codeMode) {
     showModel(info.model);
     tauri.event.listen("model", ({ payload }) => showModel(payload));

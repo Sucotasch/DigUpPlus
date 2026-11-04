@@ -70,25 +70,26 @@ import Testing
         let id = try #require(try store.files(under: [folder.path]).first?.id)
         #expect(try indexer(["wav"]).run()["done"] == 1)
         #expect(try store.counts().vectors == 0)
+        // The same rule again changes nothing: the row's way of being read is kept with it.
+        #expect(try indexer(["wav"]).sync([folder]).unchanged == 1)
         // Read in full from now on: the row is queued again, its tag text gone, and its state says it's waiting.
-        #expect(try indexer([]).sync([folder]).unchanged == 1)
+        #expect(try indexer([]).sync([folder]).changed == 1)
         let row = try #require(try store.file(id))
         #expect(row.state == "pending")
+        #expect(!row.tagsOnly)
         let searcher = try Searcher(store: store, loadVectors: false)
         #expect(try searcher.search("Testers", queryVector: nil).isEmpty)   // only the name is left
-        // The rule is kept in the index, so a sync without a change queues nothing.
-        #expect(try store.meta("tag_types") == "[]")
     }
     #endif
 
     @Test func theEstimateCountsNoListeningForARecordingReadByItsTags() {
-        let candidate = Candidate(path: "/music/song.mp3", kind: .audio, size: 1_000_000, mtime: 1, inode: 1, device: 1)
-        let full = Estimator.estimates(bySubfolder: [candidate], of: "/music", options: options([]),
-                                       costs: Costs())
-        let tagged = Estimator.estimates(bySubfolder: [candidate], of: "/music", options: options(["mp3"]),
-                                         costs: Costs())
-        #expect(tagged["/music"]?.files[.audio] == 1)          // still counted as a recording
-        #expect(tagged["/music"]?.seconds == 0)                // but with no listening time, and no duration asked for
-        #expect(full["/music"]?.files[.audio] == 1)
+        let full = Candidate(path: "/music/song.mp3", kind: .audio, size: 1_000_000, mtime: 1, inode: 1, device: 1)
+        let tagged = Candidate(path: "/music/song.mp3", kind: .audio, size: 1_000_000, mtime: 1, inode: 1, device: 1,
+                               tagsOnly: true)
+        let listening = Estimator.estimates(bySubfolder: [full], of: "/music", options: options([]), costs: Costs())
+        let reading = Estimator.estimates(bySubfolder: [tagged], of: "/music", options: options([]), costs: Costs())
+        #expect(reading["/music"]?.files[.audio] == 1)          // still counted as a recording
+        #expect(reading["/music"]?.seconds == 0)                // but with no listening time, and no duration asked for
+        #expect(listening["/music"]?.files[.audio] == 1)
     }
 }

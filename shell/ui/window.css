@@ -397,6 +397,17 @@ svg { display: block; }
 .place.on-image { color: white; background: rgba(0, 0, 0, 0.6); }
 .cell .place { position: absolute; right: 6px; bottom: 6px; }
 
+/* A recording read by its tags alone: a badge in the list, and its fields in the preview pane. */
+.tags-badge {
+  margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 9.5px; font-weight: 600;
+  color: var(--secondary); background: var(--line); vertical-align: middle;
+}
+.tags-card { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; max-width: 100%; }
+.tags-card .tags-icon svg { width: 40px; height: 40px; fill: none; stroke: var(--tertiary); stroke-width: 1.4; }
+.tags-card .tags-lines { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.tags-card .tag-line { color: var(--text); }
+.tags-card .tags-note { font-size: 10.5px; color: var(--tertiary); }
+
 .cell .name {
   margin: 6px 2px 0;
   font-size: 12px;

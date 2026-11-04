@@ -362,8 +362,8 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
 
 Проверено на 2026-11-04:
 
-- `python .build/swift_test.py` — 148 тестов, 147 прошли (единственный сбой — symlink-тест 1314 выше);
-- `cargo test --locked` в `shell/src-tauri` — 64 теста, все прошли;
+- `python .build/swift_test.py` — 152 теста, 151 прошли (единственный сбой — symlink-тест 1314 выше);
+- `cargo test --locked` в `shell/src-tauri` — 66 тестов, все прошли;
 - `node --check` по всем `shell/ui/*.js` — чисто;
 - пер-корневые правила (типы, top-level-only), пороги поиска и записи по тегам проверены на живой сборке:
   `docs/per-folder-rules-plan.md` §1.8, «Фаза 2», «Фаза 3»;

@@ -12,6 +12,9 @@ public struct FileRecord: Sendable {
     public let state: String
     /// Why it was skipped or failed, or how far a long file has been read.
     public let detail: String?
+    /// A recording read by its tags alone (`Candidate.tagsOnly`): the way it's read, kept so a restart reads it the
+    /// same and a rule change can tell what changed.
+    public let tagsOnly: Bool
 }
 
 /// The on-disk index: one SQLite file with files, their segments (with fp16 vectors), and an FTS5 table.
@@ -22,7 +25,7 @@ public struct FileRecord: Sendable {
 public final class IndexStore {
     public let directory: URL
     public let db: Database
-    static let schemaVersion: Int64 = 5
+    static let schemaVersion: Int64 = 6
 
     /// Keyword search's tokenizer. Marks (M*) count as letters, so Bengali vowel signs and Arabic harakat stay inside
     /// their words: by default SQLite splits on them ("কলকাতায়" became "কলক", "ত", "য").
@@ -103,6 +106,7 @@ public final class IndexStore {
             if (1...2).contains(version) { try migrateScreenshotText() }
             if (1...3).contains(version) { try migrateVectorNames() }
             if (1...4).contains(version) { try migrateLongFiles() }
+            if (1...5).contains(version) { try migrateTagsOnly() }
         }
     }
 
@@ -120,7 +124,8 @@ public final class IndexStore {
                 state TEXT NOT NULL DEFAULT 'pending',   -- pending | done | partial | skipped | failed
                 detail TEXT,                              -- why skipped/failed, or how far a long file has been read
                 info TEXT,                                -- JSON: pixels, pages, duration, date taken; read_to/read_end
-                indexed_at REAL
+                indexed_at REAL,
+                tags_only INTEGER NOT NULL DEFAULT 0      -- a recording read by its tags alone
             );
             CREATE INDEX files_inode ON files(device, inode);
             CREATE INDEX files_state ON files(state, kind);
@@ -205,6 +210,25 @@ public final class IndexStore {
             PRAGMA user_version = 5;
             """)
     }
+
+    /// Schema 5 → 6: a recording's way of being read is kept with its row (`tags_only`), so the indexer knows after a
+    /// restart and a rule change can re-read exactly what changed. Rows that were already read by their tags (`info`
+    /// says so, what 0.1.6 wrote) start as such; nothing is read again for them. A test index can be a current schema
+    /// with an older version stamped on it, so the column is added only when it isn't there.
+    private func migrateTagsOnly() throws {
+        var hasColumn = false
+        try db.query("PRAGMA table_info(files)") { row in
+            if row.text(1) == "tags_only" { hasColumn = true }
+        }
+        try db.transaction {
+            if !hasColumn {
+                try db.run("ALTER TABLE files ADD COLUMN tags_only INTEGER NOT NULL DEFAULT 0")
+            }
+            try db.run("UPDATE files SET tags_only = 1 WHERE json_extract(info, '$.tags') = '1'")
+            try db.execute("PRAGMA user_version = 6")
+        }
+    }
+
     // MARK: Meta
 
     public func meta(_ key: String) throws -> String? {
@@ -224,12 +248,13 @@ public final class IndexStore {
 
     // MARK: Files
 
-    static let fileColumns = "id, path, kind, size, mtime, inode, device, state, detail"
+    static let fileColumns = "id, path, kind, size, mtime, inode, device, state, detail, tags_only"
 
     static func record(_ row: Statement) -> FileRecord {
         FileRecord(id: row.int(0), path: row.text(1) ?? "", kind: FileKind(rawValue: row.text(2) ?? "") ?? .doc,
                    size: row.int(3), mtime: row.double(4), inode: UInt64(bitPattern: row.int(5)),
-                   device: UInt64(bitPattern: row.int(6)), state: row.text(7) ?? "pending", detail: row.text(8))
+                   device: UInt64(bitPattern: row.int(6)), state: row.text(7) ?? "pending", detail: row.text(8),
+                   tagsOnly: row.int(9) != 0)
     }
 
     /// Every file under one of `roots`.
@@ -268,9 +293,10 @@ public final class IndexStore {
     @discardableResult
     public func insert(_ file: Candidate) throws -> Int64 {
         try db.transaction {   // the row and its name entry together
-            try db.run("INSERT INTO files(path, kind, size, mtime, inode, device) VALUES(?, ?, ?, ?, ?, ?)",
+            try db.run("INSERT INTO files(path, kind, size, mtime, inode, device, tags_only) VALUES(?, ?, ?, ?, ?, ?, ?)",
                        [.text(file.path), .text(file.kind.rawValue), .int(file.size), .double(file.mtime),
-                        .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device))])
+                        .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device)),
+                        .int(file.tagsOnly ? 1 : 0)])
             let id = db.lastInsertID
             try addNameRow(file: id, path: file.path)
             return id
@@ -282,10 +308,11 @@ public final class IndexStore {
         try db.transaction {
             try deleteSegments(of: id, keepingName: true)
             try db.run("""
-                UPDATE files SET kind = ?, size = ?, mtime = ?, inode = ?, device = ?, state = 'pending', detail = NULL,
-                    info = NULL, indexed_at = NULL WHERE id = ?
+                UPDATE files SET kind = ?, size = ?, mtime = ?, inode = ?, device = ?, tags_only = ?, state = 'pending',
+                    detail = NULL, info = NULL, indexed_at = NULL WHERE id = ?
                 """, [.text(file.kind.rawValue), .int(file.size), .double(file.mtime),
-                      .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device)), .int(id)])
+                      .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device)),
+                      .int(file.tagsOnly ? 1 : 0), .int(id)])
         }
     }
 
@@ -296,23 +323,6 @@ public final class IndexStore {
             try db.run("UPDATE files SET state = 'pending', detail = NULL, info = NULL, indexed_at = NULL WHERE id = ?",
                        [.int(id)])
         }
-    }
-
-    /// Recordings of these extensions (lowercase, no dot) are read again: their rule changed (Settings → Folders →
-    /// Recordings, tags instead of sound or the other way around). Audio rows only, since that is the one kind the tags
-    /// rule applies to; a rule for any other type is the crawl's to apply (it stops queueing the file at all).
-    /// Returns how many.
-    @discardableResult
-    public func requeueRecordings(of extensions: Set<String>) throws -> Int {
-        guard !extensions.isEmpty else { return 0 }
-        var ids: [Int64] = []
-        try db.query("SELECT id, path FROM files WHERE kind = 'audio'") { row in
-            let path = row.text(1) ?? ""
-            if extensions.contains((path as NSString).pathExtension.lowercased()) { ids.append(row.int(0)) }
-        }
-        // One transaction per row: `requeue` opens its own, and a rule change is rare enough not to batch them.
-        for id in ids { try requeue(id) }
-        return ids.count
     }
 
     /// Same inode, size and date at a new path: a move or rename. Nothing is re-embedded (screenshot tools move
