@@ -171,6 +171,29 @@ command, args, timeout_ms 100..7000, max_output_bytes ≤4 MiB, enabled }`.
 - **Пишущие MCP-инструменты (reindex)** — read-only проще и безопаснее; reindex есть в UI.
 - **Автоматическая правка чужих конфигов агентов** — только печать/копирование в v1.
 
+**Сделано (0.1.8)** — по пунктам §2 и §3:
+
+- **Кулдаун overflow:** `watcher.rs`, `OVERFLOW_COOLDOWN = 60 с`: второй «система потеряла события» ждёт, пока
+  первому не исполнится минута (спит в потоке watcher'а; накопленные за это время пути всё равно придут следующим
+  бурстом). Тест: `overflow_syncs_wait_a_minute`.
+- **Fresh-retry:** `settle` перед `changed`: (size, mtime) всех файлов бурста, повтор через 500 мс, окно 10 с; папки и
+  пропавшие файлы не ждут. Тест: `a_writing_file_is_seen_changing` (файл дописывается → снимки различаются; папка и
+  отсутствующий файл — `None`).
+- **Фолбэк + статус:** `FolderWatcher::start` помнит папки, которые `notify` не взял (или бэкенд не создался), и раз в
+  5 минут шлёт их как обычный бурст (scoped-синк этих папок; поток гаснет на `Drop` через атомарный флаг, шагами по
+  1 с). `FolderWatcher::watching()` → `Status.watching`; строка статуса получает «· changes aren't watched» (тест
+  статуса), в снапшоте — `watching`.
+- **Мусор:** `Rules.isJunk` (`~$*`, `*.tmp`, `.swp/.swo`, `4913`, `*.crdownload`, `desktop.ini`, `Thumbs.db`) и проверка
+  в `Crawler.visit` до классификации (причина «a program's leftover» в `leftOut`); тот же список в `watcher.rs`
+  (`is_junk`), чтобы правка Word'ом открытого документа не звала синк. Тест: `programLeftoversAreNotRead`. Живая
+  проверка: папка с `~$lock.wav` и `Thumbs.db` → оба в `left_out`, `Keep Me.wav` проиндексирован.
+- **Свежесть:** `Status.last_sync` из `started` события `sync`; `asOf` в снапшоте (окно/панель/настройки); в окне —
+  «3 files indexed · synced just now» (перерисовка раз в 30 с), в Settings — «last sync 2 min ago» в строке деталей.
+  Живая проверка формата: «just now» / «2 min ago» / «3 h ago».
+
+Сознательно не сделано: строка возраста в панели (место занято числом результатов и caveat; окно и Settings его
+показывают), и «repair»-проход (синк и так статит каждый файл).
+
 ## 8. Порядок и релизы
 
 1. **0.1.7** — уже запланированное в `docs/per-folder-rules-plan.md` (аудио двумя битами, теги в UI, оценка с

@@ -2299,7 +2299,10 @@ function actions(hit) {
 
 function renderStatus() {
   const app = state.app;
-  $("status-line").textContent = app.line || "";
+  // How old the index is, beside what it holds: "306 files indexed · synced 2 min ago". While indexing it's saying that
+  // already. Redrawn every half minute, since the age grows without an event.
+  const age = app.activity === "idle" ? indexAge(app.asOf) : "";
+  $("status-line").textContent = (app.line || "") + (age ? ` · synced ${age}` : "");
   const ring = $("ring");
   ring.hidden = app.progress == null;
   if (app.progress != null) {
@@ -2727,6 +2730,8 @@ async function start() {
   const info = await invoke("window_info");
   state.info = { ...state.info, ...info };
   state.app = info.state || {};
+  // The index's age grows between events: the status bar's "synced 2 min ago" is redrawn without one.
+  setInterval(renderStatus, 30000);
   if (info.search) {
     state.filter = info.search.kind || null;
     $query.value = info.search.query || "";

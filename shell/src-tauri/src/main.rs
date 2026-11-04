@@ -1317,9 +1317,8 @@ fn watch_folders(app: &AppHandle) {
          settings.root_rules.iter().filter(|(_, rule)| rule.shallow).map(|(root, _)| PathBuf::from(root))
              .collect::<Vec<PathBuf>>())
     };
-    changed(app);
     let index = shell.index_folder();
-    *shell.watcher.lock().unwrap() = (!folders.is_empty()).then(|| {
+    let watcher = (!folders.is_empty()).then(|| {
         let app = app.clone();
         FolderWatcher::start(&folders, &shallow, skipped, index.clone(), types, Duration::from_secs(2), Duration::MAX, move |paths| {
             // A move or delete already told the index; its echo mustn't start a rescan. Anything else reconciles the
@@ -1329,11 +1328,17 @@ fn watch_folders(app: &AppHandle) {
             }
         })
     });
+    // A watch the system refused (a network or exFAT disk) still syncs: every five minutes (watcher.rs), and the pages
+    // say changes aren't watched.
+    let watching = watcher.as_ref().is_none_or(|watcher| watcher.watching());
+    *shell.watcher.lock().unwrap() = watcher;
+    shell.status.lock().unwrap().watching = watching;
     *shell.code_watcher.lock().unwrap() = (!code_folders.is_empty()).then(|| {
         let app = app.clone();
         FolderWatcher::start(&code_folders, &[], code_skipped, index, None, Duration::from_secs(60), Duration::from_secs(600),
                              move |paths| code_changed(&app, paths))
     });
+    changed(app);
     if !folders.is_empty() || !code_folders.is_empty() || shell.prune.load(Ordering::SeqCst) {
         run_index(app);
     }

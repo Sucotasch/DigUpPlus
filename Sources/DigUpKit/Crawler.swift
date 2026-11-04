@@ -191,6 +191,10 @@ public enum Crawler {
                     leftOut(library ? "Photos library" : "app or bundle", under: owned)
                     return
                 }
+                if Rules.isJunk(url.lastPathComponent) {
+                    leftOut("a program's leftover", under: owned)
+                    return
+                }
                 let classification = options.code ? Rules.classifyCode(url, options: options)
                     : Rules.classify(url, values: values, options: options)
                 switch classification {

@@ -165,6 +165,18 @@ import Testing
         #expect(report.candidates.map { ($0.path as NSString).lastPathComponent } == ["trip.txt"])
     }
 
+    /// Word's "~$report.docx" lock file has a document's name and extension: reading it fails, and it's never wanted.
+    @Test func programLeftoversAreNotRead() throws {
+        for name in ["~$report.docx", "report.docx", "notes.txt.tmp", "Thumbs.db", "desktop.ini"] {
+            try Data("x".utf8).write(to: folder.appendingPathComponent(name))
+        }
+        let report = Crawler.crawl([folder], options: IndexOptions())
+        #expect(report.candidates.map { ($0.path as NSString).lastPathComponent } == ["report.docx"])
+        #expect(report.leftOut.values.compactMap { $0["a program's leftover"] }.reduce(0, +) == 4)
+        #expect(Rules.isJunk("~$budget.xlsx") && Rules.isJunk(".notes.swp") && Rules.isJunk("download.crdownload"))
+        #expect(!Rules.isJunk("notes.tmp.txt") && !Rules.isJunk("4913.txt"))
+    }
+
     /// Apple Music downloads and old iTunes Store songs are FairPlay-protected: they'd only ever fail to read.
     @Test func copyProtectedMusicIsSkipped() throws {
         for name in ["Bought in 2007.m4p", "Ripped from a CD.m4a"] {

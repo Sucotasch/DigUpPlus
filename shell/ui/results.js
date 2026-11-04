@@ -24,6 +24,16 @@ const KIND_TITLE = { screenshot: "Screenshot", image: "Image", pdf: "PDF", doc: 
 let homeFolder = "";
 tauri.path.homeDir().then((home) => { homeFolder = home.replace(/[\\/]$/, ""); }).catch(() => {});
 
+/// How long ago the folders were last walked, from the shell's `asOf` (seconds since 1970): "2 min ago", "3 h ago".
+function indexAge(asOf) {
+  if (!asOf) return "";
+  const minutes = Math.floor((Date.now() / 1000 - asOf) / 60);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours} h ago` : `${Math.floor(hours / 24)} d ago`;
+}
+
 /// The page or moment that matched, as a badge: "p. 3", "0:06", "♪ 0:25" (a video's sound), "L12–40" (code).
 function placeOf(hit) {
   if (hit.loc == null) return null;

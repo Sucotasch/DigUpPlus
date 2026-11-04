@@ -9,18 +9,40 @@
 
 use notify::{RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 /// Folders the crawl never walks into, by name: the engine's `Rules.skippedFolderNames`.
 const DEVELOPER_FOLDERS: [&str; 8] =
     ["node_modules", "bower_components", "venv", "site-packages", "__pycache__", "DerivedData", "Pods", "Carthage"];
 
+/// A full sync after the system dropped events is expensive: one a minute is plenty, and a storm of them is one sync.
+const OVERFLOW_COOLDOWN: Duration = Duration::from_secs(60);
+/// Files still being written are looked at again this often, for at most `SETTLE_WINDOW`: a PDF the printer is writing
+/// or a video being copied would otherwise be read half-done and fail.
+const SETTLE_STEP: Duration = Duration::from_millis(500);
+const SETTLE_WINDOW: Duration = Duration::from_secs(10);
+/// Where watching failed (a network or exFAT disk), changes are looked for this often instead of not at all.
+const POLL: Duration = Duration::from_secs(300);
+
 pub struct FolderWatcher {
     _watcher: Option<notify::RecommendedWatcher>,
+    watching: bool,
+    /// Cleared when the app drops this (the folders changed): a failing watcher's poll then ends.
+    alive: Arc<AtomicBool>,
+}
+
+impl Drop for FolderWatcher {
+    fn drop(&mut self) { self.alive.store(false, Ordering::Relaxed); }
 }
 
 impl FolderWatcher {
+    /// Whether the system accepted a watch for every folder: when it didn't, changes are looked for every five minutes
+    /// instead (the caller shows "changes aren't watched").
+    pub fn watching(&self) -> bool { self.watching }
+
     /// Watches `folders` (less `skipped` inside them); `shallow` ones are watched one level deep (their rule is "top
     /// level only": changes far inside are dropped by the crawl anyway, and a deep tree would ask for syncs all day).
     /// `changed` runs on the watcher's own thread after each burst of changes, with every path of the burst (none when
@@ -34,6 +56,9 @@ impl FolderWatcher {
                  changed: impl Fn(&[PathBuf]) + Send + 'static) -> FolderWatcher {
         let (sender, receiver) = mpsc::channel::<Vec<PathBuf>>();
         let roots = folders.to_vec();
+        let alive = Arc::new(AtomicBool::new(true));
+        // For a watch the system refuses, and for folders it refuses: their changes are looked for every five minutes.
+        let poll_sender = sender.clone();
         let watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
             let Ok(event) = result else { return };
             if event.kind.is_access() {
@@ -50,20 +75,42 @@ impl FolderWatcher {
                 let _ = sender.send(paths);
             }
         });
-        let mut watcher = match watcher {
-            Ok(watcher) => watcher,
+        // The folders no watch covers: a failing backend or folder is looked for every five minutes instead.
+        let mut unwatched = folders.to_vec();
+        let watcher = match watcher {
+            Ok(watcher) => Some(watcher),
             Err(error) => {
                 eprintln!("digup-shell: can't watch folders: {error}");
-                return FolderWatcher { _watcher: None };
+                None
             }
         };
-        for folder in folders {
-            let mode = if shallow.contains(folder) { RecursiveMode::NonRecursive } else { RecursiveMode::Recursive };
-            if let Err(error) = watcher.watch(folder, mode) {
-                eprintln!("digup-shell: can't watch {}: {error}", folder.display());
+        let mut watcher = watcher;
+        if let Some(watcher) = &mut watcher {
+            for folder in folders {
+                let mode = if shallow.contains(folder) { RecursiveMode::NonRecursive } else { RecursiveMode::Recursive };
+                match watcher.watch(folder, mode) {
+                    Ok(()) => unwatched.retain(|path| path != folder),
+                    Err(error) => eprintln!("digup-shell: can't watch {}: {error}", folder.display()),
+                }
             }
         }
+        if !unwatched.is_empty() {
+            let (sender, alive, poll_for) = (poll_sender, alive.clone(), unwatched.clone());
+            std::thread::spawn(move || {
+                while alive.load(Ordering::Relaxed) {
+                    // In steps: dropping the watcher must not leave a thread asleep for five minutes.
+                    let began = Instant::now();
+                    while began.elapsed() < POLL && alive.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                    if !alive.load(Ordering::Relaxed) || sender.send(poll_for.clone()).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
         std::thread::spawn(move || {
+            let mut last_overflow: Option<Instant> = None;
             while let Ok(mut paths) = receiver.recv() {
                 let began = std::time::Instant::now();
                 // An empty event is the system dropping events: a burst it joins needs a full sync, not its paths.
@@ -85,15 +132,53 @@ impl FolderWatcher {
                     }
                 }
                 if dropped {
+                    // A storm of dropped events is one sync a minute; a burst made only of them waits its turn.
+                    let left = cooldown_left(last_overflow, OVERFLOW_COOLDOWN);
+                    if !left.is_zero() {
+                        std::thread::sleep(left);
+                    }
+                    last_overflow = Some(Instant::now());
                     paths.clear();
+                } else {
+                    settle(&paths, SETTLE_STEP, SETTLE_WINDOW);
                 }
                 paths.sort_unstable();
                 paths.dedup();
                 changed(&paths);
             }
         });
-        FolderWatcher { _watcher: Some(watcher) }
+        FolderWatcher { _watcher: watcher, watching: unwatched.is_empty(), alive }
     }
+}
+
+/// How long a dropped-events sync must wait for the last one to be a minute old.
+fn cooldown_left(last: Option<Instant>, cooldown: Duration) -> Duration {
+    last.map_or(Duration::ZERO, |last| cooldown.saturating_sub(last.elapsed()))
+}
+
+/// Waits for the files of a burst to stop growing: their (size, mtime) seen twice in a row, at most `window` long.
+fn settle(paths: &[PathBuf], step: Duration, window: Duration) {
+    let began = Instant::now();
+    let mut seen = snapshots(paths);
+    if seen.iter().all(Option::is_none) {
+        return;
+    }
+    while began.elapsed() < window {
+        std::thread::sleep(step);
+        let now = snapshots(paths);
+        if now == seen {
+            return;
+        }
+        seen = now;
+    }
+}
+
+/// Each existing file's size and modification time, for `settle` (a folder or a file that's gone: None).
+fn snapshots(paths: &[PathBuf]) -> Vec<Option<(u64, Option<SystemTime>)>> {
+    paths.iter().map(|path| match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => Some((meta.len(), meta.modified().ok())),
+        _ => None,
+    }).collect()
 }
 
 /// The crawl reads `path`: it's inside a chosen folder, and nothing on the way to it from there is skipped. A skipped
@@ -139,7 +224,7 @@ const PACKAGE_EXTENSIONS: [&str; 20] = [
 /// package (which the crawl skips whole) and not of a type the person excluded. A database rewritten every few seconds
 /// would otherwise ask for a full sync each time. A path that's gone and has no extension may be a deleted folder.
 fn change_may_matter(path: &Path, excluded: &[String]) -> bool {
-    if is_package(path) {
+    if is_package(path) || is_junk(path) {
         return false;
     }
     if path.is_dir() {
@@ -171,6 +256,18 @@ fn is_package(path: &Path) -> bool {
     })
 }
 
+/// The engine's `Rules.isJunk`: a program's lock, swap and part-written files. Word keeping a document open rewrote its
+/// "~$report.docx" every few seconds, and each write asked for a sync of the whole folder.
+fn is_junk(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else { return false };
+    let lower = name.to_lowercase();
+    if lower.starts_with("~$") || ["desktop.ini", "thumbs.db", "4913"].contains(&lower.as_str()) {
+        return true;
+    }
+    let extension = path.extension().and_then(|extension| extension.to_str()).map(str::to_lowercase);
+    matches!(extension.as_deref(), Some("tmp" | "swp" | "swo" | "crdownload"))
+}
+
 /// Windows' hidden flag; elsewhere a leading dot is the rule, checked above.
 #[cfg(windows)]
 fn hidden(path: &Path) -> bool {
@@ -186,8 +283,10 @@ fn hidden(_: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{change_may_matter, walked};
+    use super::{change_may_matter, cooldown_left, settle, snapshots, walked, OVERFLOW_COOLDOWN};
+    use std::io::Write;
     use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn only_changes_the_crawl_reads_matter() {
@@ -206,6 +305,39 @@ mod tests {
         assert!(!change_may_matter(Path::new("photo.jpg"), &["jpg".to_string()]));
         assert!(!read("Photos Library.photoslibrary/originals/a.heic"));
         assert!(!read("Tool.app/Contents/Resources/icon.png"));
+        // A program's leftovers: Word's lock file beside an open document, a part download, a swap file.
+        assert!(!read("~$report.docx"));
+        assert!(!read("Ripped.crdownload"));
+        assert!(!read(".notes.swp"));
+        assert!(!read("Thumbs.db"));
+    }
+
+    /// A storm of dropped events is one full sync a minute; the next waits out the minute.
+    #[test]
+    fn overflow_syncs_wait_a_minute() {
+        assert_eq!(cooldown_left(None, OVERFLOW_COOLDOWN), Duration::ZERO);
+        assert!(cooldown_left(Some(Instant::now()), OVERFLOW_COOLDOWN) > Duration::from_secs(59));
+        let old = Instant::now().checked_sub(Duration::from_secs(120)).unwrap();
+        assert_eq!(cooldown_left(Some(old), OVERFLOW_COOLDOWN), Duration::ZERO);
+    }
+
+    /// A file still being written is seen changing once, then as it is; a file that's gone or a folder is no file.
+    #[test]
+    fn a_writing_file_is_seen_changing() {
+        let path = std::env::temp_dir().join(format!("digup-settle-{}.txt", std::process::id()));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(b"first").unwrap();
+        let before = snapshots(std::slice::from_ref(&path));
+        file.write_all(b" and more").unwrap();
+        file.flush().unwrap();
+        let after = snapshots(std::slice::from_ref(&path));
+        assert_ne!(before, after);
+        assert_eq!(after[0].map(|(size, _)| size), Some(14));
+        assert_eq!(snapshots(&[std::env::temp_dir().join("digup-not-here")]), vec![None]);
+        // An unchanged file settles at once (one step), a folder is no file at all.
+        settle(std::slice::from_ref(&path), Duration::from_millis(5), Duration::from_millis(200));
+        assert_eq!(snapshots(&[std::env::temp_dir()]), vec![None]);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

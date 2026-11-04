@@ -18,7 +18,7 @@ pub enum Activity {
     Failed(String),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Status {
     pub activity: Activity,
     /// Files in the index, in any state.
@@ -40,6 +40,21 @@ pub struct Status {
     pub paused: bool,
     /// Outside the set hours (Settings → Folders): when they begin ("01:00").
     pub held_until: Option<String>,
+    /// When the folders were last walked (the last sync's start, seconds since 1970): how old the index is.
+    pub last_sync: Option<f64>,
+    /// The system watches the chosen folders for changes. When it can't (a network or exFAT disk), changes are looked
+    /// for every five minutes and the pages say so.
+    pub watching: bool,
+}
+
+impl Default for Status {
+    fn default() -> Status {
+        Status {
+            activity: Activity::default(), files: 0, searchable: 0, pending: 0, unfinished: 0, missing: Vec::new(),
+            left_out: Value::Null, unreadable: Vec::new(), measuring: false, paused: false, held_until: None,
+            last_sync: None, watching: true,
+        }
+    }
 }
 
 impl Status {
@@ -60,6 +75,9 @@ impl Status {
             // The reasons are recorded on every sync: the one that queues new files is the usual first pass, and it
             // is exactly when Settings first has something to explain (a rule's left-out kinds).
             "sync" => {
+                if let Some(started) = event["started"].as_f64() {
+                    self.last_sync = Some(started);
+                }
                 if event["left_out"].is_object() {
                     self.left_out = event["left_out"].clone();
                 }
@@ -102,6 +120,15 @@ impl Status {
 
     /// One line for the tray and the window: "Indexing 42% · 120 of 306", "306 files indexed".
     pub fn line(&self, has_folders: bool, model: &Value) -> String {
+        let line = self.plain_line(has_folders, model);
+        if has_folders && !self.watching {
+            format!("{line} · changes aren't watched")
+        } else {
+            line
+        }
+    }
+
+    fn plain_line(&self, has_folders: bool, model: &Value) -> String {
         if !has_folders {
             return "No folders chosen yet".into();
         }
@@ -214,6 +241,8 @@ impl Status {
             "paused": self.paused,
             "heldUntil": self.held_until,
             "leftOut": self.left_out,
+            "asOf": self.last_sync,
+            "watching": self.watching,
             "badge": self.badge(model),
             "busy": self.busy(model),
             "activity": match self.activity {
@@ -303,6 +332,20 @@ mod tests {
         held.held_until = None;
         held.paused = true;
         assert_eq!(held.line(true, &ready), "Paused · 4 files waiting");
+    }
+
+    /// Without a watch the line says so, and every sync records when it started (the pages say how old the index is).
+    #[test]
+    fn a_sync_records_when_it_started_and_an_unwatched_folder_says_so() {
+        let ready = json!({"state": "ready"});
+        let mut status = Status::default();
+        assert!(status.watching);
+        status.apply(&json!({"event": "sync", "started": 1793822016.5, "files": 2, "searchable": 2, "pending": 0}));
+        assert_eq!(status.last_sync, Some(1793822016.5));
+        assert_eq!(status.snapshot(true, &ready)["asOf"].as_f64(), Some(1793822016.5));
+        status.watching = false;
+        assert!(status.line(true, &ready).ends_with("· changes aren't watched"));
+        assert_eq!(status.line(false, &ready), "No folders chosen yet");
     }
 
     /// The first pass queues new files and carries the reasons in the same event: both must land.

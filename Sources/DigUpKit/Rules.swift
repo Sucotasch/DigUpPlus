@@ -91,6 +91,15 @@ public enum Rules {
         return .ignore
     }
 
+    /// Files programs leave while they work, never worth reading: Word, Excel and PowerPoint write "~$report.docx"
+    /// beside an open document (a ~162-byte file named like a document); vim swaps ".notes.swp" and probes "4913";
+    /// browsers name part of a download ".crdownload"; Explorer and Windows write desktop.ini and Thumbs.db.
+    static func isJunk(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        if lower.hasPrefix("~$") || ["desktop.ini", "thumbs.db", "4913"].contains(lower) { return true }
+        return ["tmp", "swp", "swo", "crdownload"].contains((lower as NSString).pathExtension)
+    }
+
     /// Keys, certificates, password and credential files: never read, wherever they are.
     static func isSecret(_ name: String) -> Bool {
         let lower = name.lowercased()

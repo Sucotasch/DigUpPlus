@@ -11,6 +11,16 @@ const ask = (request) => invoke("ask", { request });
 const isWindows = /Win/.test(navigator.platform);
 const $ = (id) => document.getElementById(id);
 
+/// How long ago the folders were last walked, from the shell's `asOf` (seconds since 1970): "2 min ago", "3 h ago".
+function indexAge(asOf) {
+  if (!asOf) return "";
+  const minutes = Math.floor((Date.now() / 1000 - asOf) / 60);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours} h ago` : `${Math.floor(hours / 24)} d ago`;
+}
+
 const notes = {
   gnome: "DigUp Plus added it to GNOME's keyboard shortcuts. To change it: Settings → Keyboard → View and Customize " +
     "Shortcuts → Custom Shortcuts.",
@@ -171,6 +181,7 @@ function renderStatus() {
   const parts = [`${(state.searchable || 0).toLocaleString()} of ${(state.files || 0).toLocaleString()} files searchable`];
   if (state.pending) parts.push(`${state.pending.toLocaleString()} waiting`);
   if (state.unfinished) parts.push(`${state.unfinished.toLocaleString()} long ${state.unfinished === 1 ? "file" : "files"} to finish`);
+  if (state.asOf) parts.push(`last sync ${indexAge(state.asOf)}`);
   $("status-detail").textContent = parts.join(" · ");
   $("pause").hidden = !info.folders?.length;
   $("pause").textContent = state.paused ? "Resume" : "Pause";
@@ -1113,6 +1124,8 @@ window.addEventListener("focus", () => { refresh().catch(() => {}); });
 
 // Indexing as it goes, and what's indexed under each folder at most every two seconds.
 let summariesTimer = null;
+// The index's age grows between events: "last sync 2 min ago" is redrawn without one.
+setInterval(() => { if (info.state) renderStatus(); }, 30000);
 tauri.event.listen("state", ({ payload }) => {
   const before = info.state || {};
   info.state = payload;
