@@ -1,6 +1,6 @@
 # DigUp Plus: руководство разработчика (Windows-форк)
 
-**Дата:** 2026-10-27
+**Дата:** 2026-11-04
 
 **Статус:** актуально для ветки `file-operations` (форк `Sucotasch/DigUpPlus`, upstream `ARahim3/DigUp`).
 
@@ -112,10 +112,11 @@ python .build/swift_test.py --filter "DigUpKitTests"
 
 Известный локальный сбой: `IndexStoreTests.modelFilesComeFromTheHuggingFaceCacheWhenThere` падает с Win32 1314 —
 тест создаёт symlink, а Developer Mode выключен. Это ограничение среды, не регрессия; тест не менять. Полный
-прогон (2026-10-27) — 133 из 134, единственный сбой этот.
+прогон (2026-11-04) — 138 из 139, единственный сбой этот.
 
 `SearchPaginationTests` полностью офлайновые: строят временный индекс в тесте, модель не нужна, идут ~1,5 с.
-Флаг `--filter` принимает имя сюиты или теста.
+Флаг `--filter` принимает имя сюиты или теста. Быстрая проверка одной сюиты краулера:
+`python .build/swift_test.py --filter CrawlerTests`.
 
 ### CLI на живом индексе
 
@@ -133,7 +134,7 @@ PATH="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/bin/x64:$PATH" \
 
 ```sh
 cd shell/src-tauri
-cargo test --locked      # 56 тестов
+cargo test --locked      # 58 тестов
 cargo build --locked
 ```
 
@@ -160,9 +161,16 @@ shell\src-tauri\target\debug\digup-shell.exe --helper "$bin\digup.exe" `
   --models .dev\models
 ```
 
-- `--debug-window "" --debug-show` — открыть большое окно;
+- `--debug-window "" --debug-show` — открыть большое окно; `--debug-window "" --debug-settings --debug-show` —
+  окно и Settings (Settings открывается кнопкой окна, поэтому одно `--debug-settings` без окна его не показывает);
 - `--debug-window "<запрос>" --debug-quit` — напечатать отчёт страницы и выйти;
-- `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` перед запуском — управлять окном по CDP.
+- `--debug-query "<запрос>" --debug-quit` — то же для панели;
+- `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` перед запуском — управлять окном по CDP
+  (`http://127.0.0.1:9222/json` перечисляет страницы: `/`, `/window.html`, `/settings.html`).
+
+`python .build/run_digup.py <аргументы>` запускает собранный `digup.exe` с теми же DLL-путями, что и
+`swift_test.py` (без них процесс не стартует, код `0xC0000135`); файл, как и `swift_test.py`, локальный и
+неотслеживаемый.
 
 Перед повторным запуском закройте предыдущий экземпляр: окно/трей/индекс-сервис могут держать файлы.
 
@@ -182,6 +190,10 @@ scripts/package-portable.sh        # → shell/src-tauri/target/release/DigUpPlu
 `%APPDATA%`/`%LOCALAPPDATA%`; `--data <папка>` или `DIGUP_DATA` указывают другое место. Без `portable.txt` (установщик)
 всё по-прежнему в `%APPDATA%\com.sucotasch.digupplus` и `%LOCALAPPDATA%\DigUpPlus`.
 
+Скрипт печатает SHA-256 helper'а (`HELPER SHA256: …`): если в новом релизе helper побитово тот же, можно выложить
+только `DigUpPlus.exe` и `portable.txt` (и `THIRD-PARTY-NOTICES.txt`), без 400 МБ helper'а. `SHELL_ONLY=1
+scripts/package-portable.sh` дополнительно собирает `-shell-only.zip` из этих трёх файлов.
+
 ### Установщик (остался от upstream, `scripts/package-windows.sh`)
 
 `scripts/package-windows.sh` — полная упаковка. Требования (заголовок скрипта): Git Bash внутри Visual Studio
@@ -193,7 +205,7 @@ runtime, Swift runtime, C++ CRT, ffmpeg/ffprobe) → `scripts/notices.py` → `n
 --bundles nsis` с `helper/` и `THIRD-PARTY-NOTICES.txt` как resources.
 
 Выход: `shell/src-tauri/target/release/bundle/nsis/DigUp Plus_<version>_x64-setup.exe` (~440 МБ).
-Версия берётся из `shell/src-tauri/tauri.conf.json` (сейчас `0.1.1`), не из `Cargo.toml` (там `0.1.0` у пакета
+Версия берётся из `shell/src-tauri/tauri.conf.json` (сейчас `0.1.5`), не из `Cargo.toml` (там `0.1.0` у пакета
 оболочки, но имя файла и настройки идут от `tauri.conf.json`). Подписи и update-артефактов больше нет: `signing` из
 скрипта убран вместе с плагином updater.
 
@@ -342,7 +354,18 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
 `ceeb001 Load search results a page at a time`; рабочее дерево содержало незакоммиченные слои Images, counts и
 починку кэша превью — они вошли в коммит вместе с этим руководством.
 
-Проверено на 2026-10-27:
+Проверено на 2026-11-04:
+
+- `python .build/swift_test.py` — 145 тестов, 144 прошли (единственный сбой — symlink-тест 1314 выше);
+- `cargo test --locked` в `shell/src-tauri` — 62 теста, все прошли;
+- `node --check` по всем `shell/ui/*.js` — чисто;
+- пер-корневые правила (типы, top-level-only) проверены на живой сборке: `docs/per-folder-rules-plan.md` §1.8;
+- версия в `tauri.conf.json` — `0.1.5`;
+- GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
+  (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` удалён. Default branch —
+  `file-operations`; сборки только вручную (`scripts/package-portable.sh`).
+
+Проверено на 2026-10-27 (снимок того дня, числа в нём исторические):
 
 - `python .build/swift_test.py --filter SearchPagination` — 6 тестов, все прошли (включая
   `imageLayersAreCutOnCosineAndPageInOrder` и `kindCountsCoverTheWholeRankingNotJustThePage`);
@@ -377,7 +400,7 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
 - **Приватность**: никакой телеметрии и сетевых вызовов, кроме загрузки модели и открытия страницы релизов по кнопке.
 - **Windows-тесты**: symlink-тест 1314 — среда, не код.
 - **Пути с пробелами**: кавычки в скриптах обязательны; `MSYS_NO_PATHCONV=1` для `cmd.exe /c`.
-- **Имя сборки**: файлы называются по `productName`/`version` из `tauri.conf.json` (`DigUp Plus_0.1.0_…`).
+- **Имя сборки**: файлы называются по `productName`/`version` из `tauri.conf.json` (`DigUp Plus_<version>_…`).
 
 
 ## 11. Карта документации
@@ -388,6 +411,8 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
 | `CONTRIBUTING.md` | правила upstream, PR, отчёты о багах |
 | `docs/search-results-pagination-plan.md` | пагинация: замеры, протокол, слои Images, как воспроизвести |
 | `docs/file-operations-plan.md` | Move/Copy/Delete в окне Windows (по-русски, источник истины) |
+| `docs/roadmap-plan.md` | бэклог форка: P0–P3, что уже внедрено, порядок релизов |
+| `docs/per-folder-rules-plan.md` | пер-корневые правила индексации: типы, top-level-only, пороги, теги |
 | `docs/image-embedding-performance.md` | замеры скорости эмбеддинга, пул процессов |
 | `docs/model-profiles-plan.md` | хранение модели, папка, удаление, профили |
 | `AGENTS.md`, `knowledge.md` | локальные заметки агентов (не коммитятся) |
