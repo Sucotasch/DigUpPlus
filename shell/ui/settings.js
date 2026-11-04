@@ -317,7 +317,8 @@ function ruleButton(folder) {
 const RULE_KINDS = [["image", "Pictures"], ["pdf", "PDFs"], ["doc", "Documents"], ["audio", "Recordings"],
                     ["video", "Videos"]];
 
-/// A folder's rule, in place under its row: the kinds it holds (none checked apart: no rule) and "top level only".
+/// A folder's rule, in place under its row: the kinds it holds (none checked apart: no rule) and whether its
+/// subfolders are read.
 function ruleEditor(folder) {
   const saved = Object.entries(info.rootRules || {}).find(([path]) => samePath(path, folder));
   const rule = saved ? saved[1] : { kinds: [], shallow: false };
@@ -337,8 +338,9 @@ function ruleEditor(folder) {
   const shallow = element("label", "choice");
   const depth = document.createElement("input");
   depth.type = "checkbox";
-  depth.checked = rule.shallow;
-  shallow.append(depth, "Top level only (don't look in its subfolders)");
+  // Same switch as the add-folders screen: on, the subfolders are read; off, nothing below this folder is.
+  depth.checked = !rule.shallow;
+  shallow.append(depth, "Scan its subfolders");
   box.append(shallow);
   const actions = element("div", "actions");
   const cancel = element("button", "", "Cancel");
@@ -350,7 +352,7 @@ function ruleEditor(folder) {
     const everyKind = RULE_KINDS.every(([kind]) => chosen.includes(kind));
     const kinds = everyKind ? [] : (chosen.includes("image") ? [...chosen, "screenshot"] : chosen);
     try {
-      await invoke("set_root_rule", { folder, kinds, shallow: depth.checked });
+      await invoke("set_root_rule", { folder, kinds, shallow: !depth.checked });
       ruling = null;
       await refresh();
     } catch (error) {

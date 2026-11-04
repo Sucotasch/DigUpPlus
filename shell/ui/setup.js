@@ -14,7 +14,6 @@ const isWindows = /Win/.test(navigator.platform);
 // A first launch that finds code in the home folder also asks about code search, after the folders (`code`).
 let PAGES = ["welcome", "folders", "shortcut", "ready"];
 const SHORT_LIST = 6;   // subfolders shown before "Show N more"
-const CHEVRON = '<svg viewBox="0 0 16 16"><path d="M6 3.5 L10.5 8 L6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 const $ = (id) => document.getElementById(id);
 let page = 0;
@@ -95,8 +94,7 @@ const selection = {
 
 const rows = [];                 // the folders listed, as the helper spells them
 const estimates = new Map();     // key(folder) → the helper's estimate of it
-const open = new Set();          // key(folder) of folders showing their subfolders
-const showAll = new Set();       // … showing all of them
+const showAll = new Set();       // key(folder) of rows showing all their subfolders
 let calibrated = false;          // the times are this computer's (timed with the model, or measured by indexing)
 let estimating = 0;
 
@@ -212,8 +210,13 @@ function rulesObject() {
   return out;
 }
 
-/// The editor under a row: the kinds it holds, and "top level only". Nothing checked apart is every kind; Pictures
-/// sends the screenshot kind too (a screenshot is a picture with a kind of its own in the index).
+/// The editor under a row: the kinds it holds and how deep it's read. Nothing checked apart is every kind; Pictures
+/// sends the screenshot kind too (a screenshot is a picture with a kind of its own in the index). Every change is kept
+/// as it is made: nothing is sent until Save/Start indexing.
+///
+/// "Scan subfolders" is the one depth control: on, the subfolders are listed and each is read or left out by its
+/// checkbox; off, nothing below the folder is read (the engine's shallow rule) — and a subfolder checked before stops
+/// being a chosen folder of its own, so no hidden exception survives from the two mechanisms.
 function rulePanel(row) {
   const rule = ruleOf(row) || { kinds: [], shallow: false };
   const panel = element("div", "rule");
@@ -224,51 +227,72 @@ function rulePanel(row) {
     input.type = "checkbox";
     input.checked = rule.kinds.length === 0 || rule.kinds.includes(kind);
     input.dataset.kind = kind;
+    input.onchange = () => store();
     choice.append(input, label);
     panel.append(choice);
     return input;
   });
-  const below = element("label", "choice");
-  const depth = document.createElement("input");
-  depth.type = "checkbox";
-  depth.checked = rule.shallow;
-  below.append(depth, "Top level only (don't look in its subfolders)");
-  panel.append(below);
-  const actions = element("div", "actions");
-  const cancel = element("button", "link", "Cancel");
-  cancel.onclick = () => { ruling = null; renderFolders(); };
-  const save = element("button", "link", "Save Rule");
-  save.onclick = () => {
+  const scan = element("label", "choice");
+  const scanBox = document.createElement("input");
+  scanBox.type = "checkbox";
+  scanBox.checked = !rule.shallow;
+  scan.append(scanBox, "Scan subfolders");
+  panel.append(scan);
+  if (!rule.shallow) panel.append(subfolderList(row));
+  scanBox.onchange = () => {
+    if (!scanBox.checked) {
+      // Off: nothing below this folder is read, so a subfolder that was chosen as a folder of its own goes back to
+      // being left out with the rest.
+      for (const chosen of [...selection.chosen]) if (inside(chosen, row)) selection.setSubfolder(chosen, false);
+    }
+    store();
+  };
+  function store() {
     const chosen = boxes.filter((input) => input.checked).map((input) => input.dataset.kind);
     const everyKind = RULE_KINDS.every(([kind]) => chosen.includes(kind));
     // Every kind checked is no kinds filter at all; pictures mean pictures and screenshots.
     const kinds = everyKind ? [] : (chosen.includes("image") ? [...chosen, "screenshot"] : chosen);
-    if (!kinds.length && !depth.checked) folderRules.delete(key(row));
-    else folderRules.set(key(row), { kinds, shallow: depth.checked });
-    ruling = null;
+    const shallow = !scanBox.checked;
+    if (!kinds.length && !shallow) folderRules.delete(key(row));
+    else folderRules.set(key(row), { kinds, shallow });
     renderFolders();
-  };
-  actions.append(cancel, save);
+  }
+  const done = element("button", "link", "Done");
+  done.onclick = () => { ruling = null; renderFolders(); };
+  const actions = element("div", "actions");
+  actions.append(done);
   panel.append(actions);
   return panel;
+}
+
+/// A folder's subfolders, each read (checked) or left out, inside the rule panel.
+function subfolderList(row) {
+  const answer = estimates.get(key(row));
+  const subfolders = answer?.subfolders || [];
+  const list = element("div", "subfolders");
+  if (!answer) {
+    list.append(element("p", "note", "Looking inside it…"));
+    return list;
+  }
+  if (!subfolders.length) {
+    list.append(element("p", "note", "No subfolders to choose here."));
+    return list;
+  }
+  const all = showAll.has(key(row));
+  for (const subfolder of all ? subfolders : subfolders.slice(0, SHORT_LIST)) list.append(subfolderRow(subfolder));
+  if (!all && subfolders.length > SHORT_LIST) {
+    const more = element("button", "more", `Show ${subfolders.length - SHORT_LIST} more`);
+    more.onclick = () => { showAll.add(key(row)); renderFolders(); };
+    list.append(more);
+  }
+  return list;
 }
 
 function folderBox(row) {
   const answer = estimates.get(key(row));
   const mark = selection.mark(row);
-  const subfolders = answer?.subfolders || [];
-  const isOpen = open.has(key(row)) && subfolders.length > 0;
   const box = element("div", "folder-box" + (mark === "off" ? " off" : ""));
   const header = element("div", "folder");
-  const disclosure = element("button", "disclosure" + (isOpen ? " open" : ""));
-  disclosure.innerHTML = CHEVRON;
-  disclosure.disabled = !subfolders.length;
-  disclosure.title = isOpen ? "Hide its subfolders" : "Choose among its subfolders";
-  disclosure.onclick = (event) => {
-    event.stopPropagation();
-    if (open.has(key(row))) open.delete(key(row)); else open.add(key(row));
-    renderFolders();
-  };
   const check = checkbox(mark, () => {
     selection.setFolder(row, mark !== "on");
     renderFolders();
@@ -286,7 +310,7 @@ function folderBox(row) {
   const chosenHere = mark !== "off" && selection.folders().some((folder) => same(folder, row));
   const rule = chosenHere ? ruleOf(row) : null;
   if (rule) text.append(element("div", "counts", ruleText(rule)));
-  header.append(disclosure, check, text);
+  header.append(check, text);
   if (!codeMode && chosenHere) {
     const rules = element("button", "link rules-link", rule ? "Rules ✓" : "Rules");
     rules.title = "What this folder holds, and how deep to look";
@@ -306,17 +330,6 @@ function folderBox(row) {
   };
   box.append(header);
   if (!codeMode && chosenHere && ruling === key(row)) box.append(rulePanel(row));
-  if (isOpen) {
-    const list = element("div", "subfolders");
-    const all = showAll.has(key(row));
-    for (const subfolder of all ? subfolders : subfolders.slice(0, SHORT_LIST)) list.append(subfolderRow(subfolder));
-    if (!all && subfolders.length > SHORT_LIST) {
-      const more = element("button", "more", `Show ${subfolders.length - SHORT_LIST} more`);
-      more.onclick = () => { showAll.add(key(row)); renderFolders(); };
-      list.append(more);
-    }
-    box.append(list);
-  }
   return box;
 }
 
@@ -401,10 +414,9 @@ $("add-folder").addEventListener("click", async () => {
   const picked = (await invoke("pick_folders")).map(canon);
   const added = [];
   for (const path of picked) {
-    // A subfolder of a folder listed opens there, checked; any other folder is listed, checked.
+    // A subfolder of a folder listed is chosen there, checked; any other folder is listed, checked.
     const listed = rows.find((row) => inside(path, row) && same(parentOf(path), row));
-    if (listed) open.add(key(listed));
-    else if (!rows.some((row) => same(row, path))) {
+    if (!listed && !rows.some((row) => same(row, path))) {
       addRow(path);
       added.push(path);
     }
@@ -985,10 +997,6 @@ async function start() {
   // The rules the folders already have (Settings → Folders): shown here, and kept when this window saves.
   for (const [path, rule] of Object.entries(info.rootRules || {})) {
     folderRules.set(key(path), { kinds: rule.kinds || [], shallow: Boolean(rule.shallow) });
-  }
-  // A folder with some of its subfolders chosen or skipped starts open, so it shows which.
-  for (const row of rows) {
-    if ([...selection.chosen, ...selection.skipped].some((path) => same(parentOf(path), row))) open.add(key(row));
   }
   if (!codeMode) {
     showModel(info.model);

@@ -227,8 +227,9 @@ Settings, и строка «N not read» появлялась только по�
 ### 1.4 UI: Settings → Folders
 
 - `folderRow()` (не code): в `side` перед Remove — кнопка «Rules», открывает редактор строкой ниже (как
-  `confirmRemoval`): чекбоксы Pictures / PDFs / Documents / Recordings / Videos, чекбокс «Top level only», Save и
-  Cancel. Всё отмечено = правила нет (пусто); «Pictures» = `image` + `screenshot`.
+  `confirmRemoval`): чекбоксы Pictures / PDFs / Documents / Recordings / Videos, переключатель «Scan its
+  subfolders» (снят = только верхний уровень, `shallow`), Save и Cancel. Всё отмечено = правила нет (пусто);
+  «Pictures» = `image` + `screenshot`.
 - **Тот же редактор — на экране добавления папок** (`setup.js`, «Add Folders…» → окно «What should DigUp Plus
   search?»): у выбранной строки ссылка «Rules», итог — строкой под папкой («pictures only · top level only»), а
   `apply_setup_folders(folders, skipped, rules)` сохраняет правила **до** `apply_folders`, поэтому первый проход уже
@@ -236,6 +237,10 @@ Settings, и строка «N not read» появлялась только по�
   сверяет ключи с добавляемыми папками через `same_path` и выбрасывает пустые/неизвестные правила; `clean_rule()`
   общий с `set_root_rule`. Для папок кода (`?code`) контрол скрыт; правило получает строка, которая сама является
   выбранным корнем (у вложенного выбранного корня — позже, в Settings).
+- **Глубина — один механизм, а не два:** на экране добавления «Scan subfolders» (вкл. по умолчанию) раскрывает
+  список подпапок прямо в редакторе (чекбокс = читать), а снятый переключатель означает `shallow` и снимает
+  выбранные подпапки-корни этой папки, чтобы не оставалось «и top level only, и подпапка внутри». Отдельная кнопка
+  «…» со списком подпапок убрана — она дублировала то же место и прятала контрол.
 - `reasonLines()` — две строки-перевода: «of a kind this folder doesn't index», «folders beyond the top level».
 - Правило читается из `info.rootRules` поиском по `samePath` (пути могут отличаться регистром).
 

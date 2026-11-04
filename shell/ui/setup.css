@@ -73,14 +73,7 @@ h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: 
    subfolders one level down when opened. */
 .folder-box { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
 .folder-box.off { background: transparent; }
-.folder { display: flex; align-items: center; gap: 10px; padding: 9px 12px 9px 6px; }
-.disclosure {
-  width: 18px; height: 26px; flex: none; padding: 0; border: 0; background: none; color: var(--secondary);
-  display: grid; place-items: center;
-}
-.disclosure svg { width: 10px; height: 10px; transition: transform 0.12s; }
-.disclosure.open svg { transform: rotate(90deg); }
-.disclosure[disabled] { visibility: hidden; }
+.folder { display: flex; align-items: center; gap: 10px; padding: 9px 12px; }
 .folder input, .subfolder input { width: 16px; height: 16px; accent-color: var(--moss); flex: none; margin: 0; }
 .folder .text { min-width: 0; flex: 1; }
 .folder .name { font-size: 13px; font-weight: 600; }
@@ -105,6 +98,10 @@ h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: 
 .rule .choice input { margin: 0; accent-color: var(--moss); }
 .rule .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
 .rule .actions button { padding: 3px 10px; }
+.rule .subfolders { padding: 4px 0 0; border-top: 0; }
+.rule .subfolder { padding-left: 26px; }
+.rule .more { padding-left: 26px; }
+.rule .note { margin: 6px 0 0; }
 
 /* Setup's last step: the model's download, then indexing, as it goes. */
 .progress-card {
