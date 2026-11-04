@@ -154,6 +154,23 @@ import Testing
         let outside = call(scoped, "tools/call", ["name": "read_snippet", "arguments": ["path": path]])
         #expect((outside["error"] as? [String: Any])?["code"] as? Int == -32602)
         #expect((outside["error"] as? [String: Any])?["message"] as? String == "path is outside the configured agent scope: \(path)")
+        // Without a segment id the passage is the text that says something, not the name entry's folder path.
+        let auto = try tool(server, "read_snippet", ["path": path, "max_tokens": 32])
+        #expect((auto.answer["text"] as? String)?.hasPrefix("budgetword") == true)
+    }
+
+    /// A picture has no text of its own: the name entry's folder path is not an answer.
+    @Test func readSnippetDoesNotAnswerWithTheFolderPath() throws {
+        let store = try index(count: 0)
+        let path = folder.appendingPathComponent("photo.jpg").path
+        let id = try store.insert(Candidate(path: path, kind: .image, size: 1, mtime: 1, inode: 1, device: 1))
+        var vector = [Float](repeating: 0, count: Vectors.dimension)
+        vector[0] = 1
+        try store.addSegment(file: id, kind: .image, modality: .image, vector: vector)
+        let server = MCPServer(index: folder)
+        let read = try tool(server, "read_snippet", ["path": path])
+        #expect(read.failed)
+        #expect((read.answer["message"] as? String)?.contains("no text") == true)
     }
 
     @Test func vectorsFromAnotherModelAreNotUsed() throws {

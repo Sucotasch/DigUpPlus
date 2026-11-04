@@ -295,7 +295,8 @@ public final class MCPServer {
         return real
     }
 
-    /// The segment of `file` that matches the query best (by words), else its first with any text.
+    /// The segment of `file` that matches the query best (by words), else its first with text: the name entry only
+    /// carries its folder's path, which answers nothing.
     private func passage(of file: FileRecord, query: String?, searcher: Searcher) throws -> Int64? {
         if let query, !query.isEmpty {
             let terms = Searcher.terms(query)
@@ -303,15 +304,17 @@ public final class MCPServer {
                 var id: Int64?
                 try searcher.store.db.query("""
                     SELECT s.id FROM fts JOIN segments s ON s.id = fts.rowid
-                    WHERE s.file = ? AND fts MATCH ? ORDER BY rank LIMIT 1
+                    WHERE s.file = ? AND s.kind != 'name' AND fts MATCH ? ORDER BY rank LIMIT 1
                     """, [.int(file.id), .text(pattern)]) { id = $0.int(0) }
                 if let id { return id }
             }
         }
         var id: Int64?
-        try searcher.store.db.query("SELECT id FROM segments WHERE file = ? ORDER BY id LIMIT 1", [.int(file.id)]) {
-            id = $0.int(0)
-        }
+        try searcher.store.db.query("""
+            SELECT s.id FROM segments s JOIN fts ON fts.rowid = s.id
+            WHERE s.file = ? AND s.kind != 'name' AND length(coalesce(fts.original, fts.body)) > 0
+            ORDER BY s.id LIMIT 1
+            """, [.int(file.id)]) { id = $0.int(0) }
         return id
     }
 
