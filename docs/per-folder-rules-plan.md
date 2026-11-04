@@ -320,9 +320,11 @@ Windows без учёта регистра (есть тест `inside`). `digup 
 Settings → **Search** (новая вкладка): «Meaning match threshold» (число, 2.0 по умолчанию, 0.5–5.0) и «Images: the
 weaker matches» — Standard (0.648/0.600), More/Loose (0.60/0.55), Fewer/Strict (0.68/0.64).
 
-- **Сохранение:** `settings.rs` — `zgate: f64` и `image_tiers: String`, у обоих serde-дефолты (`2.0`, `"standard"`),
-  чтобы старый settings.json читался как раньше. `Settings::search_settings` приводит значение в диапазон и
-  отбрасывает неизвестный профиль (тест `search_settings_default_to_the_engine_and_keep_a_chosen_gate`).
+- **Сохранение:** `settings.rs` — `zgate: Option<f64>` и `image_tiers: Option<String>` (`None` = дефолт движка и
+  `"standard"`; `Settings::gate()` отдаёт 2.0). Именно `Option`, а не число с serde-дефолтом: `Settings::default()`
+  (файла ещё нет — первый запуск) serde-дефолты не применяет, и `zgate` оказывался `0` — поиск вообще без гейта.
+  Нашлось живой проверкой собранного exe (`settings_info` → `zgate: 0`); тест теперь проверяет и `Settings::default()`.
+  `Settings::search_settings` приводит значение в диапазон 0.5–5.0 и отбрасывает неизвестный профиль.
 - **Применение z-гейта (исправленная проводка):** окно и панель `zgate` **не** отправляют — иначе пришлось бы править
   два места и помнить о них. Гейт едет в существующем запросе `{"op":"folders",…,"zgate":n}` (новое поле), который
   `SearchService` запоминает (`private var zGate`) и применяет по умолчанию к каждому `search`; явный `zgate` в
@@ -387,6 +389,7 @@ index-service (`note: tags only: …` в логе), 7 файлов / 5 вект�
 | `estimate` (`main.rs:451-461`) | не передаёт `--exclude`/`--exclude-ext` | чиним в фазе 1 (Д5) |
 | `remove_folder` (`main.rs:2409`) | `Path::starts_with` сравнивает регистр на Windows → осиротевшие `skipped` | общий `inside()` без регистра (Д7) |
 | `status.rs` (`:58-66`) | `left_out` терялся на синке с новыми файлами (первый проход) | одна ветка `sync` (Д8), тест |
+| `Settings::default()` | serde-дефолты не применяются к `Default::default()`: на первом запуске `zgate` был 0 | поля `Option` + `Settings::gate()` 2.0, тест на `Settings::default()` |
 | Watcher и `kinds` | событие неиндексируемого типа просит синк | shortcut в коде + строка в шапке `watcher.rs` |
 | `documents/development-guide.md` | устаревшие числа (56 тестов, 133/134, 0.1.1, `website.yml`) | обновлено 2026-11-04 |
 | `folder_arguments` в `search-service` | правило могло бы сломать поиск | правила туда не едут (Д4) |

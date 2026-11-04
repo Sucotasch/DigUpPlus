@@ -9,7 +9,6 @@ use std::path::Path;
 
 /// Serde defaults for settings that older files don't have: the engine's own gate, and the measured layer cutoffs.
 fn default_zgate() -> f64 { 2.0 }
-fn default_image_tiers() -> String { "standard".to_string() }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -27,14 +26,13 @@ pub struct Settings {
     /// subfolders are walked (`--root-rule`). Folders without one are searched whole, as they always were. The kinds
     /// are strings, not an enum: a name from a newer version must not make the whole settings file unreadable.
     pub root_rules: BTreeMap<String, RootRule>,
-    /// How far a meaning match must stand out to count (`Searcher.zGate`, 2.0 by default): lower finds more, weaker
-    /// matches. Sent to the search service with the folders, so the panel and the window agree.
-    #[serde(default = "default_zgate")]
-    pub zgate: f64,
+    /// How far a meaning match must stand out to count (`Searcher.zGate`): lower finds more, weaker matches. None: the
+    /// engine's 2.0. Sent to the search service with the folders, so the panel and the window agree. `Option` and not a
+    /// number with a default, because `Settings::default()` (no settings file yet) doesn't apply serde's defaults.
+    pub zgate: Option<f64>,
     /// Where the Images filter cuts its cosine layers: "standard" (the measured 0.648/0.600), "loose" or "strict".
-    /// The window counts from it (`IMAGE_TIER_PROFILES` in window.js); the panel has no layers.
-    #[serde(default = "default_image_tiers")]
-    pub image_tiers: String,
+    /// The window counts from it (`IMAGE_TIER_PROFILES` in window.js); the panel has no layers. None: standard.
+    pub image_tiers: Option<String>,
     /// The panel's hotkey (Tauri's accelerator form); empty: the default.
     pub hotkey: String,
     /// Onboarding is done: the shell starts in the tray.
@@ -99,7 +97,11 @@ pub struct WindowPlace {
 }
 
 impl Settings {
-    /// The Images layers' cutoffs by profile (the window's `IMAGE_TIER_PROFILES` holds the same numbers).
+    /// The gate in use: what was chosen, or the engine's own. (`Settings::default()` has none: no settings file yet.)
+    pub fn gate(&self) -> f64 { self.zgate.unwrap_or(default_zgate()) }
+
+    /// The Images layers' cutoffs by profile (the window's `IMAGE_TIER_PROFILES` holds the same numbers). `"standard"`
+    /// when nothing was chosen, and for a name this version doesn't know.
     pub fn tier_profile(name: &str) -> &'static str {
         match name {
             "loose" => "loose",
@@ -115,7 +117,6 @@ impl Settings {
         let zgate = if zgate.is_finite() { zgate.clamp(0.5, 5.0) } else { default_zgate() };
         (zgate, Self::tier_profile(image_tiers).to_string())
     }
-
     /// The file's settings, or the defaults when there's none (or it can't be read). A file that can't be parsed is
     /// kept as `settings.json.bad`: the choices in it are the person's, and the next save would overwrite them for
     /// good. A file that can't be read at all (permissions) stays where it is; the log line is the only trace.
@@ -220,14 +221,17 @@ mod tests {
         // A file from before these settings: the engine's gate and the measured layer cutoffs.
         std::fs::write(&path, br#"{"folders":["C:/One"]}"#).unwrap();
         let older = Settings::load(&path);
-        assert_eq!(older.zgate, 2.0);
-        assert_eq!(older.image_tiers, "standard");
+        assert_eq!(older.gate(), 2.0);
+        assert_eq!(Settings::tier_profile(older.image_tiers.as_deref().unwrap_or("standard")), "standard");
+        // No settings file yet (a first run): the derived Default has no gate at all, which must still search at 2.0.
+        assert!(Settings::default().zgate.is_none());
+        assert_eq!(Settings::default().gate(), 2.0);
         // A chosen gate and profile ride along, and an unknown profile reads as standard.
-        let settings = Settings { zgate: 1.4, image_tiers: "hologram".into(), ..Settings::default() };
+        let settings = Settings { zgate: Some(1.4), image_tiers: Some("hologram".into()), ..Settings::default() };
         settings.save(&path).unwrap();
         let loaded = Settings::load(&path);
-        assert_eq!(loaded.zgate, 1.4);
-        assert_eq!(Settings::tier_profile(&loaded.image_tiers), "standard");
+        assert_eq!(loaded.gate(), 1.4);
+        assert_eq!(Settings::tier_profile(loaded.image_tiers.as_deref().unwrap_or("standard")), "standard");
         // What a change is kept as: a usable number and a known profile.
         assert_eq!(Settings::search_settings(1.4, "loose"), (1.4, "loose".to_string()));
         assert_eq!(Settings::search_settings(0.0, "strict"), (0.5, "strict".to_string()));

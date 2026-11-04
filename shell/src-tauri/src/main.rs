@@ -778,7 +778,8 @@ fn window_info(shell: State<'_, Arc<Shell>>) -> Value {
         "state": shell.snapshot(),
         "search": search.map(|(query, kind)| json!({"query": query, "kind": kind})),
         "hasCode": !shell.code_folders().is_empty(),
-        "imageTiers": settings::Settings::tier_profile(&shell.settings.lock().unwrap().image_tiers),
+        "imageTiers": settings::Settings::tier_profile(
+            shell.settings.lock().unwrap().image_tiers.as_deref().unwrap_or("standard")),
         "debugQuery": shell.options.debug_window,
         "debugSettings": shell.options.debug_settings,
         "debugCopy": shell.options.debug_copy,
@@ -1186,7 +1187,7 @@ fn apply_folders(app: &AppHandle) {
 fn folders_request(shell: &Shell) -> Value {
     let settings = shell.settings.lock().unwrap().clone();
     json!({"op": "folders", "roots": shell.folders(), "skipped": settings.skipped, "types": settings.skip_types,
-           "code_roots": shell.code_folders(), "code_skipped": settings.code_skipped, "zgate": settings.zgate})
+           "code_roots": shell.code_folders(), "code_skipped": settings.code_skipped, "zgate": settings.gate()})
 }
 
 /// Watches the folders and code search's, and indexes them now when the model is in.
@@ -1617,8 +1618,8 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "skipTypes": settings.skip_types,
         "tagTypes": settings.tag_types,
         "rootRules": settings.root_rules,
-        "zgate": settings.zgate,
-        "imageTiers": Settings::tier_profile(&settings.image_tiers),
+        "zgate": settings.gate(),
+        "imageTiers": Settings::tier_profile(settings.image_tiers.as_deref().unwrap_or("standard")),
         "indexHours": {"on": settings.index_hours_on, "start": settings.index_hours.start, "end": settings.index_hours.end},
         "storage": storage(&shell),
         "transfer": shell.transfer_state.lock().unwrap().clone(),
@@ -2605,11 +2606,11 @@ fn set_search_settings(shell: State<'_, Arc<Shell>>, zgate: f64, image_tiers: St
     let (zgate, image_tiers) = Settings::search_settings(zgate, &image_tiers);
     {
         let mut settings = shell.settings.lock().unwrap();
-        if settings.zgate == zgate && settings.image_tiers == image_tiers {
+        if settings.gate() == zgate && settings.image_tiers.as_deref() == Some(image_tiers.as_str()) {
             return Ok(json!({"zgate": zgate, "imageTiers": image_tiers}));
         }
-        settings.zgate = zgate;
-        settings.image_tiers = image_tiers.clone();
+        settings.zgate = Some(zgate);
+        settings.image_tiers = Some(image_tiers.clone());
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
     }
     let request = folders_request(&shell);
