@@ -1326,6 +1326,9 @@ fn apply_folders(app: &AppHandle) {
     for folder in &folders {
         let _ = app.asset_protocol_scope().allow_directory(folder, true);
     }
+    // The process running now is told by the request below; the next one — after the idle exit — has to start with
+    // these folders, skipped types and rules too, or a folder added now disappears from search after that restart.
+    shell.search.set_next_launch(shell.search_launch());
     let request = folders_request(&shell);
     let search = shell.clone();
     tauri::async_runtime::spawn(async move {

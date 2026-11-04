@@ -131,6 +131,12 @@ impl SearchService {
         }
     }
 
+    /// The next search process starts with this launch (changed folders, skipped types or rules): the one running now
+    /// keeps going and is told by a `folders` request, so a warm encoder isn't thrown away for a settings change.
+    pub fn set_next_launch(&self, launch: Launch) {
+        *self.launch.lock().unwrap() = launch;
+    }
+
     /// The next search process starts with this launch (a new model folder, the processor instead of the GPU): the one
     /// running now is stopped, so the change reaches the helper instead of waiting for the next start of DigUp.
     pub fn set_launch(&self, launch: Launch) {
@@ -420,6 +426,15 @@ mod tests {
         assert_eq!(service.env(), vec![("DIGUP_MODELS".into(), "C:/old".into())]);
         service.set_launch(launch("G:/Ai/DigUp/Models/embeddinggemma-2"));
         assert_eq!(service.env(), vec![("DIGUP_MODELS".into(), "G:/Ai/DigUp/Models/embeddinggemma-2".into())]);
+    }
+
+    /// A folder (or skipped type, or rule) added while the app runs must reach the helper that starts after the running
+    /// one exits for being idle, not only the one that's running.
+    #[test]
+    fn a_folder_change_reaches_the_next_search_process_without_stopping_this_one() {
+        let service = SearchService::new(launch("C:/models"), |_| {});
+        service.set_next_launch(launch("D:/models-2"));
+        assert_eq!(service.env(), vec![("DIGUP_MODELS".into(), "D:/models-2".into())]);
     }
 }
 #[cfg(windows)]
