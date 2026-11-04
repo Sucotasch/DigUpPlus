@@ -194,6 +194,11 @@ scripts/package-portable.sh        # → shell/src-tauri/target/release/DigUpPlu
 только `DigUpPlus.exe` и `portable.txt` (и `THIRD-PARTY-NOTICES.txt`), без 400 МБ helper'а. `SHELL_ONLY=1
 scripts/package-portable.sh` дополнительно собирает `-shell-only.zip` из этих трёх файлов.
 
+Из Git Bash `link.exe` из `D:\Works\Git\usr\bin` перебивает MSVC, и Tauri-сборка падает на `extra operand … .rcgu.o`
+(§5). Поэтому портативную сборку на этой машине запускают обёрткой `.build/package-portable-local.cmd`: она входит в
+`vcvars64.bat`, называет `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` и ставит MSVC первым в `PATH` перед вызовом
+скрипта. Прямой запуск `scripts/package-portable.sh` без этого — тот же сбой.
+
 ### Установщик (остался от upstream, `scripts/package-windows.sh`)
 
 `scripts/package-windows.sh` — полная упаковка. Требования (заголовок скрипта): Git Bash внутри Visual Studio
