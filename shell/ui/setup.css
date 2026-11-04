@@ -97,6 +97,15 @@ h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: 
 .subfolder .time { font-size: 11px; color: var(--secondary); }
 .more { font: inherit; font-size: 11px; color: var(--ember); background: none; border: 0; padding: 4px 0 2px 58px; }
 
+/* A folder's rule (Rules…): what it holds and how deep to look, chosen before the first pass reads it. */
+.folder button.rules-link { padding: 0 2px; font-size: 11px; flex: none; }
+.rule { border-top: 1px solid var(--line); padding: 8px 12px 10px; }
+.rule p { font-size: 12px; margin: 0 0 4px; }
+.rule .choice { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px; }
+.rule .choice input { margin: 0; accent-color: var(--moss); }
+.rule .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+.rule .actions button { padding: 3px 10px; }
+
 /* Setup's last step: the model's download, then indexing, as it goes. */
 .progress-card {
   max-width: 470px; margin: 26px auto 0; padding: 16px 18px;

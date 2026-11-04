@@ -229,6 +229,13 @@ Settings, и строка «N not read» появлялась только по�
 - `folderRow()` (не code): в `side` перед Remove — кнопка «Rules», открывает редактор строкой ниже (как
   `confirmRemoval`): чекбоксы Pictures / PDFs / Documents / Recordings / Videos, чекбокс «Top level only», Save и
   Cancel. Всё отмечено = правила нет (пусто); «Pictures» = `image` + `screenshot`.
+- **Тот же редактор — на экране добавления папок** (`setup.js`, «Add Folders…» → окно «What should DigUp Plus
+  search?»): у выбранной строки ссылка «Rules», итог — строкой под папкой («pictures only · top level only»), а
+  `apply_setup_folders(folders, skipped, rules)` сохраняет правила **до** `apply_folders`, поэтому первый проход уже
+  их соблюдает. Иначе папку сначала просканировали бы целиком, а правило поставили бы потом. `rules_for()` (main.rs)
+  сверяет ключи с добавляемыми папками через `same_path` и выбрасывает пустые/неизвестные правила; `clean_rule()`
+  общий с `set_root_rule`. Для папок кода (`?code`) контрол скрыт; правило получает строка, которая сама является
+  выбранным корнем (у вложенного выбранного корня — позже, в Settings).
 - `reasonLines()` — две строки-перевода: «of a kind this folder doesn't index», «folders beyond the top level».
 - Правило читается из `info.rootRules` поиском по `samePath` (пути могут отличаться регистром).
 
@@ -284,10 +291,11 @@ Rust (cargo):
 | `Sources/DigUpKit/Crawler.swift` | `rules`, `owner(of:)`, `kindSkips`, shallow-проверка по контейнеру, `leftOut`/`foundRoot` по владельцу |
 | `Sources/digup/main.swift` | `--root-rule` (разбор, `CLIError`), `options.rootRules`, usage |
 | `shell/src-tauri/src/settings.rs` | `root_rules: BTreeMap<String, RootRule>`, тест round-trip |
-| `shell/src-tauri/src/main.rs` | `KINDS`, `rule_arguments`, `inside`, `index_launch`/`estimate`, `set_root_rule`, уборка в `remove_folder`/`apply_setup_folders`, `settings_info`, `settings`-watcher `shallow` |
+| `shell/src-tauri/src/main.rs` | `KINDS`, `clean_rule`, `rules_for`, `rule_arguments`, `inside`, `index_launch`/`estimate`, `set_root_rule`, `apply_setup_folders` с правилами, уборка в `remove_folder`, `settings_info`, `settings`-watcher `shallow` |
 | `shell/src-tauri/src/watcher.rs` | `shallow: &[PathBuf]`, `NonRecursive`, shortcut-комментарий |
 | `shell/src-tauri/src/status.rs` | Д8: `left_out` на любом `sync` |
 | `shell/ui/settings.js` | кнопка «Rules», редактор в строке, `ruleText`, переводы причин |
+| `shell/ui/setup.{js,html,css}` | «Rules» на экране добавления папок (`rulePanel`, `rulesObject`), «Choose Another Folder…» |
 | `shell/ui/settings.css` | `.confirm.rules`, `.confirm .choice` |
 | `Tests/DigUpKitTests/RootRulesTests.swift` | 6 тестов (kinds, shallow, пустое правило, вложенные корни, частичный обход, сходимость) |
 
@@ -305,6 +313,10 @@ Rust (cargo):
 - Тот же прогон доиндексировал реальный индекс: `digup status` → 5 векторов, вид только `image` (видео отсечено
   правилом, сохранённым из UI), повторный запуск — `added 0`, `unchanged 5`, причина в `left_out`, и в Settings
   строка «5 of 5 indexed · 1 not read · why» → «1 of a kind this folder doesn't index».
+- Добавление папки с правилом (CDP на dev-сборке): на экране «What should DigUp Plus search?» у выбранной строки
+  есть «Rules», панель даёт те же шесть галочек, строка показывает «pictures only · top level only», а
+  `apply_setup_folders` с `rules` записал `rootRules` и запустил синк: 5 картинок остались, 2 записи и видео ушли
+  (`removed: 2`, `left_out`: 2 «of a kind…», 1 «folders beyond the top level») — первый проход уже по правилу.
 - Watcher и `search-service` — по коду и тестам: в аргументах `index-service`/`estimate` есть `--root-rule` (правило
   применилось в живом индексе: 5 картинок, видео в `left_out`), у процесса `search-service` флага нет (проверено по
   командной строке).

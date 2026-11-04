@@ -178,6 +178,81 @@ function renderFolders() {
   renderFooter();
 }
 
+// MARK: What a folder holds (Rules… on a row)
+
+// The settings' root rules, chosen here so the first pass already leaves out what the person doesn't want: the kinds a
+// folder holds (Pictures is pictures and screenshots), and "top level only". Kept per canonical folder, sent on Save.
+const RULE_KINDS = [["image", "Pictures"], ["pdf", "PDFs"], ["doc", "Documents"], ["audio", "Recordings"],
+                    ["video", "Videos"]];
+const folderRules = new Map();   // canonical folder → { kinds: [...], shallow: bool }
+let ruling = null;               // the folder whose rule is being edited, or null
+
+function ruleOf(folder) { return folderRules.get(key(folder)) || null; }
+
+/// A folder's rule in words, for its line: "pictures only · top level only".
+function ruleText(rule) {
+  const names = { image: "pictures", pdf: "PDFs", doc: "documents", audio: "recordings", video: "videos" };
+  const kinds = (rule.kinds || []).filter((kind) => kind !== "screenshot").map((kind) => names[kind] || kind);
+  const parts = [];
+  if (kinds.length) parts.push(`${kinds.join(", ")} only`);
+  if (rule.shallow) parts.push("top level only");
+  return parts.join(" · ");
+}
+
+/// What goes with the folders on Save: the rules of the chosen ones, unchanged in form from the settings'.
+function rulesObject() {
+  const out = {};
+  for (const folder of selection.folders()) {
+    const rule = ruleOf(folder);
+    if (!rule) continue;
+    const everyKind = !rule.kinds.length || RULE_KINDS.every(([kind]) => rule.kinds.includes(kind));
+    if (everyKind && !rule.shallow) continue;   // everything, all the way down: no rule to send
+    out[native(folder)] = { kinds: everyKind ? [] : rule.kinds, shallow: rule.shallow };
+  }
+  return out;
+}
+
+/// The editor under a row: the kinds it holds, and "top level only". Nothing checked apart is every kind; Pictures
+/// sends the screenshot kind too (a screenshot is a picture with a kind of its own in the index).
+function rulePanel(row) {
+  const rule = ruleOf(row) || { kinds: [], shallow: false };
+  const panel = element("div", "rule");
+  panel.append(element("p", "", `What “${nameOf(row)}” holds:`));
+  const boxes = RULE_KINDS.map(([kind, label]) => {
+    const choice = element("label", "choice");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = rule.kinds.length === 0 || rule.kinds.includes(kind);
+    input.dataset.kind = kind;
+    choice.append(input, label);
+    panel.append(choice);
+    return input;
+  });
+  const below = element("label", "choice");
+  const depth = document.createElement("input");
+  depth.type = "checkbox";
+  depth.checked = rule.shallow;
+  below.append(depth, "Top level only (don't look in its subfolders)");
+  panel.append(below);
+  const actions = element("div", "actions");
+  const cancel = element("button", "link", "Cancel");
+  cancel.onclick = () => { ruling = null; renderFolders(); };
+  const save = element("button", "link", "Save Rule");
+  save.onclick = () => {
+    const chosen = boxes.filter((input) => input.checked).map((input) => input.dataset.kind);
+    const everyKind = RULE_KINDS.every(([kind]) => chosen.includes(kind));
+    // Every kind checked is no kinds filter at all; pictures mean pictures and screenshots.
+    const kinds = everyKind ? [] : (chosen.includes("image") ? [...chosen, "screenshot"] : chosen);
+    if (!kinds.length && !depth.checked) folderRules.delete(key(row));
+    else folderRules.set(key(row), { kinds, shallow: depth.checked });
+    ruling = null;
+    renderFolders();
+  };
+  actions.append(cancel, save);
+  panel.append(actions);
+  return panel;
+}
+
 function folderBox(row) {
   const answer = estimates.get(key(row));
   const mark = selection.mark(row);
@@ -206,7 +281,22 @@ function folderBox(row) {
   else if (answer?.readable === false) text.append(element("div", "counts problem", "Can't read it"));
   else if (part && Object.values(part.files).some((count) => count > 0)) text.append(element("div", "counts", countsText(part.files)));
   else text.append(element("div", "path", answer ? (Object.keys(answer.files || {}).length ? "Nothing to search in the subfolders checked" : codeMode ? "No code here" : "Nothing DigUp Plus searches in it") : native(row)));
+  // What this folder will be searched for (Rules…): said on its line, so the first pass has no surprises. Only a row
+  // that is itself a chosen root takes a rule (a rule belongs to the nearest chosen folder).
+  const chosenHere = mark !== "off" && selection.folders().some((folder) => same(folder, row));
+  const rule = chosenHere ? ruleOf(row) : null;
+  if (rule) text.append(element("div", "counts", ruleText(rule)));
   header.append(disclosure, check, text);
+  if (!codeMode && chosenHere) {
+    const rules = element("button", "link rules-link", rule ? "Rules ✓" : "Rules");
+    rules.title = "What this folder holds, and how deep to look";
+    rules.onclick = (event) => {
+      event.stopPropagation();
+      ruling = ruling === key(row) ? null : key(row);
+      renderFolders();
+    };
+    header.append(rules);
+  }
   if (answer && !answer.failed && answer.readable !== false && calibrated) header.append(timeOf(part, mark === "off"));
   else if (!answer) header.append(element("div", "time", "…"));
   header.onclick = (event) => {
@@ -215,6 +305,7 @@ function folderBox(row) {
     renderFolders();
   };
   box.append(header);
+  if (!codeMode && chosenHere && ruling === key(row)) box.append(rulePanel(row));
   if (isOpen) {
     const list = element("div", "subfolders");
     const all = showAll.has(key(row));
@@ -547,7 +638,7 @@ $("skip-indexing").addEventListener("click", async () => {
   try {
     // Nothing is indexed for now: no folders saved, nothing read. Settings → Folders adds them whenever the person is
     // ready (the model still downloads in the background if it isn't in yet).
-    await invoke("apply_setup_folders", { folders: [], skipped: [] });
+    await invoke("apply_setup_folders", { folders: [], skipped: [], rules: {} });
   } catch (error) {
     $("summary").textContent = String(error);
     $("skip-indexing").disabled = false;
@@ -606,7 +697,8 @@ $("next").addEventListener("click", async () => {
     try {
       // Indexing starts now (once the model is in), while the rest of setup goes on.
       await invoke(codeMode ? "set_code_folders" : "apply_setup_folders",
-                   { folders: selection.folders().map(native), skipped: selection.skips().map(native) });
+                   { folders: selection.folders().map(native), skipped: selection.skips().map(native),
+                     rules: codeMode ? {} : rulesObject() });
     } catch (error) {
       $("summary").textContent = String(error);
       $("next").disabled = false;

@@ -29,6 +29,7 @@ use options::{Options, DEFAULT_HOTKEY};
 use serde_json::{json, Value};
 use settings::Settings;
 use status::Status;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -348,6 +349,31 @@ fn folder_arguments(settings: &Settings, code_folders: &[String]) -> Vec<String>
 /// The kinds the engine indexes (its `FileKind`), for the folder rules.
 const KINDS: [&str; 7] = ["screenshot", "image", "pdf", "doc", "audio", "video", "code"];
 
+/// A rule as the engine takes it: the kinds it knows, in its order, or none at all when nothing is left of it.
+fn clean_rule(kinds: Vec<String>, shallow: bool) -> Option<settings::RootRule> {
+    let kinds: Vec<String> = KINDS.iter().filter(|kind| kinds.iter().any(|sent| sent == *kind))
+        .map(|kind| kind.to_string()).collect();
+    if kinds.is_empty() && !shallow {
+        None
+    } else {
+        Some(settings::RootRule { kinds, shallow })
+    }
+}
+
+/// The rules that go with the folders being added: keys as those folders are spelled, nothing for a folder that isn't
+/// chosen, and nothing for a rule that would say "everything" (the crawl is the same either way).
+fn rules_for(folders: &[String], sent: BTreeMap<String, settings::RootRule>) -> BTreeMap<String, settings::RootRule> {
+    let mut out = BTreeMap::new();
+    for (path, rule) in sent {
+        let Some(chosen) = folders.iter().find(|folder| models::same_path(Path::new(folder), Path::new(&path)))
+        else { continue };
+        if let Some(rule) = clean_rule(rule.kinds, rule.shallow) {
+            out.insert(chosen.clone(), rule);
+        }
+    }
+    out
+}
+
 /// The folders' own rules (`--root-rule`), for indexing and estimating only: a rule says what a crawl reads, and the
 /// search service never crawls (a bad rule must not take search down with it). An empty rule is no rule.
 fn rule_arguments(settings: &Settings) -> Vec<String> {
@@ -576,17 +602,18 @@ async fn pick_folders(window: tauri::WebviewWindow, app: AppHandle) -> Vec<Strin
 
 /// Setup's folders, kept on leaving its folders step (or on Save, choosing folders later): indexing starts on them at
 /// once (once the model is in), while the rest of setup goes on, as on the Mac. `skipped`: folders inside them that
-/// aren't searched.
+/// aren't searched. `rules`: what each of them holds (`Rules…` on a row), written before indexing starts, so the first
+/// pass already leaves out what the person doesn't want (kinds, subfolders); a rule is kept only for a folder that's
+/// being added.
 #[tauri::command]
-fn apply_setup_folders(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<String>, skipped: Vec<String>)
-    -> Result<(), String> {
+fn apply_setup_folders(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<String>, skipped: Vec<String>,
+                       rules: Option<BTreeMap<String, settings::RootRule>>) -> Result<(), String> {
+    let rules = rules_for(&folders, rules.unwrap_or_default());
     {
         let mut settings = shell.settings.lock().unwrap();
-        let kept = folders.clone();
         settings.folders = folders;
         settings.skipped = skipped;
-        settings.root_rules.retain(|root, _| kept.iter()
-            .any(|folder| models::same_path(Path::new(folder), Path::new(root))));
+        settings.root_rules = rules;
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
     }
     apply_folders(&app);
@@ -2645,13 +2672,10 @@ fn set_root_rule(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, k
             return Err("That folder isn't searched any more.".into());
         };
         // The engine's order, without repeats, and nothing it doesn't know.
-        let kinds: Vec<String> = KINDS.iter().filter(|kind| kinds.iter().any(|sent| sent == *kind))
-            .map(|kind| kind.to_string()).collect();
-        if kinds.is_empty() && !shallow {
-            settings.root_rules.remove(&chosen);
-        } else {
-            settings.root_rules.insert(chosen, settings::RootRule { kinds, shallow });
-        }
+        match clean_rule(kinds, shallow) {
+            Some(rule) => settings.root_rules.insert(chosen, rule),
+            None => settings.root_rules.remove(&chosen),
+        };
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
     }
     apply_folders(&app);
@@ -3384,6 +3408,24 @@ mod tests {
         assert_eq!(super::tag_arguments(&settings), vec!["--tag-type", "mp3", "--tag-type", "m4a"]);
         // What is typed becomes the same list both fields keep: dots, case, commas and spaces forgiven.
         assert_eq!(super::type_list(" .MP3, m4a  ,, "), vec!["mp3", "m4a"]);
+    }
+
+    #[test]
+    fn rules_at_add_time_keep_only_chosen_folders_under_their_spelling() {
+        let folders = vec!["C:\\Photos".to_string(), "D:/Music".to_string()];
+        let mut sent = std::collections::BTreeMap::new();
+        // Typed with another spelling and case: the rule lands on the folder as it is stored.
+        sent.insert("c:/photos".to_string(), RootRule { kinds: vec!["image".into(), "hologram".into()], shallow: false });
+        // Everything, and nothing below it: only the shallow part is a rule.
+        sent.insert("D:/Music".to_string(), RootRule { kinds: Vec::new(), shallow: true });
+        // A folder that isn't being added, and a rule that says everything: both dropped.
+        sent.insert("E:/Elsewhere".to_string(), RootRule { kinds: vec!["video".into()], shallow: true });
+        sent.insert("D:/Music/Sub".to_string(), RootRule { kinds: Vec::new(), shallow: false });
+        let rules = super::rules_for(&folders, sent);
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules["C:\\Photos"].kinds, vec!["image"]);
+        assert!(!rules["C:\\Photos"].shallow);
+        assert_eq!(rules["D:/Music"], RootRule { kinds: Vec::new(), shallow: true });
     }
 
     #[test]
