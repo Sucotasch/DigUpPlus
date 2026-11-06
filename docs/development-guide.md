@@ -40,7 +40,7 @@ updates automatically» удалены, релизы выпускаются вр
 | `Sources/DigUpKit/Platform/Apple` | macOS: ImageIO, PDFKit, AVFoundation, Vision, Metal. |
 | `Sources/DigUpKit/Platform/Portable` | Windows/Linux: PDFium, stb, miniz, SQLite, ffmpeg из `Vendor/`. |
 | `Sources/LlamaRuntime` | Биндинг llama.cpp и инференс EmbeddingGemma. |
-| `Sources/digup` | CLI разработчика **и** helper-процессы приложения: `index-service`, `search-service`, `worker`, `download-model`, `estimate`, `search`, `status`, `speed`, `eval`. |
+| `Sources/digup` | CLI разработчика **и** helper-процессы приложения: `index-service`, `search-service`, `worker`, `download-model`, `estimate`, `search`, `status`, `speed`, `eval`, `mcp`. |
 | `Sources/DigUpApp` | macOS-приложение (эталон поведения). В форке не собирается ни на одной платформе. |
 | `shell/src-tauri` | Rust-оболочка: трей, хоткей, окна, файловые операции, статус. |
 | `shell/ui` | Окна оболочки: `panel.*`, `window.*`, `settings.*`, `setup.*`. Чистые HTML/CSS/JS, без фреймворка и сборки. |

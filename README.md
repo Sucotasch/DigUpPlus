@@ -56,6 +56,8 @@ here. What this fork changes is what surrounds the engine:
   anything below 0.600 folds away as *N hidden images* until you open it, which keeps the irrelevant tail out of
   sight without ever losing it. Files that matched by exact words stay on top whatever their cosine, and a query
   whose own scale sits low gets both thresholds dropped under its best image, so its results aren't all hidden.
+  The thresholds are not frozen: Settings → Search sets how far a meaning match must stand out (the z-gate) and
+  which layer profile the Images view uses (Standard, Loose, Strict).
   Scroll on its own only fetches the visible layer — the weaker tail waits for its fold or for the **Show 300 more**
   button, so a click never pulls in rows you can't see.
 - **A keyboard-first results window.** Tab switches between the search field and the results, Del deletes the file
@@ -128,6 +130,7 @@ the full package.
 | — | Insert / Ctrl+A | Selects results in the big window to copy, move or delete (Windows; Ctrl+A outside the search field) |
 | — | Tab | Switches the keyboard between the search field and the results (big window) |
 | — | Del | Deletes the file under the cursor, or the ticked ones (Windows); Enter confirms the Recycle Bin sheet |
+| — | Right click → Find similar | Searches by that file's own picture: the closest matches in the collection, the reference left out (Windows) |
 | — | Ctrl+1…6 | The big window's views: Images, Screenshots, Documents, Video, Audio, All files |
 | — | F5 / F6 / F8 | Copy To… / Move To… / Delete the selected files (Windows) |
 
@@ -147,6 +150,13 @@ the keyboard on the delete itself (Enter confirms, Escape keeps the files). If a
 Bin, DigUp lists the affected folders and offers a separate permanent delete only after you confirm that it cannot be
 undone — there Enter keeps the files, and only the click deletes. Moving or deleting updates the index without
 reading the files again, and a copy that lands in a folder you search is indexed like any new file.
+
+Each folder in Settings → Folders also takes its own **Rules**: which kinds it holds (pictures only, video only —
+or everything), whether subfolders are walked at all (**Scan subfolders** off = top level only), and how its
+recordings are read — by their **tags** (title, artist, album — no audio embedding) or by their sound. Changing a
+rule re-syncs that folder: files the new rule leaves out drop from the index, and they come back when the rule
+does. **Rescan** and **Re-read** re-run a folder on demand. And **Find similar** in a result's right-click menu
+searches by that file's own picture — the closest matches in the collection, the reference itself left out.
 
 A few things differ by system:
 
