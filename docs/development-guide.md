@@ -367,9 +367,10 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
 - `node --check` по всем `shell/ui/*.js` — чисто;
 - пер-корневые правила (типы, top-level-only), пороги поиска и записи по тегам проверены на живой сборке:
   `docs/per-folder-rules-plan.md` §1.8, «Фаза 2», «Фаза 3»;
-- версия в `tauri.conf.json` — `0.1.10` (0.1.6 выпущен 2026-11-04; 0.1.7–0.1.9 выпущены 2026-11-05 одним тегом
+- версия в `tauri.conf.json` — `0.1.11` (0.1.6 выпущен 2026-11-04; 0.1.7–0.1.9 выпущены 2026-11-05 одним тегом
   `v0.1.9`: аудио по правилам папки, Rescan/Re-read, надёжность инкремента, MCP; 0.1.10 выпущен 2026-11-12:
-  жизненный цикл папки (Re-pick, пустая папка), пакет из upstream и исправление выделения);
+  жизненный цикл папки (Re-pick, пустая папка), пакет из upstream и исправление выделения; в дереве — `0.1.11`
+  (сборка для проверки: результаты окна открываются списком в панели Total Commander);
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
   (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` удалён. Default branch —
   `file-operations`; сборки только вручную (`scripts/package-portable.sh`).
