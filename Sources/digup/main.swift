@@ -19,6 +19,9 @@ let usage = """
       digup mcp [--root DIR]... [--print-config claude-desktop|claude-code|cursor]
                                               the read-only MCP server for agents (JSON-RPC on stdin/stdout;
                                               see docs/agent-access.md)
+      digup repick --from OLD --to NEW [--apply] [--json]
+                                              a chosen folder that moved: what the move would do, or rewrite its rows
+      digup forget <folder>... [--json]       drop these folders' rows; the folders stay chosen
       digup status                            what's in the index
       digup speed [--model [--if-needed] [--when-quiet S] [--tries N]] [--json]
                                               this machine's speed next to the M4 Pro behind the estimates, and
@@ -76,7 +79,8 @@ struct Arguments {
     var rootRules: [RootRule] = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--offset", "--zgate", "--word-weight", "--new-limit",
                                       "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
-                                      "--memory-limit", "--time-limit", "--tries", "--when-quiet", "--print-config"]
+                                      "--memory-limit", "--time-limit", "--tries", "--when-quiet", "--print-config",
+                                      "--from"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--root-rule",
                                         "--tag-type", "--root"]
 
@@ -798,6 +802,8 @@ do {
     case "index": try index(args)
     case "search": try search(args)
     case "mcp": exit(try mcpService(args))
+    case "repick": exit(try repick(args))
+    case "forget": exit(try forget(args))
     case "status": try status(args)
     case "speed": try speed(args)
     case "eval": try evaluate(args)

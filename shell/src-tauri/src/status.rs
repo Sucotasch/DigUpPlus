@@ -33,6 +33,9 @@ pub struct Status {
     pub missing: Vec<String>,
     /// What the last sync left out under each chosen folder, by reason (the helper's `left_out`), for Settings.
     pub left_out: Value,
+    /// Chosen folders that are there but empty while rows are under them: their files moved out, and Settings asks
+    /// “moved?” or “files deleted” instead of silently dropping the rows.
+    pub empty_roots: Vec<String>,
     pub unreadable: Vec<String>,
     /// The speed check before the first index is running.
     pub measuring: bool,
@@ -51,8 +54,8 @@ impl Default for Status {
     fn default() -> Status {
         Status {
             activity: Activity::default(), files: 0, searchable: 0, pending: 0, unfinished: 0, missing: Vec::new(),
-            left_out: Value::Null, unreadable: Vec::new(), measuring: false, paused: false, held_until: None,
-            last_sync: None, watching: true,
+            left_out: Value::Null, empty_roots: Vec::new(), unreadable: Vec::new(), measuring: false, paused: false,
+            held_until: None, last_sync: None, watching: true,
         }
     }
 }
@@ -77,6 +80,9 @@ impl Status {
             "sync" => {
                 if let Some(started) = event["started"].as_f64() {
                     self.last_sync = Some(started);
+                }
+                if let Some(roots) = event["empty_roots"].as_array() {
+                    self.empty_roots = roots.iter().filter_map(Value::as_str).map(String::from).collect();
                 }
                 if event["left_out"].is_object() {
                     self.left_out = event["left_out"].clone();
@@ -241,6 +247,7 @@ impl Status {
             "paused": self.paused,
             "heldUntil": self.held_until,
             "leftOut": self.left_out,
+            "emptyRoots": self.empty_roots,
             "asOf": self.last_sync,
             "watching": self.watching,
             "badge": self.badge(model),

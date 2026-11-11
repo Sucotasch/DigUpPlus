@@ -376,6 +376,74 @@ public final class IndexStore {
         return files.count
     }
 
+    /// What re-pointing a folder looks like: the rows under it, and what is at the new place for each — the same file
+    /// (size and time, so its vectors stay), a changed one, or nothing.
+    public struct RepointCounts: Sendable {
+        public var rows = 0, matched = 0, changed = 0, missing = 0
+    }
+
+    /// What `repoint(from:to:)` would do, changing nothing.
+    public func repointPreview(from: String, to: String) throws -> RepointCounts {
+        try repointRows(from: from, to: to, apply: false)
+    }
+
+    /// A folder moved: the rows under `from` take their paths at `to` (and the file's own identity there), their name
+    /// rows are rewritten, and their vectors stay for the files that didn't change. A file that is gone at the new
+    /// place keeps its row until the next sync removes it. Settings → Folders asks first, with `repointPreview`'s
+    /// counts. Refuses a target that holds indexed rows already, and folders that overlap.
+    @discardableResult
+    public func repoint(from: String, to: String) throws -> RepointCounts {
+        try repointRows(from: from, to: to, apply: true)
+    }
+
+    private func repointRows(from: String, to: String, apply: Bool) throws -> RepointCounts {
+        let fromFolder = FolderSelection.crawlPath(from)
+        let toFolder = FolderSelection.crawlPath(to)
+        guard fromFolder != toFolder, !FolderSelection.isInside(toFolder, fromFolder),
+              !FolderSelection.isInside(fromFolder, toFolder) else {
+            throw Database.Failure(message: "that's the same folder, or one is inside the other")
+        }
+        guard FileManager.default.fileExists(atPath: toFolder) else {
+            throw Database.Failure(message: "there's no folder at \(to)")
+        }
+        guard try files(under: [toFolder]).isEmpty else {
+            throw Database.Failure(message: "that folder is already searched: stop searching it first, then re-pick")
+        }
+        let rows = try files(under: [fromFolder])
+        let fromPrefix = fromFolder.hasSuffix("/") ? fromFolder : fromFolder + "/"
+        let toPrefix = toFolder.hasSuffix("/") ? toFolder : toFolder + "/"
+        var counts = RepointCounts(rows: rows.count)
+        try db.transaction {
+            for row in rows {
+                let newPath = toPrefix + String(row.path.dropFirst(fromPrefix.count))
+                guard let info = FileSystem.info(of: newPath), info.isRegular else {
+                    counts.missing += 1
+                    if apply { try move(row.id, to: newPath) }
+                    continue
+                }
+                if info.size == row.size && abs(info.mtime - row.mtime) <= 0.001 {
+                    counts.matched += 1
+                } else {
+                    counts.changed += 1
+                }
+                if apply {
+                    try move(row.id, to: newPath, inode: info.inode, device: info.device, size: info.size,
+                             mtime: info.mtime)
+                }
+            }
+        }
+        return counts
+    }
+
+    /// Removes every row under these folders while the folders stay searched: Settings → Folders → “files deleted”.
+    /// Returns how many rows left.
+    @discardableResult
+    public func delete(under roots: [String]) throws -> Int {
+        let rows = try files(under: roots)
+        try batch { for row in rows { try delete(row.id) } }
+        return rows.count
+    }
+
     /// Same inode, size and date at a new path: a move or rename. Nothing is re-embedded (screenshot tools move
     /// screenshots into project folders all the time). Where the new place gives the file another identity — another
     /// volume has its own device and inode — those and its size and date go with the path, so the next sync knows the

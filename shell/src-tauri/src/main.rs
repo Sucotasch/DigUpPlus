@@ -628,8 +628,13 @@ fn setup_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
 /// Folders chosen in the system's folder picker (none when it's cancelled).
 #[tauri::command]
 async fn pick_folders(window: tauri::WebviewWindow, app: AppHandle) -> Vec<String> {
+    pick_folders_titled(window, app, "Add Folders").await
+}
+
+/// The same picker with its own title, for the app's own callers (Re-pick).
+async fn pick_folders_titled(window: tauri::WebviewWindow, app: AppHandle, title: &str) -> Vec<String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    app.dialog().file().set_parent(&window).set_title("Add Folders").pick_folders(move |folders| {
+    app.dialog().file().set_parent(&window).set_title(title).pick_folders(move |folders| {
         let _ = sender.send(folders);
     });
     let picked = receiver.await.ok().flatten().unwrap_or_default();
@@ -668,6 +673,139 @@ fn chosen_folder(shell: &Shell, folder: &str) -> Result<PathBuf, String> {
         .find(|path| models::same_path(Path::new(path), Path::new(folder)))
         .map(PathBuf::from)
         .ok_or_else(|| "That folder isn't searched any more.".to_string())
+}
+
+/// Settings → Folders → Re-pick: the native picker, then what moving the folder would mean for its rows (nothing is
+/// changed; a confirmation comes before `repick_apply`).
+#[tauri::command]
+async fn repick_preview(app: AppHandle, window: tauri::WebviewWindow, shell: State<'_, Arc<Shell>>, folder: String)
+    -> Result<Value, String> {
+    let from = chosen_folder(&shell, &folder)?;
+    let picked = pick_folders_titled(window, app.clone(), "Re-pick: choose where the folder is now").await;
+    if picked.len() != 1 {
+        return Ok(Value::Null);   // cancelled, or several: a re-point is one folder
+    }
+    let to = PathBuf::from(&picked[0]);
+    if !to.is_dir() {
+        return Err("That path isn't a folder.".into());
+    }
+    let shell = shell.inner().clone();
+    if shell.folders().iter().any(|path| models::same_path(Path::new(path), &to)) {
+        return Err("That folder is already searched. Stop searching it first, then re-pick this one.".into());
+    }
+    shell.index.stop();
+    let counts = run_index_command(&shell, "repick", &[
+        "--from".to_string(), from.display().to_string(), "--to".to_string(), to.display().to_string()])?;
+    Ok(json!({"target": to.display().to_string(), "rows": counts["rows"], "matched": counts["matched"],
+              "changed": counts["changed"], "missing": counts["missing"]}))
+}
+
+/// Settings → Folders → Re-pick, after the confirmation: the rows move to the new place (files that didn't change keep
+/// their vectors), the settings' paths and rules follow, and the folder is synced there.
+#[tauri::command]
+fn repick_apply(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, target: String) -> Result<Value, String> {
+    let from = chosen_folder(&shell, &folder)?;
+    let to = PathBuf::from(&target);
+    if !to.is_dir() {
+        return Err("That path isn't a folder.".into());
+    }
+    let shell = shell.inner().clone();
+    shell.index.stop();
+    let counts = run_index_command(&shell, "repick", &[
+        "--from".to_string(), from.display().to_string(), "--to".to_string(), to.display().to_string(),
+        "--apply".to_string()])?;
+    {
+        let (from_text, to_text) = (from.display().to_string(), to.display().to_string());
+        let mut settings = shell.settings.lock().unwrap();
+        repoint_list(&mut settings.folders, &from_text, &to_text);
+        repoint_list(&mut settings.skipped, &from_text, &to_text);
+        repoint_list(&mut settings.code_folders, &from_text, &to_text);
+        repoint_list(&mut settings.code_skipped, &from_text, &to_text);
+        let mut rules = std::collections::BTreeMap::new();
+        for (root, rule) in std::mem::take(&mut settings.root_rules) {
+            rules.insert(repoint_path(&root, &from_text, &to_text).unwrap_or(root), rule);
+        }
+        settings.root_rules = rules;
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    apply_folders(&app);
+    // The rows are at the new place: an unchanged file keeps its vectors, a changed one is read again, a file that's
+    // gone drops out, and new files are indexed.
+    let _ = shell.index.sync_paths(&shell.index_launch(), &[to]);
+    let counted = app.clone();
+    tauri::async_runtime::spawn(async move { refresh_counts(&counted).await });
+    Ok(json!({"target": target, "rows": counts["rows"], "matched": counts["matched"], "changed": counts["changed"],
+              "missing": counts["missing"]}))
+}
+
+/// Settings → Folders, for a folder that is there but empty: its rows are the files that were deleted, and they leave the
+/// index while the folder stays searched.
+#[tauri::command]
+fn forget_folder(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String) -> Result<Value, String> {
+    let path = chosen_folder(&shell, &folder)?;
+    let shell = shell.inner().clone();
+    shell.index.stop();
+    let answer = run_index_command(&shell, "forget", &[path.display().to_string()])?;
+    // The folder is still chosen: a sync now finds it empty with no rows, so the “moved?” question goes.
+    let _ = shell.index.sync_paths(&shell.index_launch(), &[path]);
+    let counted = app.clone();
+    tauri::async_runtime::spawn(async move { refresh_counts(&counted).await });
+    Ok(json!({"removed": answer["removed"]}))
+}
+
+/// A path at or under `from`, moved to `to` with its own tail; None when it isn't under `from`. Separators are compared
+/// as `/` (a settings path can be spelled either way); the target keeps the spelling it was given.
+fn repoint_path(path: &str, from: &str, to: &str) -> Option<String> {
+    let slashed = |value: &str| value.replace('\\', "/");
+    let (path, from) = (slashed(path), slashed(from));
+    if !inside(&path, &from) {
+        return None;
+    }
+    let target = to.trim_end_matches(['\\', '/']);
+    let base = from.trim_end_matches('/');
+    if models::same_path(Path::new(&path), Path::new(base)) {
+        return Some(target.to_string());
+    }
+    if path.len() <= base.len() {
+        return None;
+    }
+    let rest = path[base.len()..].trim_start_matches('/');
+    Some(format!("{target}/{rest}"))
+}
+
+fn repoint_list(list: &mut [String], from: &str, to: &str) {
+    for path in list.iter_mut() {
+        if let Some(moved) = repoint_path(path, from, to) {
+            *path = moved;
+        }
+    }
+}
+
+/// One short-lived `digup` command that works on the index file (repick, forget): its JSON line. The indexing helper is
+/// stopped before it by the caller, so nothing writes the index meanwhile.
+fn run_index_command(shell: &Shell, command: &str, args: &[String]) -> Result<Value, String> {
+    let mut command_line = vec![command.to_string()];
+    command_line.extend(shell.index_arguments());
+    command_line.extend(args.iter().cloned());
+    let mut command = std::process::Command::new(&shell.options.helper);
+    command.arg("--protocol").arg(HELPER_PROTOCOL.to_string()).args(&command_line);
+    command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let child = command.spawn()
+        .map_err(|error| format!("can't run {}: {error}", shell.options.helper.display()))?;
+    helper::adopt(&child);
+    let output = child.wait_with_output().map_err(|error| format!("the helper didn't answer: {error}"))?;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if error.is_empty() { "the index didn't change".into() } else { error });
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().rev().find(|line| line.trim_start().starts_with('{')).unwrap_or("");
+    serde_json::from_str(line).map_err(|_| "the helper's answer wasn't JSON".to_string())
 }
 
 /// A person asked for work now: the model has to be in (the helper embeds what it reads), and indexing can't be paused
@@ -1085,7 +1223,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, set_confirm_move_copy,
             set_confirm_delete, set_include_datasets, hide_window, debug_query, debug_report, window_info, destination_conflicts, operation_confirmations,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
-            remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, set_search_settings, rescan_folder, reread_folder, set_index_hours, mcp_config, code_setup_info, set_code_folders, choose_code_folders,
+            remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, set_search_settings, rescan_folder, reread_folder, repick_preview, repick_apply, forget_folder, set_index_hours, mcp_config, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases,
             file_operation, cancel_file_operation, pick_destination_folder,
@@ -3558,6 +3696,17 @@ mod tests {
         assert_eq!(super::tag_arguments(&settings), vec!["--tag-type", "mp3", "--tag-type", "m4a"]);
         // What is typed becomes the same list both fields keep: dots, case, commas and spaces forgiven.
         assert_eq!(super::type_list(" .MP3, m4a  ,, "), vec!["mp3", "m4a"]);
+    }
+
+    #[test]
+    fn a_repoint_moves_paths_under_the_old_folder_only() {
+        assert_eq!(super::repoint_path("C:/Photos/a.jpg", "C:\\Photos", "D:/Media"),
+                   Some("D:/Media/a.jpg".to_string()));
+        assert_eq!(super::repoint_path("C:/Photos/sub/b.jpg", "C:/Photos", "D:/Media/"),
+                   Some("D:/Media/sub/b.jpg".to_string()));
+        assert_eq!(super::repoint_path("C:/Photos", "C:/Photos", "D:/Media"), Some("D:/Media".to_string()));
+        assert_eq!(super::repoint_path("C:/Photosx/a.jpg", "C:/Photos", "D:/Media"), None);
+        assert_eq!(super::repoint_path("C:/Other/a.jpg", "C:/Photos", "D:/Media"), None);
     }
 
     #[test]

@@ -281,6 +281,7 @@ final class IndexService: @unchecked Sendable {
                 "ms": Int(Date().timeIntervalSince(started) * 1000),
                 "started": started.timeIntervalSince1970,   // the app checks its sync request came before this
                 "left_out": summary.crawl.leftOut,          // chosen folder → reason → files, for the Folders tab
+                "empty_roots": summary.emptyRoots,          // there, empty, rows kept: “moved?” or “files deleted”
             ])
         } catch {
             emit(["event": "error", "message": "sync failed: \(error)", "code": part.code])

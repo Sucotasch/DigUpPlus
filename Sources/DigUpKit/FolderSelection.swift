@@ -103,6 +103,13 @@ public struct FolderSelection: Equatable, Sendable {
         return path.hasPrefix(folder.hasSuffix("/") ? folder : folder + "/")
     }
 
+    /// A folder with no entries but junk (Thumbs.db, desktop.ini) and hidden names: the crawl reads nothing there, so a
+    /// sync would take its rows for deleted ones. Settings → Folders offers “moved?” or “files deleted” instead.
+    public static func isEmptyFolder(_ path: String) -> Bool {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: path) else { return false }
+        return entries.allSatisfy { $0.hasPrefix(".") || Rules.isJunk($0) }
+    }
+
     public static func parent(_ path: String) -> String {
         (path as NSString).deletingLastPathComponent
     }

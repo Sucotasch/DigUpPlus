@@ -106,6 +106,87 @@ import WinSDK
         #expect(ranges[0].to == "/a/\u{10FFFF}")
     }
 
+    /// A folder that moved: the rows follow it, the file's own facts come from the new place, the name row's folder
+    /// text is rewritten, and the preview says what is there before anything changes.
+    @Test func aMovedFolderKeepsItsRows() throws {
+        let store = try IndexStore(directory: folder.appendingPathComponent("index"))
+        let old = folder.appendingPathComponent("old"), new = folder.appendingPathComponent("new")
+        try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: new, withIntermediateDirectories: true)
+        let oldFile = old.appendingPathComponent("a.txt")
+        try Data("hello".utf8).write(to: oldFile)
+        let info = try #require(FileSystem.info(of: oldFile.path))
+        let id = try store.insert(Candidate(path: oldFile.path, kind: .doc, size: info.size, mtime: info.mtime,
+                                            inode: info.inode, device: info.device))
+        try store.addSegment(file: id, kind: .chunk, modality: .text, text: "hello")
+        try FileManager.default.copyItem(at: oldFile, to: new.appendingPathComponent("a.txt"))
+        let preview = try store.repointPreview(from: old.path, to: new.path)
+        #expect(preview.rows == 1 && preview.matched == 1 && preview.changed == 0 && preview.missing == 0)
+        #expect(try store.file(at: oldFile.path)?.id == id)   // the preview changes nothing
+        let counts = try store.repoint(from: old.path, to: new.path)
+        #expect(counts.matched == 1)
+        let moved = new.appendingPathComponent("a.txt").path
+        #expect(try store.file(at: moved)?.id == id)
+        #expect(try store.file(at: oldFile.path) == nil)
+        var body = ""
+        try store.db.query("""
+            SELECT body FROM fts WHERE rowid = (SELECT id FROM segments WHERE file = ? AND kind = 'name')
+            """, [.int(id)]) { body = $0.text(0) ?? "" }
+        #expect(body.lowercased().contains("new"))
+    }
+
+    /// A file that changed or is gone at the new place is counted, not silently kept as the same one.
+    @Test func aMoveCountsChangedAndMissingFiles() throws {
+        let store = try IndexStore(directory: folder.appendingPathComponent("index"))
+        let old = folder.appendingPathComponent("old"), new = folder.appendingPathComponent("new")
+        try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: new, withIntermediateDirectories: true)
+        for (name, text) in [("same.txt", "same"), ("changed.txt", "long enough"), ("gone.txt", "gone")] {
+            let url = old.appendingPathComponent(name)
+            try Data(text.utf8).write(to: url)
+            let info = try #require(FileSystem.info(of: url.path))
+            _ = try store.insert(Candidate(path: url.path, kind: .doc, size: info.size, mtime: info.mtime,
+                                           inode: info.inode, device: info.device))
+        }
+        try FileManager.default.copyItem(at: old.appendingPathComponent("same.txt"),
+                                         to: new.appendingPathComponent("same.txt"))
+        try FileManager.default.copyItem(at: old.appendingPathComponent("changed.txt"),
+                                         to: new.appendingPathComponent("changed.txt"))
+        try Data("x".utf8).write(to: new.appendingPathComponent("changed.txt"))
+        let preview = try store.repointPreview(from: old.path, to: new.path)
+        #expect(preview.rows == 3 && preview.matched == 1 && preview.changed == 1 && preview.missing == 1)
+        _ = try store.repoint(from: old.path, to: new.path)
+        #expect(try store.files(under: [new.path]).count == 3)   // the next sync removes the gone one
+    }
+
+    /// A target that already holds rows, and folders that overlap, are refused: a re-point is a move, not a merge.
+    @Test func aRepointRefusesAnOccupiedOrOverlappingTarget() throws {
+        let store = try IndexStore(directory: folder.appendingPathComponent("index"))
+        let old = folder.appendingPathComponent("old"), new = folder.appendingPathComponent("new")
+        try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: new.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        let oldFile = old.appendingPathComponent("a.txt")
+        try "a".write(to: oldFile, atomically: false, encoding: .utf8)
+        let info = try #require(FileSystem.info(of: oldFile.path))
+        _ = try store.insert(Candidate(path: oldFile.path, kind: .doc, size: info.size, mtime: info.mtime,
+                                       inode: info.inode, device: info.device))
+        #expect(throws: (any Error).self) { try store.repoint(from: old.path, to: old.appendingPathComponent("sub").path) }
+        _ = try store.insert(Candidate(path: new.appendingPathComponent("b.txt").path, kind: .doc, size: 1, mtime: 1,
+                                       inode: 2, device: 1))
+        #expect(throws: (any Error).self) { try store.repoint(from: old.path, to: new.path) }
+    }
+
+    /// “Files deleted”: the rows go, the folder can stay chosen.
+    @Test func forgettingAFolderRemovesOnlyItsRows() throws {
+        let store = try IndexStore(directory: folder.appendingPathComponent("index"))
+        try store.insert(file("/a/x.png", inode: 1))
+        try store.insert(file("/a/y.png", inode: 2))
+        try store.insert(file("/b/z.png", inode: 3))
+        #expect(try store.delete(under: ["/a"]) == 2)
+        #expect(try store.files(under: ["/a"]).isEmpty)
+        #expect(try store.files(under: ["/b"]).count == 1)
+    }
+
     @Test func aFileTheHelperStoppedOnIsNotReadAgain() throws {
         let store = try IndexStore(directory: folder)
         try store.insert(file("/a/stuck.pdf", inode: 1))

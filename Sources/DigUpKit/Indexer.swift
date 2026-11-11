@@ -22,6 +22,9 @@ public final class Indexer {
         public var crawl: CrawlReport
         /// Files this sync queued for embedding (new or changed), so a watcher can index exactly those first.
         public var queued: [Int64] = []
+        /// Chosen folders that are there but hold nothing (junk aside) while rows are under them: their files moved
+        /// out, and the rows are kept until the person says “moved” or “files deleted” (Settings → Folders).
+        public var emptyRoots: [String] = []
     }
 
     public struct Event: Sendable {
@@ -142,6 +145,15 @@ public final class Indexer {
         let seen = Set(crawl.candidates.map(\.path))
         var movedFrom = Set<String>()
         var summary = SyncSummary(crawl: crawl)
+        // A chosen folder that is there but holds nothing (junk and hidden names aside) while rows are under it: its
+        // files moved out. Keep them; Settings → Folders asks “moved?” or “files deleted” instead of losing vectors.
+        let emptyRoots = roots.map(\.path).filter { root in
+            FileManager.default.fileExists(atPath: root)
+                && FolderSelection.isEmptyFolder(root)
+                && existing.contains { $0.path.hasPrefix(root.hasSuffix("/") ? root : root + "/") }
+        }
+        let emptyPrefixes = emptyRoots.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+        summary.emptyRoots = emptyRoots
         try store.db.transaction {
             for file in crawl.candidates {
                 if let row = byPath[file.path] {
@@ -170,7 +182,8 @@ public final class Indexer {
             let vanished = roots.map(\.path)
                 .filter { !FileManager.default.fileExists(atPath: $0) }.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
             for row in existing where !seen.contains(row.path) && !movedFrom.contains(row.path)
-                && !vanished.contains(where: { row.path.hasPrefix($0) }) {
+                && !vanished.contains(where: { row.path.hasPrefix($0) })
+                && !emptyPrefixes.contains(where: { row.path.hasPrefix($0) }) {
                 try store.delete(row.id)
                 summary.removed += 1
             }

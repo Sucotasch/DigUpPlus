@@ -33,6 +33,7 @@ let info = {};
 let summaries = null;        // what's indexed under each folder (search-service's summaries)
 let removing = null;         // the folder whose removal is being confirmed
 let rereading = null;        // the folder whose re-read is being confirmed
+let repicking = null;        // the folder whose re-pick is being confirmed ({ folder, target, rows, matched, ... })
 let ruling = null;           // the folder whose rule (kinds, top level only) is being edited
 let codeSummaries = null;    // what's indexed under each code folder
 let removingCode = null;     // the code folder whose removal is being confirmed
@@ -205,8 +206,10 @@ function renderFolders() {
   for (const folder of info.folders || []) {
     const summary = (summaries || []).find((item) => samePath(item.path, folder)) || null;
     rows.append(folderRow(folder, summary));
+    if (movedAway(folder)) rows.append(movedNote(folder));
     if (removing && samePath(removing, folder)) rows.append(confirmRemoval(folder, summary));
     if (rereading && samePath(rereading, folder)) rows.append(confirmReread(folder));
+    if (repicking && samePath(repicking.folder, folder)) rows.append(confirmRepick(repicking));
     if (ruling && samePath(ruling, folder)) rows.append(ruleEditor(folder));
   }
   const skipped = $("skipped-rows");
@@ -301,7 +304,8 @@ function folderRow(folder, summary, code = false) {
       side.append(line);
     }
   }
-  row.append(text, side, ...(code ? [] : [rescanButton(folder), rereadButton(folder), ruleButton(folder)]),
+  row.append(text, side, ...(code ? [] : [rescanButton(folder), rereadButton(folder), repickButton(folder),
+    ruleButton(folder)]),
     removeButton(code ? "Stop searching the code in this folder" : "Stop searching this folder", () => {
     if (code) {
       removingCode = folder;
@@ -368,6 +372,80 @@ function confirmReread(folder) {
     await refresh();
   };
   actions.append(cancel, go);
+  box.append(actions);
+  return box;
+}
+
+/// "Re-pick…": the folder moved to another place. The picker chooses it, then the confirmation says what the move means
+/// for the rows: how many files are there unchanged, how many will be read again, how many are gone.
+function repickButton(folder) {
+  const button = element("button", "link", "Re-pick…");
+  button.title = "The folder moved: choose where it is now";
+  button.onclick = () => repickPreview(folder);
+  return button;
+}
+
+async function repickPreview(folder) {
+  try {
+    const preview = await invoke("repick_preview", { folder });
+    if (!preview) return;   // the picker was cancelled
+    repicking = { folder, ...preview };
+    renderFolders();
+  } catch (error) {
+    fail(error);
+  }
+}
+
+function confirmRepick(repick) {
+  const box = element("div", "confirm repick");
+  box.append(element("p", "", `Move “${nameOf(repick.folder)}” to “${nameOf(repick.target)}”?`));
+  box.append(element("div", "note",
+    `${repick.matched.toLocaleString()} of ${repick.rows.toLocaleString()} files are there unchanged · ` +
+    `${repick.changed.toLocaleString()} will be read again · ${repick.missing.toLocaleString()} aren't there`));
+  const actions = element("div", "actions");
+  const cancel = element("button", "", "Cancel");
+  cancel.onclick = () => { repicking = null; renderFolders(); };
+  const go = element("button", "primary", "Re-pick");
+  go.onclick = async () => {
+    const current = repicking;
+    repicking = null;
+    try {
+      await invoke("repick_apply", { folder: current.folder, target: current.target });
+    } catch (error) {
+      fail(error);
+    }
+    await refresh();
+  };
+  actions.append(cancel, go);
+  box.append(actions);
+  return box;
+}
+
+/// A chosen folder that is there but empty while its rows are still in the index: its files moved out (or were
+/// deleted). The rows stay until this is answered, so nothing read is lost.
+function movedAway(folder) {
+  return (info.state?.emptyRoots || []).some((path) => samePath(path, folder));
+}
+
+function movedNote(folder) {
+  const box = element("div", "confirm");
+  box.append(element("p", "",
+    `“${nameOf(folder)}” is empty, but its files are still in the index. Did the folder move?`));
+  const actions = element("div", "actions");
+  const moved = element("button", "primary", "Moved…");
+  moved.onclick = () => repickPreview(folder);
+  const deleted = element("button", "", "Files deleted");
+  deleted.onclick = async () => {
+    try {
+      await invoke("forget_folder", { folder });
+    } catch (error) {
+      fail(error);
+    }
+    await refresh();
+  };
+  const stop = element("button", "link", "Stop searching");
+  stop.onclick = () => { removing = folder; renderFolders(); };
+  actions.append(moved, deleted, stop);
   box.append(actions);
   return box;
 }

@@ -56,6 +56,35 @@ import Testing
         #expect(try store.file(idB)?.state == "done")
     }
 
+    /// A folder whose files all moved out is there but empty: its rows are kept, and the summary names it, so Settings can
+    /// ask “moved?” or “files deleted” instead of the vectors quietly going.
+    @Test func anEmptiedFolderKeepsItsRows() throws {
+        let file = try write("A/one.txt")
+        let root = file.deletingLastPathComponent()
+        let store = try IndexStore(directory: base.appendingPathComponent("index"))
+        let indexer = try indexer(store)
+        #expect(try indexer.sync([root]).added == 1)
+        try FileManager.default.removeItem(at: file)
+        let summary = try indexer.sync([root])
+        #expect(summary.emptyRoots == [root.path])
+        #expect(summary.removed == 0)
+        #expect(try store.file(at: file.path) != nil)
+    }
+
+    /// A folder whose files are still there but all left out by its rule is not a move: its rows go, as asked.
+    @Test func aRuleThatLeavesOutEveryTypeStillRemovesTheRows() throws {
+        let page = try write("A/page.html")
+        let root = page.deletingLastPathComponent()
+        let store = try IndexStore(directory: base.appendingPathComponent("index"))
+        #expect(try indexer(store).sync([root]).added == 1)
+        var options = IndexOptions()
+        options.rootRules = [RootRule(root: root.path, skipTypes: ["html"])]
+        let summary = try indexer(store, options: options).sync([root])
+        #expect(summary.emptyRoots.isEmpty)
+        #expect(summary.removed == 1)
+        #expect(try store.file(at: page.path) == nil)
+    }
+
     @Test func syncLeavesOtherChosenFoldersAlone() throws {
         let a = try write("A/a.txt")
         let b = try write("B/b.txt")

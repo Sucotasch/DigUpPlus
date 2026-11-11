@@ -550,7 +550,7 @@ Settings → Folders — ссылки «Rescan» и «Re-read…» на стро
 
 ## Обсуждение 2026-11-06 — жизненный цикл папки: переезд, опустение, удаление
 
-Сценарии от владельца. Решения ниже согласованы 2026-11-11; внедрение — отдельной фазой после 0.1.10.
+Сценарии от владельца. Решения ниже согласованы 2026-11-11; внедрено 2026-11-11 (см. «Сделано» в конце раздела).
 
 ### Сценарии
 
@@ -635,6 +635,28 @@ Settings → Folders — ссылки «Rescan» и «Re-read…» на стро
 6. Re-pick при живой старой папке (сценарий копии): сверка N из M, затем переписывание.
 7. После Re-pick вызван `apply_folders` (вотчер на новом пути, следующий helper с новыми аргументами).
 
+### Сделано (2026-11-11)
+
+- **Движок.** `IndexStore.repointPreview/repoint` (`RepointCounts`): сверка по size/mtime, переписывание через
+  `move` (путь, inode/device, name-строка FTS), отказ на занятую или вложенную цель; `delete(under:)` для «Files
+  deleted». `SyncSummary.emptyRoots`: пассивный sync пустой папки (0 записей, кроме junk/hidden) с живыми строками не
+  удаляет их и отдаёт список в событии `sync`.
+- **CLI/шелл.** `digup repick --from/--to [--apply]`, `digup forget <folder>`; шелл: `repick_preview` (нативный выбор +
+  сверка без изменений), `repick_apply` (переписывание, перенос путей в `settings.folders/skipped/root_rules/code_*`,
+  `apply_folders`, scoped sync), `forget_folder` (строки удаляются, папка остаётся; sync снимает вопрос);
+  `Status.emptyRoots` → снапшот.
+- **UI.** Постоянная ссылка «Re-pick…» на каждой строке папки (Rescan, Re-read…, Re-pick…, Rules); подтверждение «N из
+  M совпало · K перечитать · J нет»; для пустой папки — лист «Moved… / Files deleted / Stop searching». Re-pick работает
+  и при живой старой папке.
+- **Тесты.** `IndexStoreTests` (`aMovedFolderKeepsItsRows`, `aMoveCountsChangedAndMissingFiles`,
+  `aRepointRefusesAnOccupiedOrOverlappingTarget`, `forgettingAFolderRemovesOnlyItsRows`), `IncrementalSyncTests`
+  (`anEmptiedFolderKeepsItsRows`, `aRuleThatLeavesOutEveryTypeStillRemovesTheRows`), Rust
+  `a_repoint_moves_paths_under_the_old_folder_only`. Живой прогон dev-окна: re-pick → строки и ключи правил переехали
+  (3 из 3, 0 изменённых, 0 пропавших); опустение → `emptyRoots` и строка «is empty, but its files are still in the
+  index»; «Files deleted» → строки 0, папка осталась, вопрос снят; обратный re-pick + rescan вернул 3 файла.
+- **Осталось.** Нативный выбор папки в UI не автоматизируется через CDP (проверены команды вокруг пикера); подсказка
+  против дублей при добавлении копии (size+mtime) не внедрена; живой SMB-шары нет.
+
 ## Upstream после #188 — что взять (2026-11-11)
 
 Просмотрены issues #193–#206 и PR #189–#203 (автор релизы не делает, обсуждение живое). Новое, что нас касается:
@@ -687,7 +709,7 @@ Settings → Folders — ссылки «Rescan» и «Re-read…» на стро
 3. Фаза 3 — сделана 2026-11-04 (см. выше), `0.1.6`.
 4. Пакет из upstream — сделан 2026-11-11: #191 scope, #204 загрузка модели на Windows, #196 исключения на папку,
    #189 UNC/буква диска; #190 отложено.
-5. Жизненный цикл папки (2026-11-11): Re-pick, guard пустой папки, лист исходов — следующий.
+5. Жизненный цикл папки — сделан 2026-11-11 (см. «Сделано»): Re-pick, guard пустой папки, лист исходов.
 6. Фаза 4 (плагины) — по спросу.
 
 Каждая фаза: полные тесты; `evals` — когда меняется ранжирование (фаза 2 — только на не-Standard профилях, фаза 3 —
