@@ -19,6 +19,7 @@ mod moments;
 mod options;
 mod settings;
 mod status;
+mod totalcmd;
 mod tray_icon;
 mod watcher;
 mod wayland;
@@ -1006,6 +1007,73 @@ fn reveal(app: AppHandle, path: String) -> Result<(), String> {
     app.opener().reveal_item_in_dir(path).map_err(|error| error.to_string())
 }
 
+/// Settings → General → Total Commander, as both pages show it: the program to run (the choice there, or the install
+/// the registry names), and whether a list opens in a new tab.
+fn totalcmd_json(settings: &Settings) -> Value {
+    json!({
+        "path": totalcmd::program(settings).map(|program| program.display().to_string()),
+        "chosen": settings.totalcmd,
+        "newTab": settings.totalcmd_new_tab.unwrap_or(true),
+    })
+}
+
+/// Settings → General → Total Commander: the program picked by hand (a portable copy has no registry entry). The
+/// window's buttons follow at once, without a restart.
+#[tauri::command]
+async fn pick_totalcmd(app: AppHandle, window: tauri::WebviewWindow, shell: State<'_, Arc<Shell>>)
+    -> Result<Value, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog().file().set_parent(&window).set_title("Choose Total Commander's program")
+        .add_filter("Total Commander", &["exe"])
+        .pick_file(move |file| {
+            let _ = sender.send(file);
+        });
+    let Some(file) = receiver.await.ok().flatten() else { return Ok(Value::Null) };
+    let program = file.into_path().map_err(|error| error.to_string())?;
+    let name = program.file_name().and_then(|name| name.to_str()).unwrap_or("").to_lowercase();
+    if !name.starts_with("totalcmd") {
+        return Err("That isn't Total Commander's program: choose totalcmd.exe or TOTALCMD64.EXE.".into());
+    }
+    let answer = {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.totalcmd = program.display().to_string();
+        let answer = totalcmd_json(&settings);
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+        answer
+    };
+    let _ = app.emit("totalcmd", answer["path"].clone());
+    Ok(answer)
+}
+
+/// Settings → General → Total Commander: a new tab for the list, or the panel in use.
+#[tauri::command]
+fn set_totalcmd_new_tab(shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), String> {
+    let mut settings = shell.settings.lock().unwrap();
+    settings.totalcmd_new_tab = Some(on);
+    settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))
+}
+
+/// The window's results in Total Commander's panel: one list file (a snapshot), then the program with `LOADLIST:`.
+/// Files that are gone are left out, so the sheet can say how many of the results the panel can show.
+#[tauri::command]
+fn open_in_totalcmd(shell: State<'_, Arc<Shell>>, paths: Vec<String>) -> Result<Value, String> {
+    let settings = shell.settings.lock().unwrap().clone();
+    let program = totalcmd::program(&settings)
+        .ok_or("Total Commander isn't found: choose its program in Settings → General.")?;
+    let total = paths.len();
+    let files = totalcmd::existing(&paths);
+    if files.is_empty() {
+        return Err(if total == 0 { "There's nothing to open.".to_string() }
+                   else { "None of these files are there any more.".to_string() });
+    }
+    let folder = totalcmd::lists_folder(&shell.options)?;
+    let list = totalcmd::write_list(&folder, &files)
+        .map_err(|error| format!("can't write the list: {error}"))?;
+    totalcmd::open(&program, &list, settings.totalcmd_new_tab.unwrap_or(true))
+        .map_err(|error| format!("Total Commander didn't start: {error}"))?;
+    Ok(json!({"opened": files.len(), "total": total, "capped": total > totalcmd::LIMIT}))
+}
+
 #[tauri::command]
 fn hide_panel(app: AppHandle) {
     if let Some(panel) = panel_window(&app) {
@@ -1066,6 +1134,7 @@ fn window_info(shell: State<'_, Arc<Shell>>) -> Value {
         "hasCode": !shell.code_folders().is_empty(),
         "imageTiers": settings::Settings::tier_profile(
             shell.settings.lock().unwrap().image_tiers.as_deref().unwrap_or("standard")),
+        "totalcmd": totalcmd_json(&shell.settings.lock().unwrap()),
         "debugQuery": shell.options.debug_window,
         "debugSettings": shell.options.debug_settings,
         "debugCopy": shell.options.debug_copy,
@@ -1230,7 +1299,7 @@ fn main() {
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, set_search_settings, rescan_folder, reread_folder, repick_preview, repick_apply, forget_folder, set_index_hours, mcp_config, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
-            set_tray_click, open_licenses, open_releases,
+            set_tray_click, open_licenses, open_releases, pick_totalcmd, set_totalcmd_new_tab, open_in_totalcmd,
             file_operation, cancel_file_operation, pick_destination_folder,
             pick_model_folder, pick_model_files, model_folder_plan, model_folder_apply, download_model,
             model_check, model_import, delete_model_files, delete_old_model_files, model_manifest,
@@ -1930,6 +1999,7 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "rootRules": settings.root_rules,
         "zgate": settings.gate(),
         "imageTiers": Settings::tier_profile(settings.image_tiers.as_deref().unwrap_or("standard")),
+        "totalcmd": totalcmd_json(&settings),
         "indexHours": {"on": settings.index_hours_on, "start": settings.index_hours.start, "end": settings.index_hours.end},
         "storage": storage(&shell),
         "transfer": shell.transfer_state.lock().unwrap().clone(),

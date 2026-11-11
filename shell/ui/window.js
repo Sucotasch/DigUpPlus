@@ -84,6 +84,7 @@ const state = {
   sheet: false,         // a sheet is up: a confirmation, or an operation's progress
   note: null,           // what the status bar says for a moment after an operation
   showWeaker: false,
+  tc: null,             // Total Commander's program (Settings → General): the batch bar's two buttons, when found
   tiered: false,        // the list is the Images filter's cosine layers (visible / weaker / hidden)
   tierCutoffs: null,    // {visible, weak} the layers are cut on (the defaults, or lowered for a low-scale query)
   hidden: [],           // images under the weak cutoff: shown only when their fold is opened
@@ -1271,6 +1272,50 @@ function copyPaths() {
     .catch((error) => failed(`The paths couldn't be copied: ${error}`));
 }
 
+/// One file alone isn't worth a panel (DigUp handles it faster): two is the smallest list.
+const TC_MIN = 2;
+
+/// The results in Total Commander's panel: the chosen ones, or the ones shown when nothing is chosen; `every` asks the
+/// helper for the whole ranking of this search instead (loaded or not, the Images filter's hidden layer included), in
+/// the order the window shows them. The panel holds the real files, so operations there are the usual ones and the
+/// watcher takes the changes.
+async function toTotalCommander(every) {
+  if (!state.tc || !state.query.trim()) return;
+  let paths;
+  if (!every) {
+    const chosen = selectedHits();
+    paths = (chosen.length ? chosen : rows()).map((hit) => hit.path);
+  } else {
+    setNote("Collecting the results…");
+    const filter = pageFilter();
+    try {
+      const reply = await ask({ op: "search", q: state.text, code: isCode(), meaning: state.meaning,
+                                limit: 20000,
+                                ...(state.like && !isCode() ? { like: state.like } : {}),
+                                ...(filter && !isCode() ? { kinds: filter.kinds } : {}),
+                                // The panel shows the Images layers by cosine: the whole ranking, hidden tail too.
+                                ...(state.tiered && !isCode() ? { by_cosine: true } : {}) });
+      paths = sortedHits(reply.hits || []).map((hit) => hit.path);
+    } catch (error) {
+      failed(`The results couldn't be collected: ${error}`);
+      return;
+    }
+  }
+  if (paths.length < TC_MIN) {
+    setNote("One file is quicker to handle here.");
+    return;
+  }
+  try {
+    const answer = await invoke("open_in_totalcmd", { paths });
+    setNote(answer.opened === answer.total
+      ? `Opened ${answer.opened.toLocaleString()} in Total Commander`
+      : answer.capped ? `Opened the first ${answer.opened.toLocaleString()} of ${answer.total.toLocaleString()}`
+      : `Opened ${answer.opened.toLocaleString()} of ${answer.total.toLocaleString()}: the rest are gone`);
+  } catch (error) {
+    failed(error);
+  }
+}
+
 /// All · Media 14 · Screenshots 4 · …: the media count is the four kinds together.
 /// The chips' numbers from a list of strong results: the fallback for a helper that doesn't send kind counts.
 function countsOf(hits) {
@@ -1310,17 +1355,31 @@ let noteTimer = null;
 /// The bar between the results and the status bar: how much is chosen and what can be done with it.
 function renderBatch() {
   const items = operable();
-  $batch.hidden = !items.length;
+  // The bar is also Total Commander's when the results hold no media at all: a code or document search can go there
+  // just as well, and that's the only place its actions are.
+  const tc = Boolean(state.tc) && rows().length > 0;
+  $batch.hidden = !items.length && !tc;
   if ($batch.hidden) return;
   const chosen = selectedHits();
   $batchSummary.textContent = chosen.length
     ? `${chosen.length.toLocaleString()} selected · ${bytes(selectedSize(chosen))}`
-    : "Select files to copy, move, or delete · F5 copy · F6 move · F8 delete";
+    : items.length ? "Select files to copy, move, or delete · F5 copy · F6 move · F8 delete"
+    : "Open these results in Total Commander";
   const any = chosen.length > 0;
+  $batchToggle.hidden = !items.length;
   $batchToggle.textContent = any ? "Deselect All" : "Select All";
   $batchToggle.title = any ? "Deselect All (Ctrl+Shift+A)" : "Select All (Ctrl+A)";
   $batchToggle.setAttribute("aria-keyshortcuts", any ? "Control+Shift+A" : "Control+A");
-  for (const id of ["batch-paths", "batch-copy", "batch-move", "batch-delete"]) $(id).disabled = !chosen.length;
+  for (const id of ["batch-paths", "batch-copy", "batch-move", "batch-delete"]) {
+    $(id).hidden = !items.length;
+    $(id).disabled = !chosen.length;
+  }
+  $("batch-file-divider").hidden = !items.length;
+  $("batch-tc-divider").hidden = !tc;
+  for (const id of ["batch-tc", "batch-tc-all"]) {
+    $(id).hidden = !tc;
+    $(id).disabled = !tc;
+  }
 }
 
 /// What `file_operation` takes: the size and date the search knew, so a file that changed since then is left alone.
@@ -2428,6 +2487,8 @@ $("batch-paths").onclick = copyPaths;
 $("batch-copy").onclick = () => moveOrCopy("copy");
 $("batch-move").onclick = () => moveOrCopy("move");
 $("batch-delete").onclick = confirmDelete;
+$("batch-tc").onclick = () => toTotalCommander(false);
+$("batch-tc-all").onclick = () => toTotalCommander(true);
 // A click beside a confirmation puts it away; an operation under way has its own Cancel.
 $modal.onmousedown = (event) => { if (event.target === $modal && !state.busy) closeModal(); };
 
@@ -2637,6 +2698,12 @@ tauri.event.listen("state", ({ payload }) => {
   if (payload.searchable !== before.searchable || payload.files !== before.files) loadIndexed();
 });
 
+// Settings → General → Total Commander: the batch bar's buttons show or hide the moment a program is chosen there.
+tauri.event.listen("totalcmd", ({ payload }) => {
+  state.tc = payload || null;
+  renderBatch();
+});
+
 // The panel handed its search over (Ctrl+O, "Show all…"): this window was already open.
 tauri.event.listen("window-search", ({ payload }) => {
   state.like = null;
@@ -2734,6 +2801,7 @@ async function start() {
   const info = await invoke("window_info");
   state.info = { ...state.info, ...info };
   state.app = info.state || {};
+  state.tc = info.totalcmd?.path || null;
   // The index's age grows between events: the status bar's "synced 2 min ago" is redrawn without one.
   setInterval(renderStatus, 30000);
   if (info.search) {

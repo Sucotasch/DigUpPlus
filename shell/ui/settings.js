@@ -117,6 +117,19 @@ function renderGeneral() {
   $("change-shortcut").hidden = info.shortcut.method !== "grab" || recording;
   $("recording").hidden = !recording;
   renderUpdates();
+  renderTotalCommander();
+}
+
+/// Total Commander (Settings → General): the program the window's results open in. A portable copy has no registry
+/// entry, so the path is chosen by hand; the one the registry names is used until then.
+function renderTotalCommander() {
+  const tc = info.totalcmd || {};
+  $("tc-info").textContent = tc.path
+    ? `The window's results open in ${tc.path}.`
+    : tc.chosen ? `That program isn't there any more: ${tc.chosen}`
+    : "Not found. Choose its program — a portable copy's totalcmd.exe works too — and the window's results can open " +
+      "in its panel as a list, in DigUp's order.";
+  $("tc-new-tab").checked = tc.newTab !== false;
 }
 
 /// Updates: this version, and where a new one is downloaded from. DigUp Plus releases by hand, so nothing checks or
@@ -148,6 +161,16 @@ wire($("processor"), "set_processor_only");
 wire($("confirm-move-copy"), "set_confirm_move_copy");
 wire($("confirm-delete"), "set_confirm_delete");
 wire($("include-datasets"), "set_include_datasets");
+wire($("tc-new-tab"), "set_totalcmd_new_tab");
+
+/// Total Commander's program: the picker, then the row says where the results now open.
+$("tc-choose").onclick = async () => {
+  try {
+    if (await invoke("pick_totalcmd")) await refresh();
+  } catch (error) {
+    fail(error);
+  }
+};
 for (const choice of document.querySelectorAll('input[name="tray-click"]')) {
   choice.addEventListener("change", () => {
     $("problem").hidden = true;

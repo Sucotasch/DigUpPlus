@@ -41,6 +41,9 @@ here. What this fork changes is what surrounds the engine:
 - **File operations.** The big results window can move, copy and delete the files it shows. Delete goes to the
   Recycle Bin; paths it refuses (too long) get a separate, explicitly confirmed permanent delete. A taken name becomes
   `photo (2).jpg` instead of an overwrite, and the index follows every change without reading the files again.
+- **Results in Total Commander.** The window's results open as a list in Total Commander's panel (the same "feed to
+  listbox" its own search does): the chosen files, the ones shown, or every result of the search, in DigUp's order. No
+  plugin; a portable copy's `totalcmd.exe` is chosen in Settings → General → Total Commander.
 - **The index and the model live where you point them.** Settings → Storage: use an index you already have in place
   (nothing is copied, and it is checked to open before it is chosen), move one to another disk, or point at model
   files you already downloaded.
@@ -157,6 +160,12 @@ recordings are read — by their **tags** (title, artist, album — no audio emb
 rule re-syncs that folder: files the new rule leaves out drop from the index, and they come back when the rule
 does. **Rescan** and **Re-read** re-run a folder on demand. And **Find similar** in a result's right-click menu
 searches by that file's own picture — the closest matches in the collection, the reference itself left out.
+
+If Total Commander is installed (or you point Settings → General → **Total Commander** at a portable copy's
+`totalcmd.exe`), the bar under the results gains **Selected to TC** and **All to TC**. The first sends the ticked
+files — or the ones shown, when nothing is ticked — the second the whole ranking of the search, loaded pages or not,
+in DigUp's order. They arrive as a fed list in Total Commander's panel, so F3, copy, move and delete work on them as
+usual and the index catches the changes; a new tab is the default, and the active panel can take them instead.
 
 A few things differ by system:
 

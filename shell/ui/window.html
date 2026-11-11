@@ -45,10 +45,15 @@
     <span class="spacer"></span>
     <button class="batch-action" id="batch-toggle" aria-keyshortcuts="Control+A" title="Select All (Ctrl+A)">Select All</button>
     <button class="batch-action" id="batch-paths">Copy Paths</button>
-    <span class="batch-divider" aria-hidden="true"></span>
+    <span class="batch-divider" id="batch-file-divider" aria-hidden="true"></span>
     <button class="batch-action" id="batch-copy" aria-keyshortcuts="F5" title="Copy To… (F5)">Copy To…</button>
     <button class="batch-action" id="batch-move" aria-keyshortcuts="F6" title="Move To… (F6)">Move To…</button>
     <button class="batch-action danger" id="batch-delete" aria-keyshortcuts="F8 Delete" title="Delete to the Recycle Bin (F8 or Delete)">Delete</button>
+    <span class="batch-divider" id="batch-tc-divider" aria-hidden="true"></span>
+    <button class="batch-action" id="batch-tc" hidden
+            title="Open the chosen results in Total Commander's panel — or the ones shown, when nothing is chosen">Selected to TC</button>
+    <button class="batch-action" id="batch-tc-all" hidden
+            title="Open every result of this search in Total Commander, in DigUp's order">All to TC</button>
   </section>
 
   <footer class="status">

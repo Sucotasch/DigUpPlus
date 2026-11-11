@@ -63,6 +63,12 @@ pub struct Settings {
     /// Index folders that look like datasets after all (Settings → Folders): the crawler skips them by default,
     /// which buries whole photo subfolders of a collection that happen to look alike.
     pub include_datasets: bool,
+    /// Total Commander's program (Settings → General → Total Commander), as chosen by hand: a portable copy has no
+    /// registry entry. Empty: the install the registry names, if there is one.
+    pub totalcmd: String,
+    /// The window's results open in a new tab (`/T`) rather than in the active panel. None: yes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub totalcmd_new_tab: Option<bool>,
     /// The folder with both model files (Settings → Storage). None: the default folder.
     pub models_folder: Option<String>,
     /// The volume the folder was chosen on: a drive letter that comes back with another disk must not be written to.
