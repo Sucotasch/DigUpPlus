@@ -47,6 +47,15 @@ public final class FileFetcher: NSObject, URLSessionDataDelegate, @unchecked Sen
         ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.int64Value ?? 0
     }
 
+    /// Windows' Schannel refuses a download when it can't check a certificate's revocation: `CRYPT_E_REVOCATION_OFFLINE`
+    /// (`0x80092013`), in a corporate network or offline. `digup download-model` falls back to `curl --ssl-no-revoke`
+    /// there, which still checks the certificate itself (upstream #204).
+    public static func isRevocationFailure(_ message: String) -> Bool {
+        let lower = message.lowercased()
+        return lower.contains("revocation") || lower.contains("0x80092013")
+            || lower.contains("crypt_e_revocation_offline")
+    }
+
     public func start() {
         written = Self.size(of: partial)
         if written > file.bytes {

@@ -425,6 +425,16 @@ function ruleEditor(folder) {
   hint.hidden = !(tags && !info.tagTypes?.length);
   box.append(hint);
   tagsBox.onchange = contentBox.onchange = () => { hint.hidden = !(tagsBox.checked && !info.tagTypes?.length); };
+  // Types this folder leaves out on top of the ones skipped everywhere: "html, log".
+  const skipLabel = element("label", "option");
+  skipLabel.append(element("span", "text", "Skip types"));
+  const skip = document.createElement("input");
+  skip.type = "text";
+  skip.className = "field";
+  skip.placeholder = "html, log";
+  skip.value = (rule.skipTypes || []).join(", ");
+  skipLabel.append(skip);
+  box.append(skipLabel);
   const shallow = element("label", "choice");
   const depth = document.createElement("input");
   depth.type = "checkbox";
@@ -447,8 +457,9 @@ function ruleEditor(folder) {
       return;
     }
     try {
+      const skipTypes = skip.value.split(",").map((type) => type.trim()).filter(Boolean);
       await invoke("set_root_rule", { folder, kinds, shallow: !depth.checked,
-                                      audioTags: tagsBox.checked, audioContent: contentBox.checked });
+                                      audioTags: tagsBox.checked, audioContent: contentBox.checked, skipTypes });
       ruling = null;
       await refresh();
     } catch (error) {
@@ -473,6 +484,7 @@ function ruleText(rule) {
   if (tags && content) parts.push("recordings by tags and sound");
   else if (tags) parts.push("recordings by tags only");
   else if (content) parts.push("recordings by sound");
+  if ((rule.skipTypes || []).length) parts.push(`skips ${rule.skipTypes.join(", ")}`);
   if (rule.shallow) parts.push("top level only");
   return parts.join(" · ");
 }

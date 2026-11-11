@@ -19,6 +19,16 @@ import Testing
         return url
     }
 
+    /// The download falls back to curl on exactly the Windows error that stops Schannel (upstream #204), not on every
+    /// failure.
+    @Test func aRevocationFailureIsRecognisedForTheCurlFallback() {
+        #expect(FileFetcher.isRevocationFailure("schannel: next InitializeSecurityContext failed: CRYPT_E_REVOCATION_OFFLINE"))
+        #expect(FileFetcher.isRevocationFailure("The operation failed (0x80092013)"))
+        #expect(FileFetcher.isRevocationFailure("A certificate revocation check could not be completed"))
+        #expect(!FileFetcher.isRevocationFailure("The download stopped early"))
+        #expect(!FileFetcher.isRevocationFailure("Hugging Face answered 503"))
+    }
+
     @Test func aFileWithTheWrongSizeIsStillMissing() throws {
         _ = try sparse(ModelFiles.text.name, bytes: 10)
         #expect(ModelFiles.missing(in: folder) == [ModelFiles.text, ModelFiles.media])

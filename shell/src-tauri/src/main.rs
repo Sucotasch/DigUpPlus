@@ -353,21 +353,24 @@ const KINDS: [&str; 7] = ["screenshot", "image", "pdf", "doc", "audio", "video",
 
 /// A rule as the engine takes it: the kinds it knows, in its order, or none at all when nothing is left of it. Audio is
 /// included when either of its bits is on, and left out when neither is — the editor has no "Audio" box of its own.
-fn clean_rule(kinds: Vec<String>, shallow: bool, audio_tags: bool, audio_content: bool)
-    -> Option<settings::RootRule> {
+fn clean_rule(kinds: Vec<String>, shallow: bool, audio_tags: bool, audio_content: bool,
+              skip_types: Vec<String>) -> Option<settings::RootRule> {
     let kinds: Vec<String> = KINDS.iter().filter(|kind| {
         if **kind == "audio" { audio_tags || audio_content } else { kinds.iter().any(|sent| sent == *kind) }
     }).map(|kind| kind.to_string()).collect();
-    // Everything the main index holds, all the way down: no rule at all (the code index has kinds of its own and
-    // never gets a folder rule).
-    if !shallow && !kinds.iter().any(|kind| kind == "code") && kinds.len() == KINDS.len() - 1 {
+    // Extensions, as "Skip these types" takes them: no dots, no repeats.
+    let skip_types = type_list(&skip_types.join(","));
+    // Everything the main index holds, all the way down, and no type skipped here: no rule at all (the code index has
+    // kinds of its own and never gets a folder rule).
+    if !shallow && !kinds.iter().any(|kind| kind == "code") && kinds.len() == KINDS.len() - 1
+        && skip_types.is_empty() {
         return None;
     }
-    if kinds.is_empty() && !shallow {
+    if kinds.is_empty() && !shallow && skip_types.is_empty() {
         None
     } else {
         Some(settings::RootRule { kinds, shallow, audio_tags: Some(audio_tags),
-                                  audio_content: Some(audio_content) })
+                                  audio_content: Some(audio_content), skip_types })
     }
 }
 
@@ -379,7 +382,7 @@ fn rules_for(folders: &[String], sent: BTreeMap<String, settings::RootRule>) -> 
         let Some(chosen) = folders.iter().find(|folder| models::same_path(Path::new(folder), Path::new(&path)))
         else { continue };
         let (tags, content) = (rule.tags_bit(), rule.content_bit());
-        if let Some(rule) = clean_rule(rule.kinds, rule.shallow, tags, content) {
+        if let Some(rule) = clean_rule(rule.kinds, rule.shallow, tags, content, rule.skip_types) {
             out.insert(chosen.clone(), rule);
         }
     }
@@ -397,15 +400,19 @@ fn rules_to_arguments(rules: &BTreeMap<String, settings::RootRule>) -> Vec<Strin
     let mut args = Vec::new();
     for (root, rule) in rules {
         let kinds: Vec<&str> = rule.kinds.iter().map(String::as_str).filter(|kind| KINDS.contains(kind)).collect();
-        if kinds.is_empty() && !rule.shallow {
+        let skip_types: Vec<&str> = rule.skip_types.iter().map(String::as_str).collect();
+        if kinds.is_empty() && !rule.shallow && skip_types.is_empty() {
             continue;
         }
-        let mut rule = json!({ "root": root, "shallow": rule.shallow,
-                               "audioTags": rule.tags_bit(), "audioContent": rule.content_bit() });
+        let mut payload = json!({ "root": root, "shallow": rule.shallow,
+                                  "audioTags": rule.tags_bit(), "audioContent": rule.content_bit() });
         if !kinds.is_empty() {
-            rule["kinds"] = json!(kinds);
+            payload["kinds"] = json!(kinds);
         }
-        args.extend(["--root-rule".to_string(), rule.to_string()]);
+        if !skip_types.is_empty() {
+            payload["skipTypes"] = json!(skip_types);
+        }
+        args.extend(["--root-rule".to_string(), payload.to_string()]);
     }
     args
 }
@@ -2798,7 +2805,7 @@ fn set_skipped(app: AppHandle, shell: State<'_, Arc<Shell>>, skipped: Vec<String
 /// folder is searched as it always was.
 #[tauri::command]
 fn set_root_rule(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, kinds: Vec<String>, shallow: bool,
-                 audio_tags: bool, audio_content: bool) -> Result<(), String> {
+                 audio_tags: bool, audio_content: bool, skip_types: Vec<String>) -> Result<(), String> {
     {
         let mut settings = shell.settings.lock().unwrap();
         let Some(chosen) = settings.folders.iter()
@@ -2806,7 +2813,7 @@ fn set_root_rule(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, k
             return Err("That folder isn't searched any more.".into());
         };
         // The engine's order, without repeats, and nothing it doesn't know.
-        match clean_rule(kinds, shallow, audio_tags, audio_content) {
+        match clean_rule(kinds, shallow, audio_tags, audio_content, skip_types) {
             Some(rule) => settings.root_rules.insert(chosen, rule),
             None => settings.root_rules.remove(&chosen),
         };
@@ -3559,15 +3566,19 @@ mod tests {
         let mut sent = std::collections::BTreeMap::new();
         // Typed with another spelling and case: the rule lands on the folder as it is stored.
         sent.insert("c:/photos".to_string(), RootRule { kinds: vec!["image".into(), "hologram".into()], shallow: false,
-                                                       audio_tags: Some(false), audio_content: Some(false) });
+                                                       audio_tags: Some(false), audio_content: Some(false),
+                                                       skip_types: Vec::new() });
         // Everything, and nothing below it: only the shallow part is a rule.
         sent.insert("D:/Music".to_string(), RootRule { kinds: Vec::new(), shallow: true,
-                                                       audio_tags: Some(false), audio_content: Some(false) });
+                                                       audio_tags: Some(false), audio_content: Some(false),
+                                                       skip_types: Vec::new() });
         // A folder that isn't being added, and a rule that says everything: both dropped.
         sent.insert("E:/Elsewhere".to_string(), RootRule { kinds: vec!["video".into()], shallow: true,
-                                                           audio_tags: Some(true), audio_content: Some(true) });
+                                                           audio_tags: Some(true), audio_content: Some(true),
+                                                           skip_types: Vec::new() });
         sent.insert("D:/Music/Sub".to_string(), RootRule { kinds: Vec::new(), shallow: false,
-                                                           audio_tags: Some(false), audio_content: Some(false) });
+                                                           audio_tags: Some(false), audio_content: Some(false),
+                                                           skip_types: Vec::new() });
         let rules = super::rules_for(&folders, sent);
         assert_eq!(rules.len(), 2);
         assert_eq!(rules["C:\\Photos"].kinds, vec!["image"]);
@@ -3577,19 +3588,45 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_rule_carries_its_skipped_types() {
+        let mut rules = std::collections::BTreeMap::new();
+        rules.insert("C:/Photos".to_string(), RootRule {
+            kinds: vec!["image".into()], shallow: false, audio_tags: Some(false), audio_content: Some(false),
+            skip_types: vec!["html".into(), "log".into()],
+        });
+        let args = super::rules_to_arguments(&rules);
+        assert_eq!(args.len(), 2);
+        let payload: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
+        assert_eq!(payload["skipTypes"], serde_json::json!(["html", "log"]));
+        assert_eq!(payload["kinds"], serde_json::json!(["image"]));
+        // A rule that only skips types is still a rule.
+        let mut only = std::collections::BTreeMap::new();
+        only.insert("C:/All".to_string(), RootRule {
+            skip_types: vec!["html".into()], ..RootRule::default()
+        });
+        assert_eq!(super::rules_to_arguments(&only).len(), 2);
+    }
+
+    #[test]
     fn the_audio_bits_put_audio_into_the_folder_kinds() {
         // Both bits: recordings are in the kinds, whatever the page sent for them.
-        let rule = super::clean_rule(vec!["image".into()], false, true, true).unwrap();
+        let rule = super::clean_rule(vec!["image".into()], false, true, true, Vec::new()).unwrap();
         assert_eq!(rule.kinds, vec!["image", "audio"]);
         assert_eq!(rule.audio_tags, Some(true));
         assert_eq!(rule.audio_content, Some(true));
         // Neither: recordings leave the kinds, and nothing else is left but the depth rule.
-        let off = super::clean_rule(vec!["audio".into()], true, false, false).unwrap();
+        let off = super::clean_rule(vec!["audio".into()], true, false, false, Vec::new()).unwrap();
         assert_eq!(off.kinds, Vec::<String>::new());
         assert!(off.shallow);
         // Everything, all the way down: no rule at all, so the crawl is the ordinary one.
         let all = vec!["screenshot".into(), "image".into(), "pdf".into(), "doc".into(), "video".into()];
-        assert!(super::clean_rule(all, false, true, true).is_none());
+        assert!(super::clean_rule(all, false, true, true, Vec::new()).is_none());
+        // A folder that skips a type keeps a rule even when it takes every kind, all the way down.
+        let skipping = super::clean_rule(vec!["screenshot".into(), "image".into(), "pdf".into(), "doc".into(),
+                                              "video".into()], false, true, true,
+                                         vec![" .HTML, log ".into()]).unwrap();
+        assert_eq!(skipping.skip_types, vec!["html", "log"]);
+        assert!(skipping.shallow == false);
     }
 
     #[test]

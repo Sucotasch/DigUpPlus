@@ -67,6 +67,45 @@ import WinSDK
         #expect(try store.pendingCount() == 2)
     }
 
+    /// One chosen folder is two path ranges; an expression of about a thousand terms makes SQLite refuse every query
+    /// ("Expression tree is too large", upstream #166), so a few hundred folders used to stop indexing. The ranges
+    /// live in a temporary table now.
+    @Test func hundredsOfFoldersDoNotBreakTheScope() throws {
+        let store = try IndexStore(directory: folder)
+        try store.insert(file("/a/x.png", inode: 1))
+        try store.insert(file("/b/y.png", inode: 2))
+        var roots = (0..<1200).map { "/chosen/folder-\($0)" }
+        roots.append("/a")
+        store.scope = roots
+        #expect(try store.pendingCount() == 1)
+        #expect(try store.pending(limit: nil).map(\.path) == ["/a/x.png"])
+        #expect(try store.counts().byKindAndState["image"]?["pending"] == 1)
+        store.scope = ["/b"]
+        #expect(try store.pending(limit: nil).map(\.path) == ["/b/y.png"])
+        #expect(try store.counts().vectors == 0)
+    }
+
+    #if os(Windows)
+    /// A folder typed with another case for its drive letter still finds the rows the crawl stored ("c:/" vs "C:/"):
+    /// SQLite compares path ranges byte by byte.
+    @Test func aScopeWithAnotherDriveLetterCaseStillMatches() throws {
+        let store = try IndexStore(directory: folder)
+        try store.insert(file("C:/a/x.png", inode: 1))
+        store.scope = ["c:/a"]
+        #expect(try store.pendingCount() == 1)
+        #expect(try store.pending(limit: nil).map(\.path) == ["C:/a/x.png"])
+    }
+    #endif
+
+    /// Nested folders and the two spellings of one folder match one path once.
+    @Test func overlappingRangesAreMerged() {
+        let ranges = IndexStore.mergedRanges([("/a/", "/a/\u{10FFFF}"), ("/a/b/", "/a/b/\u{10FFFF}"),
+                                              ("/c/", "/c/\u{10FFFF}")])
+        #expect(ranges.count == 2)
+        #expect(ranges[0].from == "/a/")
+        #expect(ranges[0].to == "/a/\u{10FFFF}")
+    }
+
     @Test func aFileTheHelperStoppedOnIsNotReadAgain() throws {
         let store = try IndexStore(directory: folder)
         try store.insert(file("/a/stuck.pdf", inode: 1))

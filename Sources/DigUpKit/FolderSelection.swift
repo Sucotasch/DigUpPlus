@@ -110,7 +110,13 @@ public struct FolderSelection: Equatable, Sendable {
     /// The path as a walk of the folder reports it (/private/var where `standardizedFileURL` says /var).
     public static func realPath(_ path: String) -> String {
         #if os(Windows)
-        return URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        // Foundation's standardization drops one slash of a share's leading `//` (`\\srv\share` became `/srv/share`, a
+        // path on the current drive): a share looked like a folder under C: and never indexed (upstream #181).
+        if path.hasPrefix("\\\\") || path.hasPrefix("//") {
+            return resolved.hasPrefix("//") ? resolved : "/" + resolved
+        }
+        return resolved
         #else
         guard let real = realpath(path, nil) else { return path }
         defer { free(real) }
@@ -120,12 +126,42 @@ public struct FolderSelection: Equatable, Sendable {
 
     /// The crawl's spelling, even for a deleted path: resolve its closest surviving ancestor first.
     static func crawlPath(_ path: String) -> String {
-        let path = URL(fileURLWithPath: path).standardizedFileURL.path
+        let path = standardized(path)
         if FileManager.default.fileExists(atPath: path) { return realPath(path) }
+        #if os(Windows)
+        // A share that can't be reached now (the drive is unplugged) has no ancestor to resolve, and walking up would
+        // lose its leading `//`: it stays as it is.
+        if path.hasPrefix("//") { return path }
+        #endif
         let parent = Self.parent(path)
         guard parent != path, !parent.isEmpty else { return path }
         let realParent = crawlPath(parent)
         return realParent + (realParent.hasSuffix("/") ? "" : "/") + (path as NSString).lastPathComponent
+    }
+
+    /// `standardizedFileURL`, with a UNC path's leading `//` kept: Foundation drops one slash (`\\srv\share` →
+    /// `/srv/share`), which turns a share into a path on the current drive.
+    static func standardized(_ path: String) -> String {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        #if os(Windows)
+        if path.hasPrefix("\\\\") || path.hasPrefix("//") {
+            return standardized.hasPrefix("//") ? standardized : "/" + standardized
+        }
+        #endif
+        return standardized
+    }
+
+    /// A drive letter as Windows writes it ("c:/x" → "C:/x"): the index's paths and a folder typed by hand can differ
+    /// only there, while SQLite compares the bytes of a path range.
+    static func capitalisedDrive(_ path: String) -> String {
+        #if os(Windows)
+        guard path.count >= 2, path[path.index(after: path.startIndex)] == ":" else { return path }
+        let letter = path.first!
+        guard letter.isLetter, letter.isLowercase else { return path }
+        return String(letter).uppercased() + path.dropFirst()
+        #else
+        return path
+        #endif
     }
 
     private static func unique(_ paths: [String]) -> [String] {

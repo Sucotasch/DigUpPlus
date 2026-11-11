@@ -11,6 +11,27 @@ import Testing
 
     deinit { try? FileManager.default.removeItem(at: folder) }
 
+    #if os(Windows)
+    /// Foundation's standardization drops one slash of a share's leading `//`, which made `\\srv\share` a path on the
+    /// current drive (`/srv/share`): it was never indexed (upstream #181). The prefix survives now.
+    @Test func aShareKeepsItsLeadingDoubleSlash() {
+        let share = "\\\\srv\\share\\folder"
+        #expect(FolderSelection.realPath(share) == "//srv/share/folder")
+        #expect(FolderSelection.crawlPath(share) == "//srv/share/folder")
+        #expect(FolderSelection.standardized(share) == "//srv/share/folder")
+        #expect(FolderSelection.isInside("//srv/share/a.jpg", "//srv/share"))
+        #expect(!FolderSelection.isInside("/srv/share/a.jpg", "//srv/share"))
+    }
+
+    /// A drive letter typed in another case still matches the index's paths (SQLite compares bytes).
+    @Test func aDriveLettersCaseIsNormalisedForRanges() {
+        #expect(FolderSelection.capitalisedDrive("c:/Pictures") == "C:/Pictures")
+        #expect(FolderSelection.capitalisedDrive("C:/Pictures") == "C:/Pictures")
+        #expect(FolderSelection.capitalisedDrive("//srv/share") == "//srv/share")
+        #expect(IndexStore.pathRanges(under: "c:/Pictures").contains { $0.from == "C:/Pictures/" })
+    }
+    #endif
+
     @Test func uncheckingASubfolderSkipsIt() {
         var selection = FolderSelection(chosen: ["/D"])
         selection.setSubfolder("/D/Courses", on: false)

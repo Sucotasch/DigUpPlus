@@ -83,6 +83,18 @@ public enum Crawler {
         if !options.code {
             for rule in options.rootRules { rules[FolderSelection.crawlPath(rule.root)] = rule }
         }
+        // A folder's own skipped types, on top of the ones skipped everywhere (Settings → Folders → Skip these types).
+        let extraTypes: [String: Set<String>] = rules.compactMapValues { rule in
+            let types = rule.skippedTypes
+            return types.isEmpty ? nil : types
+        }
+        /// The options a file under `owner` is classified with: the folder's own skipped types added to everyone's.
+        func fileOptions(_ owner: String) -> IndexOptions {
+            guard let types = extraTypes[owner] else { return options }
+            var copy = options
+            copy.excludedExtensions.formUnion(types)
+            return copy
+        }
         // The chosen folder a path is searched as: the nearest one that contains it. A nested chosen folder keeps its
         // own rule, and a partial sync's walk scope (a changed folder) never becomes one. Cached by folder: a file
         // asks for its folder's owner, so the answer costs one pass over the chosen folders per folder walked.
@@ -195,8 +207,8 @@ public enum Crawler {
                     leftOut("a program's leftover", under: owned)
                     return
                 }
-                let classification = options.code ? Rules.classifyCode(url, options: options)
-                    : Rules.classify(url, values: values, options: options)
+                let classification = options.code ? Rules.classifyCode(url, options: fileOptions(owned))
+                    : Rules.classify(url, values: values, options: fileOptions(owned))
                 switch classification {
                 case .ignore:
                     leftOut("other type", under: owned)

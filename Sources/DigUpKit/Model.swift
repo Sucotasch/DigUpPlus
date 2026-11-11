@@ -103,18 +103,31 @@ public struct RootRule: Codable, Sendable, Equatable {
     public var audioTags: Bool?
     /// The rest of the recordings are read by their sound. nil means yes, as above.
     public var audioContent: Bool?
+    /// File types this folder skips on top of the ones skipped everywhere (Settings → Folders → Skip these types), as
+    /// extensions ("html"). nil for a rule saved before this was a setting.
+    public var skipTypes: [String]?
 
     /// The two bits, with the "not stored yet" default of yes.
     public var readsAudioByTags: Bool { audioTags ?? true }
     public var readsAudioByContent: Bool { audioContent ?? true }
 
+    /// `skipTypes` as the comparison wants them: lowercased, without a leading dot or spaces.
+    public var skippedTypes: Set<String> {
+        Set((skipTypes ?? []).map { value in
+            var type = value.trimmingCharacters(in: .whitespaces).lowercased()
+            while type.hasPrefix(".") { type.removeFirst() }
+            return type
+        }.filter { !$0.isEmpty })
+    }
+
     public init(root: String, kinds: Set<FileKind>? = nil, shallow: Bool = false, audioTags: Bool? = nil,
-                audioContent: Bool? = nil) {
+                audioContent: Bool? = nil, skipTypes: [String]? = nil) {
         self.root = root
         self.kinds = kinds
         self.shallow = shallow
         self.audioTags = audioTags
         self.audioContent = audioContent
+        self.skipTypes = skipTypes
     }
 }
 

@@ -87,11 +87,14 @@ pub struct RootRule {
     pub audio_tags: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_content: Option<bool>,
+    /// File types this folder skips on top of the ones skipped everywhere, as extensions ("html").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_types: Vec<String>,
 }
 
 impl Default for RootRule {
     fn default() -> Self {
-        RootRule { kinds: Vec::new(), shallow: false, audio_tags: None, audio_content: None }
+        RootRule { kinds: Vec::new(), shallow: false, audio_tags: None, audio_content: None, skip_types: Vec::new() }
     }
 }
 

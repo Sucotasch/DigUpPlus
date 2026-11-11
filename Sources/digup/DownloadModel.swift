@@ -299,7 +299,8 @@ private func copy(_ source: URL, to partial: URL, file: ModelFiles.File, before 
     try output.synchronize()
 }
 
-/// One try at one file: blocks until `FileFetcher` is through with it.
+/// One try at one file: blocks until `FileFetcher` is through with it. When Windows' Schannel won't check a
+/// certificate's revocation, the same file comes through `curl --ssl-no-revoke` instead (upstream #204).
 private func fetchFile(_ file: ModelFiles.File, into folder: URL, before done: Int64) -> FileFetcher.Outcome {
     let finished = DispatchSemaphore(value: 0)
     let result = OutcomeBox()
@@ -314,7 +315,67 @@ private func fetchFile(_ file: ModelFiles.File, into folder: URL, before done: I
     })
     fetcher.start()
     finished.wait()
-    return result.outcome ?? .failed("the download stopped", retry: true)
+    let outcome = result.outcome ?? .failed("the download stopped", retry: true)
+    if case .failed(let message, _) = outcome, FileFetcher.isRevocationFailure(message) {
+        return curlFetch(file, into: folder, before: done)
+    }
+    return outcome
+}
+
+/// The same download through `curl.exe` (Windows 10 1803 and later ship it), which can skip the revocation check while
+/// still checking the certificate. `-C -` resumes the partial file the first try left.
+private func curlFetch(_ file: ModelFiles.File, into folder: URL, before done: Int64) -> FileFetcher.Outcome {
+    guard let curl = curlPath() else {
+        return .failed("\(file.name): this computer can't check the certificate's revocation, and curl (the fallback) "
+                       + "isn't on PATH. Try “Use Model Files…” with the files from the releases page.", retry: false)
+    }
+    let partial = folder.appendingPathComponent(file.name + ".partial")
+    emit(["event": "retry", "message": "the certificate's revocation check isn't available here: fetching through curl",
+          "seconds": 0])
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: curl)
+    process.arguments = ["-L", "--fail", "--retry", "3", "--ssl-no-revoke", "-C", "-", "-o", partial.path,
+                         file.url.absoluteString]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    do {
+        try process.run()
+    } catch {
+        return .failed("\(file.name): curl couldn't start: \(error.localizedDescription)", retry: false)
+    }
+    while process.isRunning {
+        Thread.sleep(forTimeInterval: 0.2)
+        emit(["event": "progress", "name": file.name, "bytes": FileFetcher.size(of: partial), "total": file.bytes,
+              "all_bytes": done + FileFetcher.size(of: partial), "all_total": ModelFiles.totalBytes])
+    }
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        return .failed("\(file.name): curl stopped with code \(process.terminationStatus); the certificate's "
+                       + "revocation check couldn't be skipped", retry: false)
+    }
+    emit(["event": "progress", "name": file.name, "bytes": FileFetcher.size(of: partial), "total": file.bytes,
+          "all_bytes": done + FileFetcher.size(of: partial), "all_total": ModelFiles.totalBytes])
+    return .downloaded(partial)
+}
+
+/// `curl.exe` on PATH, "curl" elsewhere.
+private func curlPath() -> String? {
+    #if os(Windows)
+    let name = "curl.exe"
+    #else
+    let name = "curl"
+    #endif
+    let path = ProcessInfo.processInfo.environment.first { $0.key.uppercased() == "PATH" }?.value ?? ""
+    #if os(Windows)
+    let separator: Character = ";"
+    #else
+    let separator: Character = ":"
+    #endif
+    for folder in path.split(separator: separator) where !folder.isEmpty {
+        let candidate = "\(folder)/\(name)"
+        if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+    }
+    return nil
 }
 
 private final class OutcomeBox: @unchecked Sendable {   // written once, before the semaphore is signalled

@@ -37,16 +37,43 @@ public final class IndexStore {
     /// When set, `pending`, `pendingCount` and `counts` see only files under these folders: the app's helper sets the
     /// folders that are connected right now, so files on an unplugged drive neither fail nor count as waiting.
     public var scope: [String]? {
-        didSet {
-            guard let scope else { (scopeSQL, scopeValues) = ("", []); return }
-            let ranges = scope.flatMap(Self.pathRanges(under:))
-            scopeSQL = ranges.isEmpty ? " AND 0"
-                : " AND (" + ranges.map { _ in "(path >= ? AND path < ?)" }.joined(separator: " OR ") + ")"
-            scopeValues = ranges.flatMap { [SQLValue.text($0.from), .text($0.to)] }
-        }
+        didSet { scopeReady = false }
     }
-    private var scopeSQL = ""
-    private var scopeValues: [SQLValue] = []
+    private var scopeReady = false
+    /// The ranges live in a temporary table: one chosen folder is two ranges, and SQLite refuses an expression of about
+    /// a thousand terms ("Expression tree is too large", upstream #166), so a few hundred folders stopped every query.
+    /// Joining the small table lets each range scan the UNIQUE path index instead.
+    private static let scopeJoinSQL = " JOIN digup_scope ON files.path >= digup_scope.lo AND files.path < digup_scope.hi"
+
+    /// The `JOIN` that narrows a query on `files` to the scope's ranges (empty without a scope).
+    private func scopeJoin() throws -> String {
+        guard let scope else { return "" }
+        if scopeReady { return Self.scopeJoinSQL }
+        try db.execute("CREATE TEMP TABLE IF NOT EXISTS digup_scope(lo TEXT NOT NULL, hi TEXT NOT NULL)")
+        try db.run("DELETE FROM digup_scope")
+        let ranges = Self.mergedRanges(scope.flatMap(Self.pathRanges(under:)))
+        try db.transaction {
+            for range in ranges {
+                try db.run("INSERT INTO digup_scope(lo, hi) VALUES(?, ?)", [.text(range.from), .text(range.to)])
+            }
+        }
+        scopeReady = true
+        return Self.scopeJoinSQL
+    }
+
+    /// Ranges that overlap or touch, as one: a nested chosen folder and the two spellings of one folder would otherwise
+    /// match a path twice through the join.
+    static func mergedRanges(_ ranges: [(from: String, to: String)]) -> [(from: String, to: String)] {
+        var out: [(from: String, to: String)] = []
+        for range in ranges.sorted(by: { $0.from < $1.from }) {
+            if let last = out.last, range.from <= last.to {
+                out[out.count - 1].to = max(last.to, range.to)
+            } else {
+                out.append(range)
+            }
+        }
+        return out
+    }
 
     /// The ranges of the UNIQUE path index that hold the files under `folder`. Paths are stored as a walk reports them,
     /// which isn't always how the folder is spelled here: `standardizedFileURL` says /var where the walk says
@@ -54,10 +81,11 @@ public final class IndexStore {
     /// Drive's "내 드라이브"). Swift's `==` takes those for the same folder; SQLite compares bytes. So: a range for the
     /// folder as given, and one for its real path when that's spelled differently.
     static func pathRanges(under folder: String) -> [(from: String, to: String)] {
-        var spellings = [folder]
+        var spellings = [folder, FolderSelection.capitalisedDrive(folder)]
         let real = FolderSelection.realPath(folder)
         if !real.utf8.elementsEqual(folder.utf8) { spellings.append(real) }
-        return spellings.map { path in
+        var seen = Set<String>()
+        return spellings.filter { seen.insert($0).inserted }.map { path in
             let prefix = path.hasSuffix("/") ? path : path + "/"
             return (prefix, prefix + "\u{10FFFF}")
         }
@@ -410,17 +438,19 @@ public final class IndexStore {
     public func pending(limit: Int?, only ids: Set<Int64>? = nil) throws -> [FileRecord] {
         var out: [FileRecord] = []
         if let ids, ids.isEmpty { return out }
+        let join = try scopeJoin()
         let filter = ids.map { " AND id IN (\($0.map(String.init).joined(separator: ",")))" } ?? ""
         try db.query("""
-            SELECT \(Self.fileColumns) FROM files WHERE state = 'pending'\(filter)\(scopeSQL)
+            SELECT \(Self.fileColumns) FROM files\(join) WHERE state = 'pending'\(filter)
             ORDER BY \(FileKind.indexingOrderSQL), mtime DESC LIMIT ?
-            """, scopeValues + [.int(Int64(limit ?? -1))]) { out.append(Self.record($0)) }
+            """, [.int(Int64(limit ?? -1))]) { out.append(Self.record($0)) }
         return out
     }
 
     public func pendingCount() throws -> Int {
         var count = 0
-        try db.query("SELECT COUNT(*) FROM files WHERE state = 'pending'\(scopeSQL)", scopeValues) {
+        let join = try scopeJoin()
+        try db.query("SELECT COUNT(*) FROM files\(join) WHERE state = 'pending'") {
             count = Int($0.int(0))
         }
         return count
@@ -429,21 +459,23 @@ public final class IndexStore {
     /// Long files with pages or chunks still to read after their first step, in indexing order (`pending`'s).
     public func unfinished() throws -> [FileRecord] {
         var out: [FileRecord] = []
+        let join = try scopeJoin()
         try db.query("""
-            SELECT \(Self.fileColumns) FROM files WHERE state = 'partial'\(scopeSQL)
+            SELECT \(Self.fileColumns) FROM files\(join) WHERE state = 'partial'
             ORDER BY \(FileKind.indexingOrderSQL), mtime DESC
-            """, scopeValues) { out.append(Self.record($0)) }
+            """) { out.append(Self.record($0)) }
         return out
     }
 
     /// How many long files are unfinished, and how many of their pages and chunks are left to read.
     public func unfinishedCount() throws -> (files: Int, left: Int) {
         var count = (files: 0, left: 0)
+        let join = try scopeJoin()
         try db.query("""
             SELECT COUNT(*), SUM(MAX(0, CAST(json_extract(info, '$.read_end') AS INTEGER)
                                       - CAST(json_extract(info, '$.read_to') AS INTEGER)))
-            FROM files WHERE state = 'partial'\(scopeSQL)
-            """, scopeValues) { count = (Int($0.int(0)), Int($0.int(1))) }
+            FROM files\(join) WHERE state = 'partial'
+            """) { count = (Int($0.int(0)), Int($0.int(1))) }
         return count
     }
 
@@ -574,12 +606,13 @@ public final class IndexStore {
 
     public func counts() throws -> Counts {
         var counts = Counts()
-        try db.query("SELECT kind, state, COUNT(*) FROM files WHERE 1\(scopeSQL) GROUP BY kind, state", scopeValues) {
+        let join = try scopeJoin()
+        try db.query("SELECT kind, state, COUNT(*) FROM files\(join) WHERE 1 GROUP BY kind, state") {
             counts.byKindAndState[$0.text(0) ?? "?", default: [:]][$0.text(1) ?? "?"] = Int($0.int(2))
         }
         (counts.unfinished, counts.left) = try unfinishedCount()
-        let inScope = scope == nil ? "" : " AND file IN (SELECT id FROM files WHERE 1\(scopeSQL))"
-        try db.query("SELECT COUNT(*), COUNT(vec) FROM segments WHERE kind != 'name'\(inScope)", scopeValues) {
+        let inScope = scope == nil ? "" : " AND file IN (SELECT id FROM files\(join))"
+        try db.query("SELECT COUNT(*), COUNT(vec) FROM segments WHERE kind != 'name'\(inScope)") {
             counts.segments = Int($0.int(0))
             counts.vectors = Int($0.int(1))
         }

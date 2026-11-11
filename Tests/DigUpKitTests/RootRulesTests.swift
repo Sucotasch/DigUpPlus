@@ -36,6 +36,26 @@ import Testing
 
     // MARK: How a folder's recordings are read (`audioTags`/`audioContent`)
 
+    /// A folder skips its own types on top of the ones skipped everywhere: "html" matters here, not there.
+    @Test func aFolderSkipsItsOwnTypesOnTopOfEveryones() throws {
+        try write("A/page.html")
+        try write("A/notes.txt")
+        try write("B/page.html")
+        try write("B/notes.txt")
+        let a = folder.appendingPathComponent("A"), b = folder.appendingPathComponent("B")
+        let report = Crawler.crawl([a, b], options: options([RootRule(root: a.path, skipTypes: ["html"])]))
+        #expect(names(report) == ["A/notes.txt", "B/notes.txt", "B/page.html"])
+        #expect(report.leftOut.values.compactMap { $0["excluded type"] }.reduce(0, +) == 1)
+    }
+
+    /// The same, with the type typed as people type it: ".HTML".
+    @Test func aSkippedTypeIsForgivenItsDotAndCase() throws {
+        try write("A/page.html")
+        let a = folder.appendingPathComponent("A")
+        let report = Crawler.crawl([a], options: options([RootRule(root: a.path, skipTypes: [".HTML"])]))
+        #expect(names(report).isEmpty)
+    }
+
     /// tags only: listed types by tags, everything else skipped (the music-library case).
     @Test func audioByTagsAloneSkipsTheRestOfTheRecordings() throws {
         try write("song.wav")

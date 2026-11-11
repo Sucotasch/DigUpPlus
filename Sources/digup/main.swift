@@ -146,7 +146,11 @@ struct Arguments {
     }
 
     static func folderURL(_ path: String) -> URL {
-        URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
+        let expanded = (path as NSString).expandingTildeInPath
+        // A share's leading `//` is lost by standardization (`\\srv\share` became `/srv/share`, a path on C:), so a UNC
+        // path is used as it is; the engine keeps the prefix from there (upstream #181).
+        if expanded.hasPrefix("\\\\") || expanded.hasPrefix("//") { return URL(fileURLWithPath: expanded) }
+        return URL(fileURLWithPath: expanded).standardizedFileURL
     }
 
     static func isFolder(_ url: URL) -> Bool {

@@ -206,6 +206,7 @@ function ruleText(rule) {
   if (tags && content) parts.push("recordings by tags and sound");
   else if (tags) parts.push("recordings by tags only");
   else if (content) parts.push("recordings by sound");
+  if ((rule.skipTypes || []).length) parts.push(`skips ${rule.skipTypes.join(", ")}`);
   if (rule.shallow) parts.push("top level only");
   return parts.join(" · ");
 }
@@ -219,9 +220,11 @@ function rulesObject() {
     if (!rule) continue;
     const { tags, content } = audioBits(rule);
     const everyKind = RULE_KINDS.every(([kind]) => rule.kinds.includes(kind));
-    if (everyKind && tags && content && !rule.shallow) continue;
+    if (everyKind && tags && content && !rule.shallow && !(rule.skipTypes || []).length) continue;
     const kinds = [...rule.kinds];
-    out[native(folder)] = { kinds, shallow: rule.shallow, audioTags: tags, audioContent: content };
+    const outRule = { kinds, shallow: rule.shallow, audioTags: tags, audioContent: content };
+    if ((rule.skipTypes || []).length) outRule.skipTypes = rule.skipTypes;
+    out[native(folder)] = outRule;
   }
   return out;
 }
@@ -262,6 +265,16 @@ function rulePanel(row) {
   const contentBox = audioChoice("Recordings by their sound", bits.content);
   const hint = element("p", "note", "");
   panel.append(hint);
+  // Types this folder leaves out on top of the ones skipped everywhere: "html, log".
+  const skip = document.createElement("input");
+  skip.type = "text";
+  skip.className = "field";
+  skip.placeholder = "html, log";
+  skip.value = (rule.skipTypes || []).join(", ");
+  skip.oninput = () => store();
+  const skipLabel = element("label", "option");
+  skipLabel.append(element("span", "text", "Skip types"), skip);
+  panel.append(skipLabel);
   const scan = element("label", "choice");
   const scanBox = document.createElement("input");
   scanBox.type = "checkbox";
@@ -295,7 +308,8 @@ function rulePanel(row) {
       hint.hidden = true;
     }
     const shallow = !scanBox.checked;
-    folderRules.set(key(row), { kinds, shallow, audioTags: tags, audioContent: content });
+    const skipTypes = skip.value.split(",").map((type) => type.trim()).filter(Boolean);
+    folderRules.set(key(row), { kinds, shallow, audioTags: tags, audioContent: content, skipTypes });
     renderFolders();
   }
   const done = element("button", "link", "Done");
@@ -1045,7 +1059,8 @@ async function start() {
   // The rules the folders already have (Settings → Folders): shown here, and kept when this window saves.
   for (const [path, rule] of Object.entries(info.rootRules || {})) {
     folderRules.set(key(path), { kinds: rule.kinds || [], shallow: Boolean(rule.shallow),
-                                 audioTags: rule.audioTags, audioContent: rule.audioContent });
+                                 audioTags: rule.audioTags, audioContent: rule.audioContent,
+                                 skipTypes: rule.skipTypes || [] });
   }
   // Folders picked before this page loaded (Add Folders… opens the picker first).
   if (info.pending?.length) addPicked(info.pending);
