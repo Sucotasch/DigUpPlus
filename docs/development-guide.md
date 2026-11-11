@@ -25,7 +25,8 @@ macOS-приложение (`Sources/DigUpApp`) в дереве осталось
 `upstream` = `https://github.com/ARahim3/DigUp.git`. В форке живут:
 
 - пагинация выдачи в главном окне и слои Images (см. `docs/search-results-pagination-plan.md`);
-- файловые операции в главном окне: Move To / Copy To / Delete (см. `docs/file-operations-plan.md`);
+- файловые операции в главном окне: Move To / Copy To / Delete, и результаты списком в панели Total Commander
+  (см. `docs/file-operations-plan.md`);
 - настройки папки индекса и модели, установщик Windows.
 
 `upstream` не пушить. Автообновлений в форке нет: модуль `updates.rs`, плагин updater и настройка «Check for
@@ -369,8 +370,9 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
   `docs/per-folder-rules-plan.md` §1.8, «Фаза 2», «Фаза 3»;
 - версия в `tauri.conf.json` — `0.1.11` (0.1.6 выпущен 2026-11-04; 0.1.7–0.1.9 выпущены 2026-11-05 одним тегом
   `v0.1.9`: аудио по правилам папки, Rescan/Re-read, надёжность инкремента, MCP; 0.1.10 выпущен 2026-11-12:
-  жизненный цикл папки (Re-pick, пустая папка), пакет из upstream и исправление выделения; в дереве — `0.1.11`
-  (сборка для проверки: результаты окна открываются списком в панели Total Commander);
+  жизненный цикл папки (Re-pick, пустая папка), пакет из upstream и исправление выделения; 0.1.11 выпущен
+  2026-11-12: результаты окна открываются списком в панели Total Commander; helper не менялся, поэтому к полному
+  zip приложен `-shell-only.zip`);
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
   (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` удалён. Default branch —
   `file-operations`; сборки только вручную (`scripts/package-portable.sh`).
