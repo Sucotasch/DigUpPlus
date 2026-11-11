@@ -748,6 +748,11 @@ fn forget_folder(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String) -
     let answer = run_index_command(&shell, "forget", &[path.display().to_string()])?;
     // The folder is still chosen: a sync now finds it empty with no rows, so the “moved?” question goes.
     let _ = shell.index.sync_paths(&shell.index_launch(), &[path]);
+    // The search helper still holds the rows that just left: reload it, as a file operation does.
+    let reloading = shell.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = reloading.search.ask(json!({"op": "reload"})).await;
+    });
     let counted = app.clone();
     tauri::async_runtime::spawn(async move { refresh_counts(&counted).await });
     Ok(json!({"removed": answer["removed"]}))
