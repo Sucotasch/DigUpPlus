@@ -92,6 +92,30 @@ import ImageIO
     }
     #endif
 
+    #if canImport(CWIC)
+    @Test func wicPrefersPackedRows() throws {
+        // WIC pads each row of its 24-bit output to four bytes; read as packed pixels, every row slips by a byte or
+        // three and the picture is torn diagonally (0.1.12 showed that as torn, half-grey previews). A width that is
+        // not a multiple of four is all it takes, and it never scales here: 302 < 1024.
+        let (width, height) = (302, 220)
+        var pixels = [UInt8](repeating: 0, count: width * height * 3)
+        for y in 0..<height {
+            for x in 0..<width {
+                let at = (y * width + x) * 3
+                let top = y < height / 2, left = x < width / 2
+                let color: [UInt8] = top ? (left ? [255, 0, 0] : [0, 255, 0]) : (left ? [0, 0, 255] : [255, 255, 0])
+                (pixels[at], pixels[at + 1], pixels[at + 2]) = (color[0], color[1], color[2])
+            }
+        }
+        let source = folder.appendingPathComponent("quadrants-302.jpg")
+        try RGBImage(width: width, height: height, pixels: pixels).write(to: source, png: false)
+        let prepared = try ImageExtractor.prepare(source, maxPixel: 1024, minSide: 0, to: folder, png: true)
+        let shown = try Self.decode(prepared.path)
+        #expect(shown.width == width && shown.height == height)
+        #expect(shown.quadrants == ["R", "G", "B", "Y"])
+    }
+    #endif
+
     /// A picture's size and the color in the middle of each quadrant (top left, top right, bottom left, bottom right),
     /// as R, G, B or Y.
     static func decode(_ path: String) throws -> (width: Int, height: Int, quadrants: [String]) {

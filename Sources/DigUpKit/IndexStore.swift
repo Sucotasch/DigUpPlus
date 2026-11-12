@@ -641,8 +641,10 @@ public final class IndexStore {
 
     /// Files read once more because DigUp reads them better now, each kind once per index (the schema stays as it was,
     /// so an older DigUp still opens the index): PDFs with pages read as pictures, whose words come from OCR now
-    /// (`meta` "scans_ocr"), and pictures that couldn't be read at all, like SVGs, which AppKit draws now
-    /// ("pictures_drawn"). Only where this machine does either. Returns how many files.
+    /// (`meta` "scans_ocr"), pictures that couldn't be read at all, like SVGs, which AppKit draws now
+    /// ("pictures_drawn"), and pictures embedded by 0.1.12's Windows decoder, which read WIC's four-byte row padding
+    /// as packed pixels and so vectorized a torn copy ("pictures_repacked"). Only where this machine does any of it.
+    /// Returns how many files.
     @discardableResult
     public func readAgainOnce() throws -> Int {
         var files = Set<Int64>(), flags: [String] = []
@@ -655,6 +657,13 @@ public final class IndexStore {
                          [.text(ExtractError.tooSmall(0, 0).description)]) { files.insert($0.int(0)) }
             flags.append("pictures_drawn")
         }
+        #if canImport(CWIC)
+        if try meta("pictures_repacked") == nil {
+            try db.query("SELECT id FROM files WHERE kind IN ('image', 'screenshot') AND state IN ('done', 'partial')")
+            { files.insert($0.int(0)) }
+            flags.append("pictures_repacked")
+        }
+        #endif
         guard !flags.isEmpty else { return 0 }
         try db.transaction {
             for file in files { try requeue(file) }

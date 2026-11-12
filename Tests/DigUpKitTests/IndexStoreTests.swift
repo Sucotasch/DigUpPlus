@@ -215,6 +215,27 @@ import WinSDK
     }
     #endif
 
+    #if canImport(CWIC)
+    @Test func picturesEmbeddedByTheTornDecoderAreReadOnceMore() throws {
+        // 0.1.12 on Windows read WIC's row padding as packed pixels, so a picture's vector described a torn copy.
+        // Its segments go and the picture is queued again — once; a document keeps its own.
+        let store = try IndexStore(directory: folder)
+        try store.setMeta("scans_ocr", "1")
+        try store.setMeta("pictures_drawn", "1")
+        let picture = try store.insert(file("/a/photo.jpg", inode: 1))
+        try store.addSegment(file: picture, kind: .image, modality: .image, vector: [1, 0, 0])
+        try store.finish(picture, state: "done", info: ["width": "10"])
+        let notes = try store.insert(Candidate(path: "/a/notes.txt", kind: .doc, size: 10, mtime: 1, inode: 2,
+                                               device: 1))
+        try store.addSegment(file: notes, kind: .chunk, modality: .text, text: "zorblat")
+        try store.finish(notes, state: "done")
+        #expect(try store.readAgainOnce() == 1)
+        #expect(try store.pending(limit: nil).map(\.path) == ["/a/photo.jpg"])
+        #expect(try store.file(notes)?.state == "done")
+        #expect(try store.readAgainOnce() == 0)
+    }
+    #endif
+
     @Test func modelFileHashesStreamInPieces() throws {
         let small = folder.appendingPathComponent("abc")
         try Data("abc".utf8).write(to: small)

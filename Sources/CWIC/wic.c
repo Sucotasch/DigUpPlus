@@ -23,15 +23,27 @@ static int wic_ready(void) {
 
 
 /* WIC's 24-bit format is BGR; the caller wants RGB, so the two outer bytes of every pixel trade places. */
-static void swap_red_blue(uint8_t *pixels, UINT width, UINT height, UINT stride) {
+static void swap_red_blue(uint8_t *pixels, UINT width, UINT height) {
     for (UINT y = 0; y < height; y++) {
-        uint8_t *row = pixels + (size_t)y * stride;
+        uint8_t *row = pixels + (size_t)y * width * 3;
         for (UINT x = 0; x < width; x++) {
             uint8_t value = row[x * 3];
             row[x * 3] = row[x * 3 + 2];
             row[x * 3 + 2] = value;
         }
     }
+}
+
+/* WIC pads every row of its output to four bytes, and a caller reading packed pixels would see each row slip by a byte
+   or three: the picture tears diagonally (0.1.12 shipped that, as torn half-grey previews). So the padding goes. */
+static uint8_t *pack_rows(uint8_t *pixels, UINT width, UINT height, UINT stride) {
+    UINT packed = width * 3;
+    if (stride == packed) return pixels;
+    uint8_t *out = (uint8_t *)malloc((size_t)packed * height);
+    if (!out) return NULL;
+    for (UINT y = 0; y < height; y++) memcpy(out + (size_t)y * packed, pixels + (size_t)y * stride, packed);
+    free(pixels);
+    return out;
 }
 
 int32_t digup_wic_rgb(const wchar_t *path, uint32_t max_pixel, uint8_t **pixels,
@@ -41,7 +53,7 @@ int32_t digup_wic_rgb(const wchar_t *path, uint32_t max_pixel, uint8_t **pixels,
     IWICBitmapFrameDecode *frame = NULL;
     IWICBitmapSourceTransform *transform = NULL;
     uint8_t *buffer = NULL;
-    UINT outWidth = 0, outHeight = 0;
+    UINT outWidth = 0, outHeight = 0, outStride = 0;
     HRESULT hr;
     if (!pixels || !width || !height || !source_width || !source_height) return 1;
     if (!wic_ready()) return 2;
@@ -89,7 +101,7 @@ int32_t digup_wic_rgb(const wchar_t *path, uint32_t max_pixel, uint8_t **pixels,
                 HRESULT copied = IWICBitmapSourceTransform_CopyPixels(transform, NULL, targetW, targetH, &format,
                                                                       WICBitmapTransformRotate0, stride, size,
                                                                       buffer);
-                if (SUCCEEDED(copied)) { outWidth = targetW; outHeight = targetH; }
+                if (SUCCEEDED(copied)) { outWidth = targetW; outHeight = targetH; outStride = stride; }
                 else { free(buffer); buffer = NULL; }
             }
         }
@@ -114,13 +126,17 @@ int32_t digup_wic_rgb(const wchar_t *path, uint32_t max_pixel, uint8_t **pixels,
             }
             if (converter) IWICFormatConverter_Release(converter);
             if (FAILED(hr)) { free(buffer); buffer = NULL; }
+            else { outStride = stride; }
         }
     }
     IWICBitmapFrameDecode_Release(frame);
     IWICBitmapDecoder_Release(decoder);
     IWICImagingFactory_Release(factory);
     if (!buffer) return 8;
-    swap_red_blue(buffer, outWidth, outHeight, (outWidth * 3 + 3) & ~3u);
+    uint8_t *packed = pack_rows(buffer, outWidth, outHeight, outStride);
+    if (!packed) { free(buffer); return 8; }
+    buffer = packed;
+    swap_red_blue(buffer, outWidth, outHeight);
     *pixels = buffer;
     *width = (int32_t)outWidth;
     *height = (int32_t)outHeight;
