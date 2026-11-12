@@ -147,12 +147,55 @@ public final class LlamaEmbedder: Embedder {
     public func embedImages(_ paths: [String], budget: Int) throws -> [Embedding] {
         guard media != nil else { throw WorkerError.failed("this embedder was started text-only") }
         guard Self.budgets.contains(budget) else { throw WorkerError.failed("budget must be one of \(Self.budgets)") }
-        return paths.map { path in embedding { try embedMedia(path, image: true, budget: budget) } }
+        return embedInBatches(paths, image: true, budget: budget)
     }
 
     public func embedAudio(_ paths: [String]) throws -> [Embedding] {
         guard media != nil else { throw WorkerError.failed("this embedder was started text-only") }
-        return paths.map { path in embedding { try embedMedia(path, image: false, budget: 0) } }
+        return embedInBatches(paths, image: false, budget: 0)
+    }
+
+    /// One `llama_process` for a whole batch: each input is its own sequence, as texts already are (the model is
+    /// non-causal and keeps no cache), so eight pictures at 140 tokens are one call of ~1,100 instead of eight of 140 —
+    /// the per-call work (a kernel launch, a sync) isn't paid eight times. A batch that fails falls back to one input at
+    /// a time, so a bad file doesn't take its neighbours with it. The vision (or audio) encoder still runs per input.
+    private func embedInBatches(_ paths: [String], image: Bool, budget: Int) -> [Embedding] {
+        // What an input takes, with a margin for the markers around it; a 30 s audio window is ~750.
+        let needed = image ? budget + 16 : 760
+        let room = max(1, min(Self.maxSequences, (maxTokens - 256) / max(1, needed)))
+        var results = [Embedding?](repeating: nil, count: paths.count)
+        var pending: [Int] = []
+        reset()
+        func flush() {
+            guard !pending.isEmpty else { return }
+            let positions = pending
+            pending.removeAll()
+            do {
+                let vectors = try run()
+                for (offset, position) in positions.enumerated() {
+                    results[position] = offset < vectors.count
+                        ? Embedding(vector: vectors[offset], error: nil)
+                        : Embedding(vector: nil, error: "the batch lost this input")
+                }
+            } catch {
+                reset()
+                for position in positions {
+                    results[position] = embedding { try embedMedia(paths[position], image: image, budget: budget) }
+                }
+            }
+        }
+        for (position, path) in paths.enumerated() {
+            if pending.count >= room { flush() }
+            do {
+                try addMedia(path, image: image, budget: budget)
+                pending.append(position)
+            } catch {
+                reset()
+                results[position] = Embedding(vector: nil, error: String("\(error)".prefix(300)))
+            }
+        }
+        flush()
+        return results.map { $0 ?? Embedding(vector: nil, error: "not embedded") }
     }
 
     /// One file's vector, or why it has none (an unreadable file must not sink its neighbours).
@@ -167,6 +210,14 @@ public final class LlamaEmbedder: Embedder {
     // MARK: Media
 
     private func embedMedia(_ path: String, image: Bool, budget: Int) throws -> [Float] {
+        reset()
+        try addMedia(path, image: image, budget: budget)
+        return try run()[0]
+    }
+
+    /// Loads one input and adds it to the batch as its own sequence: the text tokens, and for a picture or a clip the
+    /// encoder's rows (the vision or audio encoder runs here, once per input). `run()` comes later, for the batch.
+    private func addMedia(_ path: String, image: Bool, budget: Int) throws {
         let bitmap = try load(path, image: image, budget: budget)
         defer { mtmd_bitmap_free(bitmap) }
         let chunks = mtmd_input_chunks_init()
@@ -177,7 +228,6 @@ public final class LlamaEmbedder: Embedder {
             return mtmd_tokenize(media, chunks, &text, &bitmaps, 1)
         }
         guard status == 0 else { throw LlamaError("can't tokenize \(path) (\(status))") }
-        reset()
         begin()
         for index in 0..<mtmd_input_chunks_size(chunks) {
             let chunk = mtmd_input_chunks_get(chunks, index)
@@ -192,7 +242,6 @@ public final class LlamaEmbedder: Embedder {
                 try add(rows: rows, count: mtmd_input_chunk_get_n_tokens(chunk))
             }
         }
-        return try run()[0]
     }
 
     /// Reads an image or audio file with mtmd's helpers (stb_image, miniaudio at 16 kHz), resizes images for `budget`

@@ -74,6 +74,26 @@ import Testing
         }
     }
 
+    /// A batch of pictures goes through one `llama_process` call but gives the same vectors: each input is its own
+    /// sequence. (The indexer hands pictures over eight at a time: this is what makes that one call.)
+    @Test(.enabled(if: modelsThere)) func aBatchOfPicturesMatchesOneAtATime() throws {
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("digup-batch-vectors.log")
+        let embedder = try LlamaEmbedder(models: LlamaModels.locate(), textOnly: false, log: log)
+        defer {
+            embedder.close()
+            try? FileManager.default.removeItem(at: log)
+        }
+        let photo = Self.folder.appendingPathComponent("photo.jpg").path
+        let single = try #require(embedder.embedImages([photo], budget: 140).first?.vector)
+        let batch = try embedder.embedImages(Array(repeating: photo, count: 8), budget: 140)
+        #expect(batch.count == 8)
+        for item in batch {
+            let vector = try #require(item.vector, "\(item.error ?? "no vector")")
+            let cosine = zip(vector, single).reduce(0) { $0 + $1.0 * $1.1 }
+            #expect(cosine >= 0.9999, "a batched picture moved to cosine \(cosine)")
+        }
+    }
+
     static func vectors() throws -> [String: [Float]] {
         let log = FileManager.default.temporaryDirectory.appendingPathComponent("digup-reference-vectors.log")
         let embedder = try LlamaEmbedder(models: LlamaModels.locate(), textOnly: false, log: log)
