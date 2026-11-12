@@ -1007,3 +1007,16 @@ svg { display: block; }
 .big .view.text { align-items: stretch; justify-content: stretch; overflow: auto; }
 .big .view.text > * { flex: 1; max-height: none; font-size: 14px; }
 .big .view .placeholder svg { width: 96px; height: 96px; opacity: 0.5; }
+
+/* The peek (hover a picture): under the pointer, over whatever is there, and never in the way of a click. */
+.peek {
+  position: fixed;
+  z-index: 15;
+  pointer-events: none;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4), 0 0 0 0.5px var(--line);
+}
+.peek[hidden] { display: none; }
+.peek img { display: block; }

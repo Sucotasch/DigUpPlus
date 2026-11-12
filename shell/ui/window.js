@@ -734,6 +734,7 @@ function selectedHit() {  const shown = rows();
 // MARK: Drawing
 
 function render() {
+  hidePeek();
   renderBar();
   renderContent();
   renderSide();
@@ -1050,6 +1051,7 @@ function cell(hit) {
   if (hit.info?.tags === "1") name.append(element("span", "tags-badge", "by tags"));
   item.append(picture, name, folderLine(folderOf(hit)));
   wire(item, hit);
+  peekOnHover(item, hit);
   return item;
 }
 
@@ -2409,6 +2411,94 @@ function addPlace(box, text) {
   box.style.position = "relative";
   box.append(element("span", "place on-image", text));
 }
+
+// MARK: The peek (hover a picture to see it large, without touching the selection)
+
+/// Imagus's timing: the timer restarts on every move, so the picture comes up when the pointer rests rather than while
+/// it sweeps the grid. The popup is sized to the window and never past the picture's own size, and takes no click.
+const PEEK_DELAY = 300;
+const PEEK_GAP = 24;   // the room the picture keeps from the window's edges
+
+const $peek = element("div", "peek");
+$peek.hidden = true;
+const $peekPicture = element("img");
+$peekPicture.alt = "";
+$peek.append($peekPicture);
+document.body.append($peek);
+
+let peekHit = null;                     // the result the pointer rests on
+let peekTimer = 0;                      // the 300 ms before its picture comes up
+let peekPoint = { x: 0, y: 0 };         // where the pointer stopped: the picture's bottom-right corner
+let peekWant = null;                    // the render asked for, so an answer (or a failure) for another one is dropped
+
+function peekOnHover(cell, hit) {
+  if (hit.kind !== "image" && hit.kind !== "screenshot") return;
+  cell.addEventListener("pointermove", (event) => {
+    if (event.buttons) return hidePeek();               // a drag: nobody is looking at the picture
+    if (peekHit === hit && !$peek.hidden) return;       // up already, and the pointer hasn't left this one
+    if (peekHit !== hit) hidePeek();
+    peekHit = hit;
+    peekPoint = { x: event.clientX, y: event.clientY };
+    clearTimeout(peekTimer);
+    peekTimer = setTimeout(() => showPeek(hit), PEEK_DELAY);
+  });
+  // Like Imagus: the picture stays while the pointer is on the one it belongs to, and the next comes by the same rule.
+  cell.addEventListener("pointerleave", () => { if (peekHit === hit) hidePeek(); });
+}
+
+function showPeek(hit) {
+  if (peekHit !== hit) return;
+  const what = renderOf(hit);
+  if (!what) return;
+  // The size Space asks for: one render serves both, and hovering warms what Space will show.
+  const pixels = Math.round(Math.max(innerWidth, innerHeight) * (window.devicePixelRatio || 1));
+  peekWant = { path: hit.path, kind: what[0], loc: what[1], pixels };
+  rendered(hit.path, what[0], what[1], pixels).then((file) => {
+    if (peekWant?.path !== hit.path || peekHit !== hit) return;
+    $peekPicture.onload = placePeek;
+    $peekPicture.src = fileURL(file);
+    if ($peekPicture.complete) placePeek();
+  }).catch(hidePeek);
+}
+
+/// The picture's bottom-right corner at the pointer, then inside the window; never larger than the picture itself.
+function placePeek() {
+  const naturalWidth = $peekPicture.naturalWidth, naturalHeight = $peekPicture.naturalHeight;
+  if (!naturalWidth || !naturalHeight) return hidePeek();
+  const roomWidth = Math.max(320, innerWidth - PEEK_GAP * 2);
+  const roomHeight = Math.max(240, innerHeight - PEEK_GAP * 2);
+  const scale = Math.min(1, roomWidth / naturalWidth, roomHeight / naturalHeight);
+  const width = Math.round(naturalWidth * scale), height = Math.round(naturalHeight * scale);
+  $peekPicture.style.width = `${width}px`;
+  $peekPicture.style.height = `${height}px`;
+  $peek.style.left = `${Math.max(PEEK_GAP, Math.min(innerWidth - PEEK_GAP - width, peekPoint.x - width))}px`;
+  $peek.style.top = `${Math.max(PEEK_GAP, Math.min(innerHeight - PEEK_GAP - height, peekPoint.y - height))}px`;
+  $peek.hidden = false;
+}
+
+function hidePeek() {
+  clearTimeout(peekTimer);
+  peekHit = null;
+  peekWant = null;
+  $peek.hidden = true;
+}
+
+/// A preview the helper has since deleted (it clears them on every start) would sit here as a broken picture: forget
+/// the path, so the next hover asks again, and put it away.
+$peekPicture.onerror = () => {
+  const want = peekWant;
+  if (want) forgetRender(want.path, want.kind, want.loc, want.pixels);
+  hidePeek();
+};
+
+// Anything that means the pointer isn't just resting on a picture puts it away.
+$content.addEventListener("scroll", hidePeek, { passive: true });
+document.addEventListener("pointerdown", hidePeek, true);
+document.addEventListener("wheel", hidePeek, { passive: true, capture: true });
+document.addEventListener("keydown", hidePeek, true);
+document.addEventListener("contextmenu", hidePeek, true);
+window.addEventListener("blur", hidePeek);
+window.addEventListener("resize", hidePeek);
 
 /// Where a moment sits in a recording: a track with the matched stretch lit (and where playback is).
 function momentBar(start, end, duration, playhead) {

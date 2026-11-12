@@ -130,6 +130,7 @@ the full package.
 | ↓ ↑ | Moves through the results |
 | Enter | Opens the result: PDFs at the page, recordings and videos at the moment, code in your editor at the line |
 | Space | A big preview, at the page or moment (once you've moved to a result) |
+| — | Hovering a picture | A larger look at it — up to the window's size, without changing the selection or taking a click |
 | Ctrl+Enter | Shows it in Explorer or your file manager |
 | ⌘C | Ctrl+C (in the window) | Copies the file, to paste anywhere |
 | ⌘O | Ctrl+O | The same search in a bigger window, with a picture grid and filters |
