@@ -1417,6 +1417,12 @@ function focusActiveRow() {
   return true;
 }
 
+/// The keyboard sits on a result rather than in the search field: Tab puts it there, and the arrows and Space act on it
+/// before the first move (the flag `navigated` only rises once something has moved).
+function onResult() {
+  return document.activeElement instanceof Element && document.activeElement.closest("[data-path]") !== null;
+}
+
 function selectedSize(hits) {
   return hits.reduce((sum, hit) => sum + (Number(hit.size) || 0), 0);
 }
@@ -2986,8 +2992,9 @@ document.addEventListener("keydown", (event) => {
       return;
     }
     case " ":
-      // After the arrows or a click: the big preview. While typing: a space.
-      if (!plain || !(state.navigated || !$big.hidden) || !state.hasResults || !state.query.trim() || !selectedHit()) return;
+      // After the arrows, a click, or Tab into the results: the big preview. In the field: a space.
+      if (!plain || document.activeElement === $query || !(state.navigated || !$big.hidden || onResult())
+          || !state.hasResults || !state.query.trim() || !selectedHit()) return;
       event.preventDefault();
       toggleBig();
       return;
@@ -3056,7 +3063,8 @@ document.addEventListener("keydown", (event) => {
       return;
     case "ArrowLeft":
     case "ArrowRight":
-      if (!plain || !state.navigated || !rows().length) return;
+      // Tab into the results puts the keyboard on a picture; there the arrows are the grid's, not a text caret's.
+      if (!plain || document.activeElement === $query || !rows().length) return;
       event.preventDefault();
       move(event.key === "ArrowRight" ? 1 : -1);
       return;
