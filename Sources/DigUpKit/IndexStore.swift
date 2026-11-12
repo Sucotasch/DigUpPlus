@@ -25,7 +25,7 @@ public struct FileRecord: Sendable {
 public final class IndexStore {
     public let directory: URL
     public let db: Database
-    static let schemaVersion: Int64 = 6
+    static let schemaVersion: Int64 = 7
 
     /// Keyword search's tokenizer. Marks (M*) count as letters, so Bengali vowel signs and Arabic harakat stay inside
     /// their words: by default SQLite splits on them ("কলকাতায়" became "কলক", "ত", "য").
@@ -122,7 +122,10 @@ public final class IndexStore {
         guard version <= Self.schemaVersion else {
             throw Database.Failure(message: "this index was made by a newer DigUp (schema \(version))")
         }
-        guard version < Self.schemaVersion else { return }
+        guard version < Self.schemaVersion else {
+            try checkPhashRecipe()
+            return
+        }
         // The app and its helper can open the index at the same moment: one migrates while the other waits for it (up
         // to a minute, not the usual 5 s), then sees it done.
         try db.execute("PRAGMA busy_timeout = 60000")
@@ -135,7 +138,9 @@ public final class IndexStore {
             if (1...3).contains(version) { try migrateVectorNames() }
             if (1...4).contains(version) { try migrateLongFiles() }
             if (1...5).contains(version) { try migrateTagsOnly() }
+            if (1...6).contains(version) { try migratePhash() }
         }
+        try checkPhashRecipe()
     }
 
     private func create() throws {
@@ -153,7 +158,8 @@ public final class IndexStore {
                 detail TEXT,                              -- why skipped/failed, or how far a long file has been read
                 info TEXT,                                -- JSON: pixels, pages, duration, date taken; read_to/read_end
                 indexed_at REAL,
-                tags_only INTEGER NOT NULL DEFAULT 0      -- a recording read by its tags alone
+                tags_only INTEGER NOT NULL DEFAULT 0,     -- a recording read by its tags alone
+                phash BLOB                                -- Phash256 of a picture: Find similar's groups
             );
             CREATE INDEX files_inode ON files(device, inode);
             CREATE INDEX files_state ON files(state, kind);
@@ -169,6 +175,7 @@ public final class IndexStore {
             );
             CREATE INDEX segments_file ON segments(file);
             CREATE VIRTUAL TABLE fts USING fts5(\(Self.ftsColumns));
+            INSERT INTO meta(key, value) VALUES('phash_recipe', '\(Phash256.recipe)');
             PRAGMA user_version = \(Self.schemaVersion);
             """)
     }
@@ -257,6 +264,33 @@ public final class IndexStore {
         }
     }
 
+    /// Schema 6 → 7: a picture's look-alike fingerprint, for Find similar's groups. Pictures indexed from now on get
+    /// one as they are read; older rows are filled by `digup phash`, and a picture without one simply doesn't group
+    /// (nothing is read or re-embedded here).
+    private func migratePhash() throws {
+        var hasColumn = false
+        try db.query("PRAGMA table_info(files)") { row in
+            if row.text(1) == "phash" { hasColumn = true }
+        }
+        try db.transaction {
+            if !hasColumn { try db.execute("ALTER TABLE files ADD COLUMN phash BLOB") }
+            try db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('phash_recipe', ?)",
+                       [.text(Phash256.recipe)])
+            try db.execute("PRAGMA user_version = 7")
+        }
+    }
+
+    /// The fingerprint recipe changed: every stored hash was made the old way, and two recipes together would group
+    /// nothing. They go, to be computed again; the pictures and their vectors are untouched.
+    private func checkPhashRecipe() throws {
+        guard try meta("phash_recipe") != Phash256.recipe else { return }
+        try db.transaction {
+            try db.execute("UPDATE files SET phash = NULL")
+            try db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('phash_recipe', ?)",
+                       [.text(Phash256.recipe)])
+        }
+    }
+
     // MARK: Meta
 
     public func meta(_ key: String) throws -> String? {
@@ -315,6 +349,38 @@ public final class IndexStore {
         var found: FileRecord?
         try db.query("SELECT \(Self.fileColumns) FROM files WHERE id = ?", [.int(id)]) { found = Self.record($0) }
         return found
+    }
+
+    /// The fingerprints of these pictures, by path: what Find similar's groups are made from. A path without one (a
+    /// picture indexed before schema 7, or a format with no reader) is left out.
+    public func phashes(for paths: [String]) throws -> [String: Phash256] {
+        var hashes: [String: Phash256] = [:]
+        var start = 0
+        while start < paths.count {
+            let chunk = Array(paths[start..<min(paths.count, start + 400)])
+            start += chunk.count
+            let marks = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            try db.query("SELECT path, phash FROM files WHERE path IN (\(marks))", chunk.map { .text($0) }) { row in
+                guard let data = row.blob(1), let hash = Phash256(data: data) else { return }
+                hashes[row.text(0) ?? ""] = hash
+            }
+        }
+        return hashes
+    }
+
+    /// Keeps a picture's fingerprint; nothing else about the file changes.
+    public func setPhash(_ hash: Phash256, file: Int64) throws {
+        try db.run("UPDATE files SET phash = ? WHERE id = ?", [.blob(hash.data), .int(file)])
+    }
+
+    /// Pictures still without a fingerprint, newest first, for `digup phash`.
+    public func filesMissingPhash(limit: Int) throws -> [(id: Int64, path: String)] {
+        var files: [(id: Int64, path: String)] = []
+        try db.query("SELECT id, path FROM files WHERE phash IS NULL AND kind IN ('image', 'screenshot') "
+                     + "ORDER BY mtime DESC LIMIT ?", [.int(Int64(limit))]) { row in
+            files.append((row.int(0), row.text(1) ?? ""))
+        }
+        return files
     }
 
     /// Adds a file (pending) and returns its id.

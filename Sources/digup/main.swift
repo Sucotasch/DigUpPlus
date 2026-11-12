@@ -22,6 +22,8 @@ let usage = """
       digup repick --from OLD --to NEW [--apply] [--json]
                                               a chosen folder that moved: what the move would do, or rewrite its rows
       digup forget <folder>... [--json]       drop these folders' rows; the folders stay chosen
+      digup phash [--limit N]                 a picture's look-alike fingerprint for those indexed before schema 7
+                                              (Find similar's groups use them; one read each, no embedding)
       digup status                            what's in the index
       digup speed [--model [--if-needed] [--when-quiet S] [--tries N]] [--json]
                                               this machine's speed next to the M4 Pro behind the estimates, and
@@ -804,6 +806,7 @@ do {
     case "mcp": exit(try mcpService(args))
     case "repick": exit(try repick(args))
     case "forget": exit(try forget(args))
+    case "phash": exit(try phash(args))
     case "status": try status(args)
     case "speed": try speed(args)
     case "eval": try evaluate(args)

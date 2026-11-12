@@ -178,6 +178,28 @@
           <option value="strict">Fewer (stricter cutoff)</option>
         </select>
       </label>
+
+      <h3>Find similar: look-alike groups</h3>
+      <label class="option">
+        <input type="checkbox" id="lookalike-groups">
+        <span class="text">
+          <span class="name">Group pictures that look alike</span>
+          <span class="info">In Find similar, pictures with the same look (copies, resizes, re-compressions, a series of
+            variants) fold into one cell with how many others it holds. A click opens the group; nothing is hidden from
+            selection or file operations, only folded.</span>
+        </span>
+      </label>
+      <label class="option">
+        <span class="text">
+          <span class="name">How different two pictures may be</span>
+          <span class="info">A percentage of the 256 fingerprint bits: 0 groups only identical fingerprints, 6 is the
+            measured default (resized and re-compressed copies stay under 2%, a crop is past 25%), and past 20 groups
+            begin to mix shots that only share a layout.</span>
+        </span>
+        <input id="lookalike-difference" type="number" min="0" max="50" step="0.5" value="6"
+               aria-label="Look-alike difference, percent">
+      </label>
+      <p class="note" id="lookalike-note" hidden></p>
       <p class="note" id="search-note" hidden></p>
     </section>
 

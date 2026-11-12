@@ -85,6 +85,16 @@ const state = {
   note: null,           // what the status bar says for a moment after an operation
   showWeaker: false,
   tc: null,             // Total Commander's program (Settings → General): the batch bar's two buttons, when found
+  // Find similar's look-alike groups (Settings → Search): the lists the helper found, each starting with the picture
+  // to show; which of them are open; and how many pictures are still getting a fingerprint.
+  groups: null,
+  groupsByPath: null,
+  groupOpen: new Map(),
+  expandAll: false,
+  grouping: true,
+  groupDifference: 6,
+  groupingPending: 0,
+  groupTries: 0,
   tiered: false,        // the list is the Images filter's cosine layers (visible / weaker / hidden)
   tierCutoffs: null,    // {visible, weak} the layers are cut on (the defaults, or lowered for a low-scale query)
   hidden: [],           // images under the weak cutoff: shown only when their fold is opened
@@ -124,6 +134,11 @@ function run() {
   state.loadingMore = false;
   state.pageError = null;
   clearSelection(false);   // a new query or filter starts with nothing chosen
+  // Find similar's look-alike groups belong to the query that is going; a new one starts them fresh.
+  clearGroups();
+  state.groupOpen.clear();
+  state.expandAll = false;
+  state.groupTries = 0;
   const typed = state.query.trim();
   const code = isCode();
   const text = /^code:/i.test(typed) ? typed.slice(5).trim() : typed;
@@ -135,6 +150,7 @@ function run() {
                            showHidden: false, loadingHidden: false, hiddenError: null,
                            loadingMore: false, pageError: null });
     if (typed) state.codePhase = state.info.hasCode ? "hint" : "off";
+    clearGroups();
     render();
     return;
   }
@@ -216,6 +232,9 @@ function run() {
         state.selection = rows()[0]?.path ?? null;
       }
       render();
+      // Find similar: what looks alike among these results, folded into groups (the helper answers from its
+      // fingerprints; pictures without one get theirs as it goes).
+      refreshGroups();
       if (sameQuery && previous && state.selection === previous) {
         $content.querySelector(`[data-path="${CSS.escape(previous)}"]`)?.scrollIntoView({ block: "center" });
       }
@@ -364,6 +383,7 @@ function loadMore(auto = false) {
       renderBatch();
       renderPagination();
       syncActiveDescendant();
+      refreshGroups();   // a new page can join a group or start one
       if (debugPending) report();
       // A page can be short after the helper filters moved files: keep filling the viewport while it is still near the
       // end. `nextOffset` moving is the guard against asking for the same page forever.
@@ -522,14 +542,193 @@ function setFilter(key) {
 
 /// Every result shown, in the order it's shown: the strong ones, then the weaker ones once they're unfolded; in the
 /// table, each group by the column chosen.
-function rows() {
-  const sorted = (hits) => (state.view === "table" && state.sort ? sortedHits(hits) : hits);
-  return [...sorted(state.ranked), ...(state.showWeaker ? sorted(state.weaker) : []),
-          ...(state.showHidden ? sorted(state.hidden) : [])];
+/// Whether the window groups its results now: Find similar, pictures, the grid, and the setting on.
+function groupingActive() {
+  return Boolean(state.like) && state.grouping && !isCode() && state.view === "grid";
 }
 
-function selectedHit() {
-  const shown = rows();
+function groupOf(path) {
+  return state.groupsByPath?.get(path) ?? null;
+}
+
+function groupOpen(group) {
+  return state.groupOpen.get(group[0]) ?? state.expandAll;
+}
+
+/// One list as it is drawn: a group's first picture where it ranks, its members right behind it while the group is
+/// open, and nothing of it while it is folded. A member whose first picture isn't in this list stays where it is.
+function shownHits(list) {
+  if (!groupingActive()) return list;
+  const index = new Map(list.map((hit, at) => [hit.path, at]));
+  const out = [];
+  for (const hit of list) {
+    const group = groupOf(hit.path);
+    if (!group || !index.has(group[0])) { out.push(hit); continue; }
+    if (hit.path !== group[0]) continue;
+    out.push(hit);
+    if (!groupOpen(group)) continue;
+    for (const path of group.slice(1)) {
+      const at = index.get(path);
+      if (at != null) out.push(list[at]);
+    }
+  }
+  return out;
+}
+
+function rows() {
+  const sorted = (hits) => (state.view === "table" && state.sort ? sortedHits(hits) : hits);
+  const shown = (hits) => shownHits(sorted(hits));
+  return [...shown(state.ranked), ...(state.showWeaker ? shown(state.weaker) : []),
+          ...(state.showHidden ? shown(state.hidden) : [])];
+}
+
+// MARK: Look-alike groups (Find similar)
+
+/// Forgets the groups of the query that was going: a new search starts them fresh, and a list without groups shows
+/// as it always did.
+function clearGroups() {
+  state.groups = null;
+  state.groupsByPath = null;
+  state.groupingPending = 0;
+  state.groupTries = 0;
+  state.groupOpen.clear();
+  state.expandAll = false;
+}
+
+/// What a fold leaves: chosen paths that are no longer shown leave the selection, and the cursor moves to a picture
+/// that is.
+function settleSelection() {
+  const shown = new Set(rows().map((hit) => hit.path));
+  for (const path of state.selected) if (!shown.has(path)) state.selected.delete(path);
+  if (state.anchor && !shown.has(state.anchor)) state.anchor = null;
+  if (state.selection && !shown.has(state.selection)) state.selection = rows()[0]?.path ?? null;
+}
+
+/// The helper's look-alike groups for what the list shows, then a redraw. Pictures an index made before schema 7 has
+/// no fingerprint for get one a few at a time (the helper's short budget), so the window asks again while that makes
+/// progress instead of waiting for a whole-index pass.
+async function refreshGroups() {
+  if (!groupingActive() || !state.hasResults) {
+    if (state.groups) {
+      clearGroups();
+      renderContent();
+      renderGroups();
+      renderBatch();
+    }
+    return;
+  }
+  const paths = [...state.ranked, ...(state.showWeaker ? state.weaker : []),
+                 ...(state.showHidden ? state.hidden : [])].map((hit) => hit.path);
+  if (paths.length < 2) {
+    if (state.groups) {
+      clearGroups();
+      renderContent();
+      renderGroups();
+    }
+    return;
+  }
+  const generation = state.generation;
+  let computed = 0;
+  try {
+    const reply = await ask({ op: "visual_groups", paths, difference: state.groupDifference });
+    if (generation !== state.generation) return;
+    state.groups = reply.groups || [];
+    state.groupsByPath = new Map();
+    for (const group of state.groups) for (const path of group) state.groupsByPath.set(path, group);
+    state.groupingPending = reply.pending ?? 0;
+    computed = reply.computed ?? 0;
+    state.groupTries += 1;
+  } catch {
+    if (generation !== state.generation) return;
+    clearGroups();
+  }
+  settleSelection();
+  const scroll = $content.scrollTop;
+  renderContent();
+  $content.scrollTop = scroll;
+  renderSide();
+  renderBatch();
+  renderGroups();
+  renderStatus();
+  if (computed > 0 && state.groupingPending > 0 && state.groupTries < 40) {
+    setTimeout(() => { if (generation === state.generation) refreshGroups(); }, 350);
+  }
+}
+
+/// Opens or folds one group; a single choice steps out of "Expand all".
+function toggleGroup(group) {
+  state.groupOpen.set(group[0], !groupOpen(group));
+  state.expandAll = false;
+  settleSelection();
+  painted = null;
+  const scroll = $content.scrollTop;
+  renderContent();
+  $content.scrollTop = scroll;
+  renderSide();
+  renderBatch();
+  renderGroups();
+  renderStatus();
+}
+
+/// The Group look-alikes switch: off shows the list flat, on asks the helper for the groups again.
+function applyGrouping() {
+  if (!groupingActive()) {
+    if (state.groups) clearGroups();
+  } else {
+    refreshGroups();
+  }
+  settleSelection();
+  painted = null;
+  const scroll = $content.scrollTop;
+  renderContent();
+  $content.scrollTop = scroll;
+  renderSide();
+  renderBatch();
+  renderGroups();
+  renderStatus();
+}
+
+/// Settings → Search, from the window's own controls: the value is kept for the next start. Writes go one after
+/// another (`lookalikeSave`): two quick clicks must not finish in the other order and leave the old value in the file.
+let lookalikeSave = Promise.resolve();
+function saveLookalike() {
+  const value = { groups: state.grouping, difference: state.groupDifference };
+  lookalikeSave = lookalikeSave
+    .then(() => invoke("set_lookalike", value))
+    .then((saved) => {
+      state.groupDifference = Number(saved.difference ?? state.groupDifference);
+      renderGroups();
+    })
+    .catch(failed);
+}
+
+/// The line under the kind chips, only in Find similar: how many groups and folded pictures, all/none, and the
+/// difference. It is the only new control in the window, and a normal search never sees it.
+function renderGroups() {
+  const line = $("groups");
+  const active = groupingActive() && state.hasResults;
+  line.hidden = !active;
+  if (!active) {
+    $("group-panel").hidden = true;
+    return;
+  }
+  const groups = state.groups || [];
+  const folded = groups.reduce((sum, group) => sum + (groupOpen(group) ? 0 : group.length - 1), 0);
+  const pending = state.groupingPending;
+  $("groups-count").textContent = !state.grouping ? "Look-alike groups are off"
+    : groups.length
+      ? `${groups.length.toLocaleString()} ${groups.length === 1 ? "group" : "groups"}`
+        + (folded ? ` · ${folded.toLocaleString()} folded` : " · all shown")
+        + (pending ? ` · ${pending.toLocaleString()} getting a fingerprint` : "")
+      : pending ? `${pending.toLocaleString()} pictures are getting a fingerprint`
+      : "No look-alikes grouped";
+  $("groups-expand").hidden = !groups.length || !state.grouping;
+  $("groups-expand").textContent = state.expandAll ? "Collapse all" : "Expand all";
+  $("groups-difference").textContent = `difference ${state.groupDifference}%`;
+  $("groups-difference").setAttribute("aria-expanded", String(!$("group-panel").hidden));
+}
+
+function selectedHit() {  const shown = rows();
   return shown.find((hit) => hit.path === state.selection) ?? shown[0] ?? null;
 }
 
@@ -542,6 +741,7 @@ function render() {
   renderStatus();
   renderBatch();
   renderPagination();
+  renderGroups();
 }
 
 function renderBar() {
@@ -599,15 +799,15 @@ function renderContent() {
 
 function grid() {
   const box = element("div");
-  box.append(cells(state.ranked, "grid"));
+  box.append(cells(shownHits(state.ranked), "grid"));
   if (state.weaker.length) {
     box.append(weakerToggle());
-    if (state.showWeaker) box.append(cells(state.weaker, "grid weaker-results"));
+    if (state.showWeaker) box.append(cells(shownHits(state.weaker), "grid weaker-results"));
   }
   if (state.tiered && (state.hiddenTotal > 0 || state.hidden.length)) {
     box.append(hiddenToggle());
     if (state.showHidden) {
-      box.append(cells(state.hidden, "grid hidden-results"));
+      box.append(cells(shownHits(state.hidden), "grid hidden-results"));
       if (state.loadingHidden) box.append(element("div", "tier-note", "Loading hidden images…"));
       else if (state.hiddenError) box.append(element("div", "tier-note", "Couldn't load the hidden images"));
       else if (state.hiddenOffset < state.hiddenTotal) {
@@ -823,6 +1023,19 @@ function cell(hit) {
     badge.innerHTML = ICONS[hit.kind] || ICONS.doc;
     picture.append(badge);
   }
+  const group = groupingActive() ? groupOf(hit.path) : null;
+  if (group && hit.path === group[0]) {
+    const open = groupOpen(group);
+    const badge = element("button", "group-badge", `${open ? "−" : "+"}${group.length - 1}`);
+    badge.type = "button";
+    badge.title = open ? "Fold these look-alikes" : `${group.length - 1} more like this`;
+    badge.setAttribute("aria-expanded", String(open));
+    badge.onmousedown = (event) => { event.stopPropagation(); event.preventDefault(); };
+    badge.onclick = (event) => { event.stopPropagation(); toggleGroup(group); };
+    picture.append(badge);
+  } else if (group) {
+    item.classList.add("group-member");
+  }
   const place = placeOf(hit);
   if (place) picture.append(element("span", "place on-image", place));
   const name = element("div", "name", "‎" + nameOf(hit.path));
@@ -968,6 +1181,7 @@ function loadHidden() {
       renderSide();
       renderStatus();
       renderBatch();
+      refreshGroups();   // the tail can hold look-alikes of its own
     })
     .catch((error) => {
       if (generation !== state.generation) return;
@@ -1745,6 +1959,14 @@ function forget(paths, stay = []) {
   state.ranked = state.ranked.filter(keep);
   state.weaker = state.weaker.filter(keep);
   state.hidden = state.hidden.filter(keep);
+  // A group loses what the operation took; one left with a single picture isn't a group any more.
+  if (state.groups) {
+    const left = new Set([...state.ranked, ...state.weaker, ...state.hidden].map((hit) => hit.path));
+    state.groups = state.groups.map((group) => group.filter((path) => left.has(path)))
+      .filter((group) => group.length > 1);
+    state.groupsByPath = new Map();
+    for (const group of state.groups) for (const path of group) state.groupsByPath.set(path, group);
+  }
   const after = rows();
   state.selected = new Set(stay.filter((path) => after.some((hit) => hit.path === path)));
   state.anchor = stay[stay.length - 1] ?? null;
@@ -2459,7 +2681,9 @@ $("toggle-view").onmousedown = (event) => event.preventDefault();
 $("toggle-view").onclick = () => {
   state.view = state.view === "grid" ? "table" : "grid";
   updateViewButton();
+  settleSelection();
   renderContent();
+  renderGroups();
 };
 $("toggle-preview").onmousedown = (event) => event.preventDefault();
 $("toggle-preview").onclick = () => {
@@ -2489,6 +2713,56 @@ $("batch-move").onclick = () => moveOrCopy("move");
 $("batch-delete").onclick = confirmDelete;
 $("batch-tc").onclick = () => toTotalCommander(false);
 $("batch-tc-all").onclick = () => toTotalCommander(true);
+
+// Find similar's look-alike line: all or none, and the small panel the difference opens.
+$("groups-expand").onclick = () => {
+  state.expandAll = !state.expandAll;
+  state.groupOpen.clear();
+  settleSelection();
+  painted = null;
+  const scroll = $content.scrollTop;
+  renderContent();
+  $content.scrollTop = scroll;
+  renderSide();
+  renderBatch();
+  renderGroups();
+  renderStatus();
+};
+$("groups-difference").onclick = () => {
+  const panel = $("group-panel");
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) {
+    $("group-on").checked = state.grouping;
+    $("group-difference").value = state.groupDifference;
+    $("group-difference").focus();
+    $("group-difference").select();
+  }
+  renderGroups();
+};
+$("group-done").onclick = () => { $("group-panel").hidden = true; renderGroups(); };
+$("group-on").onchange = () => {
+  state.grouping = $("group-on").checked;
+  saveLookalike();
+  applyGrouping();
+};
+let groupTyping = null;   // ms after the last keystroke until the difference is applied
+$("group-difference").oninput = () => {
+  const field = $("group-difference");
+  const value = Number(field.value);
+  if (field.value.trim() === "" || !Number.isFinite(value) || value < 0 || value > 50) return;
+  clearTimeout(groupTyping);
+  groupTyping = setTimeout(() => {
+    state.groupDifference = value;
+    saveLookalike();
+    refreshGroups();
+  }, 250);
+};
+$("group-reset").onclick = () => {
+  state.groupDifference = 6;
+  $("group-difference").value = 6;
+  saveLookalike();
+  refreshGroups();
+};
 // A click beside a confirmation puts it away; an operation under way has its own Cancel.
 $modal.onmousedown = (event) => { if (event.target === $modal && !state.busy) closeModal(); };
 
@@ -2531,6 +2805,12 @@ document.addEventListener("keydown", (event) => {
   if (!$menu.hidden && event.key === "Escape") {
     event.preventDefault();
     hideMenu();
+    return;
+  }
+  if (!$("group-panel").hidden && event.key === "Escape") {
+    event.preventDefault();
+    $("group-panel").hidden = true;
+    renderGroups();
     return;
   }
   // A button with the keyboard answers Enter and Space itself (a checkbox's tick, a sheet's, the bar's).
@@ -2704,6 +2984,20 @@ tauri.event.listen("totalcmd", ({ payload }) => {
   renderBatch();
 });
 
+// Settings → Search, look-alike groups: the window follows that change at once, without a new search.
+tauri.event.listen("lookalike", ({ payload }) => {
+  const groups = payload?.groups !== false;
+  const difference = Number(payload?.difference ?? 6);
+  if (groups === state.grouping && difference === state.groupDifference) return;
+  state.grouping = groups;
+  state.groupDifference = difference;
+  if (!$("group-panel").hidden) {
+    $("group-on").checked = groups;
+    $("group-difference").value = difference;
+  }
+  applyGrouping();
+});
+
 // The panel handed its search over (Ctrl+O, "Show all…"): this window was already open.
 tauri.event.listen("window-search", ({ payload }) => {
   state.like = null;
@@ -2802,6 +3096,8 @@ async function start() {
   state.info = { ...state.info, ...info };
   state.app = info.state || {};
   state.tc = info.totalcmd?.path || null;
+  state.grouping = info.lookalike?.groups !== false;
+  state.groupDifference = Number(info.lookalike?.difference ?? 6);
   // The index's age grows between events: the status bar's "synced 2 min ago" is redrawn without one.
   setInterval(renderStatus, 30000);
   if (info.search) {

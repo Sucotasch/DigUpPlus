@@ -44,6 +44,9 @@ here. What this fork changes is what surrounds the engine:
 - **Results in Total Commander.** The window's results open as a list in Total Commander's panel (the same "feed to
   listbox" its own search does): the chosen files, the ones shown, or every result of the search, in DigUp's order. No
   plugin; a portable copy's `totalcmd.exe` is chosen in Settings → General → Total Commander.
+- **Look-alike groups in Find similar.** Pictures that look alike (copies, resizes, re-compressed saves, a series of
+  variants) fold into one cell with how many others it holds; a click opens the group, and a difference in percent in
+  Settings → Search says how close two pictures must be. A normal search is unchanged.
 - **The index and the model live where you point them.** Settings → Storage: use an index you already have in place
   (nothing is copied, and it is checked to open before it is chosen), move one to another disk, or point at model
   files you already downloaded.
@@ -166,6 +169,16 @@ If Total Commander is installed (or you point Settings → General → **Total C
 files — or the ones shown, when nothing is ticked — the second the whole ranking of the search, loaded pages or not,
 in DigUp's order. They arrive as a fed list in Total Commander's panel, so F3, copy, move and delete work on them as
 usual and the index catches the changes; a new tab is the default, and the active panel can take them instead.
+
+**Find similar** (a result's right-click menu) groups what it finds by look as well as by meaning: pictures with the
+same composition — a copy saved twice, a resized or re-compressed version, a series of variants — fold into one cell
+with a **+N** badge, in the place of their best match. A click opens the group and **Expand all** opens every one;
+nothing is hidden from selection, ticking or file operations, only folded, and folding takes the hidden files out of
+the selection. Independent of meaning, the grouping compares a 256-bit visual fingerprint of each picture, so
+resizing, re-compression, a monochrome copy and a change of brightness stay together while a crop does not. How close
+two pictures must be is **difference** in Settings → Search (a percentage of the fingerprint's 256 bits; 6 by
+default, measured: a resized or re-compressed copy is under 2%, a 5% crop past 25%). The line under the kind chips
+shows the count and the difference while in that mode; a normal search has neither.
 
 A few things differ by system:
 

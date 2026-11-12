@@ -139,6 +139,27 @@ svg { display: block; }
 
 .kinds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
 
+/* Find similar's look-alike groups: one quiet line under the kind chips, and a small panel the difference opens. The
+   line only exists in that mode (window.js hides it elsewhere), so nothing new crowds a normal search. */
+.groups { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; font-size: 12px;
+          color: var(--secondary); }
+.groups .groups-count { white-space: nowrap; }
+.groups-action { border: 0; padding: 0; background: none; font: inherit; font-size: 12px; color: var(--accent); }
+.groups-action:hover { text-decoration: underline; }
+.groups-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.group-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 8px; padding: 10px 12px;
+               border: 1px solid var(--line); border-radius: 8px; background: var(--pane); font-size: 12px; }
+.group-panel[hidden] { display: none; }
+.group-option { display: flex; align-items: center; gap: 6px; }
+.group-option input[type="number"] { width: 68px; font: inherit; font-size: 12px; color: var(--text);
+                                      background: var(--card); border: 1px solid var(--line); border-radius: 6px;
+                                      padding: 3px 6px; }
+.group-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.group-actions button { padding: 4px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 6px;
+                        background: var(--surface); color: inherit; }
+.group-actions .link { border: 0; background: none; color: var(--accent); padding: 0; }
+.group-note { margin: 0; font-size: 11px; color: var(--tertiary); }
+
 .chip {
   display: flex;
   align-items: center;
@@ -239,6 +260,38 @@ svg { display: block; }
   box-shadow: 0 0 0 3px var(--amber), inset 0 0 0 999px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 .cell .checkbox:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Find similar's look-alikes: the cell that stands for a group carries how many others it holds; its members show a
+   small accent dot before the name, so a series reads as one thing. */
+.cell .group-badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  z-index: 1;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 11px;
+  background: rgba(0, 0, 0, 0.62);
+  color: white;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.cell .group-badge:hover { background: rgba(0, 0, 0, 0.78); }
+.cell .group-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cell.group-member .name::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
 
 /* The results as a table: headings to sort by, a row for each file, the chosen ones ticked. */
 

@@ -38,6 +38,31 @@ extension ImageExtractor {
                         taken: exif?[kCGImagePropertyExifDateTimeOriginal] as? String)
     }
 
+    /// The picture as `side x side` grayscale bytes, for `Phash256`: ImageIO decodes straight at that size (with the
+    /// camera's orientation applied), so nothing is decoded at full resolution, and the stretch is the same one the
+    /// portable reader's box cells make.
+    static func graySquare(_ path: String, side: Int) -> [UInt8]? {
+        let url = URL(fileURLWithPath: path)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: side,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        var bytes = [UInt8](repeating: 0, count: side * side)
+        let drawn = bytes.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8,
+                                          bytesPerRow: side, space: CGColorSpaceCreateDeviceGray(),
+                                          bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            context.interpolationQuality = .high
+            context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+            return true
+        }
+        return drawn ? bytes : nil
+    }
+
     /// A picture ImageIO can't read, like an SVG: AppKit draws it, straight at the size the model needs (a vector
     /// picture has no pixels of its own: its size in points stands for them). Transparent parts come out white, as
     /// they look on a page.

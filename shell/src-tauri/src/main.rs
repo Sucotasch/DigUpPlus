@@ -438,7 +438,8 @@ fn inside(path: &str, folder: &str) -> bool {
 #[tauri::command]
 async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, String> {
     let op = request.get("op").and_then(Value::as_str).unwrap_or_default();
-    if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries", "file_op"].contains(&op) {
+    if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries", "file_op", "visual_groups"]
+        .contains(&op) {
         return Err(format!("not a question the panel asks: {op}"));
     }
     if shell.index_busy.load(Ordering::SeqCst) {
@@ -1009,8 +1010,7 @@ fn reveal(app: AppHandle, path: String) -> Result<(), String> {
 
 /// Settings → General → Total Commander, as both pages show it: the program to run (the choice there, or the install
 /// the registry names), and whether a list opens in a new tab.
-fn totalcmd_json(settings: &Settings) -> Value {
-    json!({
+fn totalcmd_json(settings: &Settings) -> Value {    json!({
         "path": totalcmd::program(settings).map(|program| program.display().to_string()),
         "chosen": settings.totalcmd,
         "newTab": settings.totalcmd_new_tab.unwrap_or(true),
@@ -1051,6 +1051,32 @@ fn set_totalcmd_new_tab(shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), St
     let mut settings = shell.settings.lock().unwrap();
     settings.totalcmd_new_tab = Some(on);
     settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))
+}
+
+/// Settings → Search → the look-alike groups Find similar draws, as the pages show it.
+fn lookalike_json(settings: &Settings) -> Value {
+    json!({
+        "groups": settings.lookalike_groups.unwrap_or(true),
+        "difference": settings.lookalike_difference.unwrap_or(6.0).clamp(0.0, 50.0),
+    })
+}
+
+/// Settings → Search → Find similar's look-alike groups: on or off, and how different two pictures may be to share a
+/// group (a percentage of the 256 fingerprint bits). The window regroups at once (`lookalike`); the index isn't
+/// touched and no picture is read again.
+#[tauri::command]
+fn set_lookalike(app: AppHandle, shell: State<'_, Arc<Shell>>, groups: bool, difference: f64)
+    -> Result<Value, String> {
+    let difference = (difference.clamp(0.0, 50.0) * 10.0).round() / 10.0;
+    let answer = {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.lookalike_groups = Some(groups);
+        settings.lookalike_difference = Some(difference);
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+        lookalike_json(&settings)
+    };
+    let _ = app.emit("lookalike", answer.clone());
+    Ok(answer)
 }
 
 /// The window's results in Total Commander's panel: one list file (a snapshot), then the program with `LOADLIST:`.
@@ -1134,6 +1160,7 @@ fn window_info(shell: State<'_, Arc<Shell>>) -> Value {
         "hasCode": !shell.code_folders().is_empty(),
         "imageTiers": settings::Settings::tier_profile(
             shell.settings.lock().unwrap().image_tiers.as_deref().unwrap_or("standard")),
+        "lookalike": lookalike_json(&shell.settings.lock().unwrap()),
         "totalcmd": totalcmd_json(&shell.settings.lock().unwrap()),
         "debugQuery": shell.options.debug_window,
         "debugSettings": shell.options.debug_settings,
@@ -1300,6 +1327,7 @@ fn main() {
             remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, set_search_settings, rescan_folder, reread_folder, repick_preview, repick_apply, forget_folder, set_index_hours, mcp_config, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases, pick_totalcmd, set_totalcmd_new_tab, open_in_totalcmd,
+            set_lookalike,
             file_operation, cancel_file_operation, pick_destination_folder,
             pick_model_folder, pick_model_files, model_folder_plan, model_folder_apply, download_model,
             model_check, model_import, delete_model_files, delete_old_model_files, model_manifest,
@@ -1999,6 +2027,7 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "rootRules": settings.root_rules,
         "zgate": settings.gate(),
         "imageTiers": Settings::tier_profile(settings.image_tiers.as_deref().unwrap_or("standard")),
+        "lookalike": lookalike_json(&settings),
         "totalcmd": totalcmd_json(&settings),
         "indexHours": {"on": settings.index_hours_on, "start": settings.index_hours.start, "end": settings.index_hours.end},
         "storage": storage(&shell),

@@ -29,6 +29,21 @@
       </button>
     </div>
     <nav class="kinds" id="kinds" aria-label="Kinds of files"></nav>
+    <div class="groups" id="groups" hidden>
+      <span class="groups-count" id="groups-count" role="status" aria-live="polite"></span>
+      <button class="groups-action" id="groups-expand" type="button" hidden></button>
+      <button class="groups-action" id="groups-difference" type="button" aria-expanded="false"></button>
+    </div>
+    <div class="group-panel" id="group-panel" hidden>
+      <label class="group-option"><input type="checkbox" id="group-on"> Group look-alikes</label>
+      <label class="group-option">Difference
+        <input type="number" id="group-difference" min="0" max="50" step="0.5" aria-label="Difference, percent"> %
+      </label>
+      <div class="group-actions">
+        <button class="link" id="group-reset" type="button">Reset 6%</button>
+        <button id="group-done" type="button">Done</button>
+      </div>
+    </div>
   </header>
 
   <div class="split">

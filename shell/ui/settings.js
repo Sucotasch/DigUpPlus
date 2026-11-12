@@ -63,6 +63,10 @@ function renderSearch() {
   // A refresh (indexing reports every two seconds) must not overwrite a number being typed.
   if (document.activeElement !== $("zgate")) $("zgate").value = info.zgate ?? 2;
   if (document.activeElement !== $("image-tiers")) $("image-tiers").value = info.imageTiers || "standard";
+  $("lookalike-groups").checked = info.lookalike?.groups !== false;
+  if (document.activeElement !== $("lookalike-difference")) {
+    $("lookalike-difference").value = info.lookalike?.difference ?? 6;
+  }
   $("search-note").hidden = true;
 }
 
@@ -94,6 +98,40 @@ async function saveSearchSettings() {
 $("zgate").addEventListener("input", saveSearchSettings);
 $("zgate").addEventListener("change", saveSearchSettings);
 $("image-tiers").addEventListener("change", saveSearchSettings);
+
+/// Find similar's look-alike groups (Settings → Search): on/off and the difference, saved together (the window applies
+/// them at once). Typing a number doesn't send a write per keystroke.
+let lookalikeSaving = null;
+function saveLookalike() {
+  const field = $("lookalike-difference");
+  const difference = Number(field.value);
+  const note = $("lookalike-note");
+  if (field.value.trim() === "" || !Number.isFinite(difference) || difference < 0 || difference > 50) {
+    note.hidden = false;
+    note.textContent = "The difference is a number, 0 to 50.";
+    return;
+  }
+  note.hidden = true;
+  clearTimeout(lookalikeSaving);
+  lookalikeSaving = setTimeout(async () => {
+    try {
+      const saved = await invoke("set_lookalike", { groups: $("lookalike-groups").checked, difference });
+      info.lookalike = saved;
+      if (document.activeElement !== field) field.value = saved.difference;
+    } catch (error) {
+      fail(error);
+    }
+  }, 400);
+}
+$("lookalike-groups").addEventListener("change", saveLookalike);
+$("lookalike-difference").addEventListener("input", saveLookalike);
+$("lookalike-difference").addEventListener("change", saveLookalike);
+
+// Changed in the window's own controls: the Settings tab follows.
+tauri.event.listen("lookalike", ({ payload }) => {
+  info.lookalike = payload;
+  renderSearch();
+});
 
 // MARK: General
 

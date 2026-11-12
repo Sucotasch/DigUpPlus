@@ -68,6 +68,15 @@ extension ImageExtractor {
         let raw: Set<String> = ["cr2", "nef", "arw", "dng", "raf", "orf", "rw2"]
         return raw.contains(ext) ? "RAW pictures (\(ext.uppercased())) aren't read on this system yet" : nil
     }
+
+    /// The picture as `side x side` grayscale bytes, for `Phash256`: the same orientation and the same luma as
+    /// `prepare` gives the model, so a stored fingerprint and one taken later agree. stb reads the file in full (there
+    /// is no scaled decode here), which is why the index keeps the fingerprint instead of asking for it per search.
+    static func graySquare(_ path: String, side: Int) -> [UInt8]? {
+        let orientation = EXIF.read(URL(fileURLWithPath: path))?.orientation ?? 1
+        guard let image = RGBImage.load(path)?.oriented(orientation) else { return nil }
+        return image.graySquare(side: side)
+    }
 }
 
 extension OCR {
@@ -172,6 +181,18 @@ struct RGBImage {
         var hash: UInt64 = 0
         for (index, cell) in cells.enumerated() where cell > mean { hash |= 1 << UInt64(index) }
         return hash
+    }
+
+    /// The picture as `side x side` grayscale bytes (one area-filtered resize, then Rec. 601 luma), for `Phash256`.
+    func graySquare(side: Int) -> [UInt8] {
+        guard let small = try? resized(width: side, height: side) else { return [] }
+        var out = [UInt8](repeating: 0, count: side * side)
+        for index in 0..<(side * side) {
+            let p = index * 3
+            out[index] = UInt8(clamping: (Int(small.pixels[p]) * 299 + Int(small.pixels[p + 1]) * 587
+                                          + Int(small.pixels[p + 2]) * 114) / 1000)
+        }
+        return out
     }
 }
 #endif

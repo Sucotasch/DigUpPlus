@@ -41,7 +41,7 @@ updates automatically» удалены, релизы выпускаются вр
 | `Sources/DigUpKit/Platform/Apple` | macOS: ImageIO, PDFKit, AVFoundation, Vision, Metal. |
 | `Sources/DigUpKit/Platform/Portable` | Windows/Linux: PDFium, stb, miniz, SQLite, ffmpeg из `Vendor/`. |
 | `Sources/LlamaRuntime` | Биндинг llama.cpp и инференс EmbeddingGemma. |
-| `Sources/digup` | CLI разработчика **и** helper-процессы приложения: `index-service`, `search-service`, `worker`, `download-model`, `estimate`, `search`, `status`, `speed`, `eval`, `mcp`. |
+| `Sources/digup` | CLI разработчика **и** helper-процессы приложения: `index-service`, `search-service`, `worker`, `download-model`, `estimate`, `search`, `status`, `speed`, `eval`, `mcp`, `repick`, `forget`, `phash`. |
 | `Sources/DigUpApp` | macOS-приложение (эталон поведения). В форке не собирается ни на одной платформе. |
 | `shell/src-tauri` | Rust-оболочка: трей, хоткей, окна, файловые операции, статус. |
 | `shell/ui` | Окна оболочки: `panel.*`, `window.*`, `settings.*`, `setup.*`. Чистые HTML/CSS/JS, без фреймворка и сборки. |
@@ -368,11 +368,11 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
 - `node --check` по всем `shell/ui/*.js` — чисто;
 - пер-корневые правила (типы, top-level-only), пороги поиска и записи по тегам проверены на живой сборке:
   `docs/per-folder-rules-plan.md` §1.8, «Фаза 2», «Фаза 3»;
-- версия в `tauri.conf.json` — `0.1.11` (0.1.6 выпущен 2026-11-04; 0.1.7–0.1.9 выпущены 2026-11-05 одним тегом
+- версия в `tauri.conf.json` — `0.1.12` (0.1.6 выпущен 2026-11-04; 0.1.7–0.1.9 выпущены 2026-11-05 одним тегом
   `v0.1.9`: аудио по правилам папки, Rescan/Re-read, надёжность инкремента, MCP; 0.1.10 выпущен 2026-11-12:
   жизненный цикл папки (Re-pick, пустая папка), пакет из upstream и исправление выделения; 0.1.11 выпущен
   2026-11-12: результаты окна открываются списком в панели Total Commander; helper не менялся, поэтому к полному
-  zip приложен `-shell-only.zip`);
+  zip приложен `-shell-only.zip`; в дереве — `0.1.12` (сборка для проверки: группы похожих по облику в Find similar));
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
   (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` удалён. Default branch —
   `file-operations`; сборки только вручную (`scripts/package-portable.sh`).
@@ -426,6 +426,7 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
 | `docs/roadmap-plan.md` | бэклог форка: P0–P3, что уже внедрено, порядок релизов |
 | `docs/per-folder-rules-plan.md` | пер-корневые правила индексации: типы, top-level-only, пороги, теги |
 | `docs/kensaku-ideas-plan.md` | что берём из kensaku: MCP для агентов, надёжность инкремента, frecency, внешние экстракторы |
+| `docs/lookalike-groups-plan.md` | группы похожих по облику в Find similar: pHash-256, порог, свёртка, Expand all |
 | `docs/image-embedding-performance.md` | замеры скорости эмбеддинга, пул процессов |
 | `docs/model-profiles-plan.md` | хранение модели, папка, удаление, профили |
 | `AGENTS.md`, `knowledge.md` | локальные заметки агентов (не коммитятся) |

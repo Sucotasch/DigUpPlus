@@ -443,6 +443,8 @@ public final class Indexer {
         let slot: Int
         let image: ImageExtractor.Prepared
         let ocr: String
+        /// The picture's look-alike fingerprint, computed from the prepared copy while it's small and on disk.
+        let phash: Phash256?
     }
 
     /// A batch being prepared on the preparation queue.
@@ -521,7 +523,10 @@ public final class Indexer {
                                                                minSide: options.minImageSide, to: folder,
                                                                png: screenshot)
                         let ocr = screenshot ? OCR.text(ofImageAt: url) : ""
-                        ready.append(ReadyImage(slot: slot, image: image, ocr: ocr))
+                        // Its look-alike fingerprint comes from the small prepared copy, so a search never decodes
+                        // the original for it; a picture the reader can't open simply has none.
+                        let phash = Phash256.ofFile(image.path)
+                        ready.append(ReadyImage(slot: slot, image: image, ocr: ocr, phash: phash))
                     } catch let error as ExtractError {
                         if case .tooSmall = error {
                             prepared.outcomes[slot] = Outcome(state: "skipped", detail: "\(error)")
@@ -692,6 +697,7 @@ public final class Indexer {
                     continue
                 }
                 try store.addSegment(file: file.id, kind: .image, modality: .image, vector: vector)
+                if let phash = item.phash { try store.setPhash(phash, file: file.id) }
                 // The words on screen are for keyword search: codes, names and errors typed exactly. Meaning comes from
                 // the picture alone; a vector of the words made screenshots outrank better matches (2026-10-08).
                 if !item.ocr.isEmpty {

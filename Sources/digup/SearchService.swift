@@ -29,6 +29,9 @@ import Foundation
 ///                                               picture a web view can't show, such as HEIC), made beside the requests
 ///                                               (typing never waits on one) and kept in <index>/previews until the
 ///                                               next start
+///   {"op":"visual_groups","paths":[…],"difference":6} → {"groups":[[path…],…],"computed":n,"pending":n}: Find similar's
+///                                               look-alike groups (Phash256; `difference` is a percentage of the 256
+///                                               bits). A few missing fingerprints are computed per call and kept.
 ///   {"op":"reload"}                           → {"ok":true,"vectors":n,"code_vectors":n}: after indexing changed the index
 ///   {"op":"file_op","kind":"move|delete","items":[{"from":…,"to":…,"inode":"…","device":"…","size":n,"mtime":n}],
 ///     "reload":bool}                          → {"results":[…],"ok":bool}: the index follows files a shell moved
@@ -325,6 +328,28 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             _ = runningEncoder()
             if !searcher.vectorsLoaded { try searcher.reload() }
             return ["ok": true, "encoder": encoderState, "vectors": searcher.vectorCount]
+        case "visual_groups":
+            // The window's Find similar: which of the pictures it shows look alike (Phash256). Paths come in ranking
+            // order, so each group starts with the best-ranked one. A few missing fingerprints are taken here within a
+            // short budget and kept for next time; the window asks again while `pending` is above zero, so the first
+            // query after an upgrade fills in as it goes instead of waiting for a whole-index pass.
+            let paths = request["paths"] as? [String] ?? []
+            let difference = request["difference"] as? Double ?? 6
+            var hashes = try store.phashes(for: paths)
+            let deadline = Date().addingTimeInterval(1.0)
+            var computed = 0
+            for path in paths where hashes[path] == nil && Date() < deadline {
+                guard let file = try store.file(at: path), file.kind == .image || file.kind == .screenshot,
+                      let fingerprint = Phash256.ofFile(path) else { continue }
+                try? store.setPhash(fingerprint, file: file.id)
+                hashes[path] = fingerprint
+                computed += 1
+            }
+            // `pending`: pictures that have no fingerprint yet and this call made progress on (a picture no reader can
+            // open would otherwise look pending for ever); the window asks again while there are some.
+            let pending = computed > 0 ? paths.filter { hashes[$0] == nil }.count : 0
+            return ["groups": LookalikeGroups.group(paths: paths, hashes: hashes, difference: difference),
+                    "computed": computed, "pending": pending]
         case "status":
             var reply: [String: Any] = ["encoder": encoderState, "vectors": searcher.vectorsLoaded ? searcher.vectorCount : 0,
                                         "code_vectors": codeSearcher?.vectorsLoaded == true ? codeSearcher!.vectorCount : 0,

@@ -33,6 +33,10 @@ pub struct Settings {
     /// Where the Images filter cuts its cosine layers: "standard" (the measured 0.648/0.600), "loose" or "strict".
     /// The window counts from it (`IMAGE_TIER_PROFILES` in window.js); the panel has no layers. None: standard.
     pub image_tiers: Option<String>,
+    /// Find similar's look-alike groups (Settings → Search): off shows the results flat. None: on.
+    pub lookalike_groups: Option<bool>,
+    /// How different two pictures may be to share a group: a percentage of Phash256's 256 bits, 0...50. None: 6.
+    pub lookalike_difference: Option<f64>,
     /// The panel's hotkey (Tauri's accelerator form); empty: the default.
     pub hotkey: String,
     /// Onboarding is done: the shell starts in the tray.

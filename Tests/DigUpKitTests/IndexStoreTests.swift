@@ -345,6 +345,54 @@ import WinSDK
         try store.db.query("SELECT COUNT(*) FROM segments") { rows = Int($0.int(0)) }
         #expect(rows == 0)
     }
+
+    /// A picture's fingerprint is kept with its row and read back by path: what Find similar groups by.
+    @Test func aPictureFingerprintIsKeptAndReadByPath() throws {
+        let store = try IndexStore(directory: folder.appendingPathComponent("index"))
+        let picture = folder.appendingPathComponent("a.jpg")
+        try Data("x".utf8).write(to: picture)
+        let id = try store.insert(file(picture.path, inode: 1))
+        let hash = Phash256(w0: 1, w1: 2, w2: 3, w3: 4)
+        try store.setPhash(hash, file: id)
+        #expect(try store.phashes(for: [picture.path]) == [picture.path: hash])
+        #expect(try store.phashes(for: [folder.appendingPathComponent("gone.jpg").path]).isEmpty)
+    }
+
+    /// An index made before schema 7 opens as it was (its rows and vectors keep working) and gets the fingerprint
+    /// column; its pictures simply have no fingerprint until `digup phash` fills them in.
+    @Test func anIndexFromSchemaSixGetsTheFingerprintColumn() throws {
+        let index = folder.appendingPathComponent("index")
+        let picture = folder.appendingPathComponent("a.jpg")
+        try Data("x".utf8).write(to: picture)
+        do {
+            let store = try IndexStore(directory: index)
+            _ = try store.insert(file(picture.path, inode: 1))
+            // The shape a 0.1.11 index has: no fingerprint column, schema 6.
+            try store.db.execute("ALTER TABLE files DROP COLUMN phash; PRAGMA user_version = 6")
+        }
+        let reopened = try IndexStore(directory: index)
+        let row = try #require(try reopened.file(at: picture.path))
+        #expect(try reopened.phashes(for: [picture.path]).isEmpty)
+        try reopened.setPhash(Phash256(w0: 9), file: row.id)
+        #expect(try reopened.phashes(for: [picture.path]) == [picture.path: Phash256(w0: 9)])
+    }
+
+    /// A changed fingerprint recipe drops the stored ones (a mix of two would group nothing); the pictures and their
+    /// vectors stay.
+    @Test func aNewRecipeDropsOldFingerprints() throws {
+        let index = folder.appendingPathComponent("index")
+        let picture = folder.appendingPathComponent("a.jpg")
+        try Data("x".utf8).write(to: picture)
+        do {
+            let store = try IndexStore(directory: index)
+            let id = try store.insert(file(picture.path, inode: 1))
+            try store.setPhash(Phash256(w0: 7), file: id)
+            try store.db.run("UPDATE meta SET value = 'phash256-dct16-v0' WHERE key = 'phash_recipe'")
+        }
+        let reopened = try IndexStore(directory: index)
+        #expect(try reopened.phashes(for: [picture.path]).isEmpty)
+        #expect(try reopened.meta("phash_recipe") == Phash256.recipe)
+    }
 }
 
 /// Sets an environment variable of this process, or removes it (nil).
