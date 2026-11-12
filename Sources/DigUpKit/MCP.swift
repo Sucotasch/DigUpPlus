@@ -77,7 +77,7 @@ public final class MCPServer {
 
     /// The version an agent sees. The helper has no bundle of its own to read it from: keep this in step with
     /// `shell/src-tauri/tauri.conf.json` (a test in `MCPTests` checks the two match).
-    static let version = "0.1.12"
+    static let version = "0.1.13"
 
     // MARK: Tools
 
