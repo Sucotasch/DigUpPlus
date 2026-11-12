@@ -138,6 +138,7 @@ the full package.
 | — | Tab | Switches the keyboard between the search field and the results (big window) |
 | — | Del | Deletes the file under the cursor, or the ticked ones (Windows); Enter confirms the Recycle Bin sheet |
 | - | Right click → Find similar | Searches by that file's own picture: the closest matches in the collection, with the picture itself first (Windows) |
+| — | G / Shift+G | Opens or folds the look-alike group under the cursor, or every group (Find similar) |
 | — | Ctrl+1…6 | The big window's views: Images, Screenshots, Documents, Video, Audio, All files |
 | — | F5 / F6 / F8 | Copy To… / Move To… / Delete the selected files (Windows) |
 

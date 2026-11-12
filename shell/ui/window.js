@@ -654,10 +654,32 @@ async function refreshGroups() {
   }
 }
 
-/// Opens or folds one group; a single choice steps out of "Expand all".
+/// Opens or folds one group; a single choice steps out of "Expand all" without folding the others.
 function toggleGroup(group) {
-  state.groupOpen.set(group[0], !groupOpen(group));
-  state.expandAll = false;
+  const opening = !groupOpen(group);
+  // Leaving "Expand all": every group keeps what it was showing, and only this one changes.
+  if (state.expandAll) {
+    for (const other of state.groups ?? []) state.groupOpen.set(other[0], state.expandAll);
+    state.expandAll = false;
+  }
+  state.groupOpen.set(group[0], opening);
+  // Folding with the cursor on a copy: it lands on the picture the group folds under, not at the top of the list.
+  if (!opening && state.selection && group.includes(state.selection)) state.selection = group[0];
+  settleSelection();
+  painted = null;
+  const scroll = $content.scrollTop;
+  renderContent();
+  $content.scrollTop = scroll;
+  renderSide();
+  renderBatch();
+  renderGroups();
+  renderStatus();
+}
+
+/// Expand all, or fold every group back (the line's button, and Shift+G).
+function toggleAllGroups() {
+  state.expandAll = !state.expandAll;
+  state.groupOpen.clear();
   settleSelection();
   painted = null;
   const scroll = $content.scrollTop;
@@ -1037,7 +1059,7 @@ function cell(hit) {
     const open = groupOpen(group);
     const badge = element("button", "group-badge", `${open ? "−" : "+"}${group.length - 1}`);
     badge.type = "button";
-    badge.title = open ? "Fold these look-alikes" : `${group.length - 1} more like this`;
+    badge.title = open ? `Fold these look-alikes (G)` : `${group.length - 1} more like this (G)`;
     badge.setAttribute("aria-expanded", String(open));
     badge.onmousedown = (event) => { event.stopPropagation(); event.preventDefault(); };
     badge.onclick = (event) => { event.stopPropagation(); toggleGroup(group); };
@@ -2813,19 +2835,7 @@ $("batch-tc").onclick = () => toTotalCommander(false);
 $("batch-tc-all").onclick = () => toTotalCommander(true);
 
 // Find similar's look-alike line: all or none, and the small panel the difference opens.
-$("groups-expand").onclick = () => {
-  state.expandAll = !state.expandAll;
-  state.groupOpen.clear();
-  settleSelection();
-  painted = null;
-  const scroll = $content.scrollTop;
-  renderContent();
-  $content.scrollTop = scroll;
-  renderSide();
-  renderBatch();
-  renderGroups();
-  renderStatus();
-};
+$("groups-expand").onclick = toggleAllGroups;
 $("groups-difference").onclick = () => {
   const panel = $("group-panel");
   panel.hidden = !panel.hidden;
@@ -2981,6 +2991,25 @@ document.addEventListener("keydown", (event) => {
       event.preventDefault();
       toggleBig();
       return;
+    case "g":
+    case "G": {
+      // Find similar's look-alikes under the cursor: g opens or folds that group, Shift+G does it to every group.
+      if (!$big.hidden || !$modal.hidden || !$menu.hidden) return;
+      if (!groupingActive() || !state.hasResults || document.activeElement === $query) return;
+      if (event.shiftKey) {
+        if (!state.groups?.length) return;
+        event.preventDefault();
+        toggleAllGroups();
+        return;
+      }
+      if (event.ctrlKey || event.altKey || event.metaKey) return;
+      const hit = state.hasResults && state.query.trim() ? selectedHit() : null;
+      const group = hit ? groupOf(hit.path) : null;
+      if (!group) return;
+      event.preventDefault();
+      toggleGroup(group);
+      return;
+    }
     case "ArrowDown":
     case "ArrowUp":
       // Shift takes the range from where choosing started to here (in the media list, a row at a time).
