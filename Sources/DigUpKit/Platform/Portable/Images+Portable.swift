@@ -3,34 +3,79 @@
 #if !canImport(ImageIO)
 import CStb
 import Foundation
+#if canImport(CWIC)
+import CWIC
+#endif
 
 extension ImageExtractor {
     /// No SVG here yet: stb and ffmpeg don't draw vector pictures.
     static let drawsVectorPictures = false
 
-    /// Writes a downscaled copy for the model: decoded in full, turned the way the camera held it, scaled so the long
-    /// side is `maxPixel`. stb reads JPEG, PNG, BMP, GIF, PSD, TGA and PNM here; HEIC, WebP, TIFF and AVIF go through
-    /// ffmpeg (`decodeWithFFmpeg`). RAW isn't read yet, and says so.
+    #if canImport(CWIC)
+    /// JPEG only: that is where WIC's scaled decode pays (measured 2.8 ms against stb's 22.6 for a 64×64 fingerprint).
+    /// PNG and the rest keep their readers, whose orientation handling the image tests already pin down.
+    static func usesWIC(_ path: String) -> Bool {
+        ["jpg", "jpeg", "jpe", "jif", "jfi", "jfif"].contains((path as NSString).pathExtension.lowercased())
+    }
+
+    /// The picture through Windows Imaging Component, which decodes JPEG at 1/2–1/8 of its size instead of in full —
+    /// stb's cost on every photo and on the look-alike fingerprints. Nil when WIC can't read the file, so the caller
+    /// falls back to stb. `source` is the size the file stores, before scaling and before the camera's orientation,
+    /// which the caller applies as before.
+    static func wicImage(_ path: String, maxPixel: Int)
+        -> (image: RGBImage, source: (width: Int, height: Int))? {
+        var pixels: UnsafeMutablePointer<UInt8>?
+        var width: Int32 = 0, height: Int32 = 0
+        var sourceWidth: Int32 = 0, sourceHeight: Int32 = 0
+        let status = path.withCString(encodedAs: UTF16.self) { wide in
+            digup_wic_rgb(wide, UInt32(max(1, maxPixel)), &pixels, &width, &height, &sourceWidth, &sourceHeight)
+        }
+        guard status == 0, let buffer = pixels, width > 0, height > 0 else { return nil }
+        defer { digup_wic_free(buffer) }
+        let image = RGBImage(width: Int(width), height: Int(height),
+                             pixels: Array(UnsafeBufferPointer(start: buffer, count: Int(width) * Int(height) * 3)))
+        return (image, (Int(sourceWidth), Int(sourceHeight)))
+    }
+    #endif
+
+    /// Writes a downscaled copy for the model: decoded, turned the way the camera held it, scaled so the long side is
+    /// `maxPixel`. On Windows WIC decodes JPEG straight at that size (1/2–1/8, no full decode); where it can't — WebP,
+    /// AVIF, RAW — stb reads JPEG, PNG, BMP, GIF, PSD, TGA and PNM, and HEIC, WebP, TIFF and AVIF go through ffmpeg
+    /// (`decodeWithFFmpeg`).
     static func prepare(_ url: URL, maxPixel: Int, minSide: Int, to folder: URL, png: Bool) throws -> Prepared {
         let exif = EXIF.read(url)
-        var image: RGBImage
-        let width: Int, height: Int
+        // `nil` until a reader took the picture; WIC first, then stb, then ffmpeg.
+        var decodedImage: RGBImage?
+        var width = 0, height = 0
         var storedWidth: Int32 = 0, storedHeight: Int32 = 0, channels: Int32 = 0
-        if stbi_info(url.path, &storedWidth, &storedHeight, &channels) != 0 {
-            (width, height) = (Int(storedWidth), Int(storedHeight))
+        #if canImport(CWIC)
+        if usesWIC(url.path), let wic = wicImage(url.path, maxPixel: maxPixel) {
+            (width, height) = wic.source
             guard max(width, height) >= minSide else { throw ExtractError.tooSmall(width, height) }
-            guard let decoded = RGBImage.load(url.path) else { throw ExtractError.unreadable("can't decode image") }
-            image = decoded.oriented(exif?.orientation ?? 1)
-        } else {
-            if let note = notReadYet(url.pathExtension.lowercased()) { throw ExtractError.unreadable(note) }
-            if exif?.tiled == true {
-                throw ExtractError.unreadable("tiled TIFF pictures aren't read on this system yet")
-            }
-            image = try decodeWithFFmpeg(url)
-            // Its size as shown (ImageIO reports it as stored: the two differ for a picture turned 90°).
-            (width, height) = (image.width, image.height)
-            guard max(width, height) >= minSide else { throw ExtractError.tooSmall(width, height) }
+            decodedImage = wic.image.oriented(exif?.orientation ?? 1)
         }
+        #endif
+        if decodedImage == nil {
+            if stbi_info(url.path, &storedWidth, &storedHeight, &channels) != 0 {
+                (width, height) = (Int(storedWidth), Int(storedHeight))
+                guard max(width, height) >= minSide else { throw ExtractError.tooSmall(width, height) }
+                guard let decoded = RGBImage.load(url.path) else {
+                    throw ExtractError.unreadable("can't decode image")
+                }
+                decodedImage = decoded.oriented(exif?.orientation ?? 1)
+            } else {
+                if let note = notReadYet(url.pathExtension.lowercased()) { throw ExtractError.unreadable(note) }
+                if exif?.tiled == true {
+                    throw ExtractError.unreadable("tiled TIFF pictures aren't read on this system yet")
+                }
+                let fromFFmpeg = try decodeWithFFmpeg(url)
+                // Its size as shown (ImageIO reports it as stored: the two differ for a picture turned 90°).
+                (width, height) = (fromFFmpeg.width, fromFFmpeg.height)
+                guard max(width, height) >= minSide else { throw ExtractError.tooSmall(width, height) }
+                decodedImage = fromFFmpeg
+            }
+        }
+        guard var image = decodedImage else { throw ExtractError.unreadable("can't decode image") }
         let longest = max(image.width, image.height)
         if longest > maxPixel {
             let scale = Double(maxPixel) / Double(longest)
@@ -78,6 +123,12 @@ extension ImageExtractor {
     /// is no scaled decode here), which is why the index keeps the fingerprint instead of asking for it per search.
     static func graySquare(_ path: String, side: Int) -> [UInt8]? {
         let orientation = EXIF.read(URL(fileURLWithPath: path))?.orientation ?? 1
+        #if canImport(CWIC)
+        // WIC decodes straight at `side` where it can, which is most of the backfill's cost on JPEG.
+        if usesWIC(path), let wic = wicImage(path, maxPixel: side) {
+            return wic.image.oriented(orientation).graySquare(side: side)
+        }
+        #endif
         guard let image = RGBImage.load(path)?.oriented(orientation) else { return nil }
         return image.graySquare(side: side)
     }

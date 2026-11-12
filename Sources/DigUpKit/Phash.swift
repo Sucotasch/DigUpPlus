@@ -11,7 +11,7 @@ import Dispatch
 public struct Phash256: Hashable, Sendable {
     /// Kept with the index: a changed recipe invalidates the stored hashes (they are cheap to recompute, and a mix of
     /// two recipes would group nothing).
-    public static let recipe = "phash256-dct16-v1"
+    public static let recipe = "phash256-dct16-v2"
     /// The grayscale square the DCT runs on.
     public static let side = 64
     /// The low-frequency block: 16x16 coefficients, one bit each.

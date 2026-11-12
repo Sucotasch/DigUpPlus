@@ -22,11 +22,20 @@ let portableTargets: [Target] = []
 // link line of its own, so the module map differs from Linux's by that.
 let runpath: [String] = []
 let llamaModule = "Sources/CLlamaWindows"
+// Windows Imaging Component: a scaled JPEG decode (1/2, 1/4, 1/8) where stb decodes fully. It is part of Windows, so
+// nothing new ships; Linux and macOS keep stb and ImageIO.
+let wicTargets: [Target] = [
+    .target(name: "CWIC", path: "Sources/CWIC", publicHeadersPath: "include",
+            linkerSettings: [.linkedLibrary("windowscodecs"), .linkedLibrary("ole32")]),
+]
+let wicDependencies: [Target.Dependency] = ["CWIC"]
 #else
 let runpath = ["-Xlinker", "-rpath", "-Xlinker", "$ORIGIN",
                "-Xlinker", "-rpath", "-Xlinker", "\(vendor)/llama/lib",
                "-Xlinker", "-rpath", "-Xlinker", "\(vendor)/pdfium/lib"]
 let llamaModule = "Sources/CLlamaShared"
+let wicTargets: [Target] = []
+let wicDependencies: [Target.Dependency] = []
 #endif
 let llamaLink: [LinkerSetting] = [.unsafeFlags(["-L\(vendor)/llama/lib"] + runpath)]
 let engineDependencies: [Target.Dependency] = ["CSQLite", "CStb", "CMiniz", "CPDFium"]
@@ -65,10 +74,10 @@ let package = Package(
         .library(name: "DigUpKit", targets: ["DigUpKit"]),
     ] + appProducts,
     dependencies: appDependencies,
-    targets: portableTargets + [
+    targets: portableTargets + wicTargets + [
         // The engine: crawler, extractors, index store, the embedder interface and worker client, search. No UI.
         // Platform/ holds what differs by OS (Apple's frameworks on macOS, the C libraries above elsewhere).
-        .target(name: "DigUpKit", dependencies: engineDependencies, linkerSettings: engineLink),
+        .target(name: "DigUpKit", dependencies: engineDependencies + wicDependencies, linkerSettings: engineLink),
         // llama.cpp (scripts/build-llama.sh builds it into Vendor/llama) and EmbeddingGemma 2 on it.
         .systemLibrary(name: "CLlama", path: llamaModule),
         .target(name: "LlamaRuntime", dependencies: ["CLlama", "DigUpKit"], linkerSettings: llamaLink),
