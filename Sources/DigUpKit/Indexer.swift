@@ -523,9 +523,9 @@ public final class Indexer {
                                                                minSide: options.minImageSide, to: folder,
                                                                png: screenshot)
                         let ocr = screenshot ? OCR.text(ofImageAt: url) : ""
-                        // Its look-alike fingerprint comes from the small prepared copy, so a search never decodes
-                        // the original for it; a picture the reader can't open simply has none.
-                        let phash = Phash256.ofFile(image.path)
+                        // Its look-alike fingerprint was taken with the pixels `prepare` already had: no second read,
+                        // no second decode (a picture whose reader keeps no bitmap simply has none).
+                        let phash = image.fingerprint
                         ready.append(ReadyImage(slot: slot, image: image, ocr: ocr, phash: phash))
                     } catch let error as ExtractError {
                         if case .tooSmall = error {

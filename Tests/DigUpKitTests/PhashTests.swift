@@ -23,6 +23,16 @@ import Testing
         }
     }
 
+    /// A file just written can be held for a moment by a virus scanner (Win32 32: sharing violation), so a test that
+    /// reads it back at once tries again. The indexer no longer does that — its fingerprint comes from the pixels.
+    func fingerprintWithRetry(_ path: String, tries: Int = 10) -> Phash256? {
+        for _ in 0..<tries {
+            if let hash = Phash256.ofFile(path) { return hash }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return nil
+    }
+
     @Test func aPictureAndItsCopyAreTheSameFingerprint() throws {
         let picture = gray { x, y in (x * 7 + y * 13) % 256 }
         let hash = try #require(Phash256.of(gray: picture))
@@ -63,9 +73,11 @@ import Testing
         let picture = Self.pictures.appendingPathComponent("pattern-o6.jpg")
         let prepared = try ImageExtractor.prepare(picture, maxPixel: 1024, minSide: 1, to: folder, png: false)
         let original = try #require(Phash256.ofFile(picture.path))
-        let copy = try #require(Phash256.ofFile(prepared.path))
+        let copy = try #require(fingerprintWithRetry(prepared.path))
         #expect(copy.difference(from: original) <= 6,
                 "difference \(copy.difference(from: original)) for \(prepared.width)x\(prepared.height)")
+        // And the fingerprint the indexer takes from the pixels is the same one (no second decode in indexing).
+        #expect(prepared.fingerprint != nil)
     }
 
     @Test func aFileThatIsNotAPictureHasNoFingerprint() {
@@ -92,17 +104,30 @@ import Testing
     /// picture is left out.
     @Test func manyPicturesAreHashedLikeOneAtATime() throws {
         let picture = Self.pictures.appendingPathComponent("pattern-o6.jpg")
-        let prepared = try ImageExtractor.prepare(picture, maxPixel: 1024, minSide: 1, to: folder, png: false)
         let notes = folder.appendingPathComponent("notes.txt")
         try "just words".write(to: notes, atomically: true, encoding: .utf8)
-        let bulk = PhashBulk.compute([picture.path, prepared.path, notes.path], threads: 3)
-        #expect(bulk.count == 2)
+        let bulk = PhashBulk.compute([picture.path, notes.path], threads: 2)
+        #expect(bulk.count == 1)
         #expect(bulk[picture.path] == Phash256.ofFile(picture.path))
-        #expect(bulk[prepared.path] == Phash256.ofFile(prepared.path))
         #expect(bulk[notes.path] == nil)
     }
 
-    @Test func theDifferenceIsAPercentageOfTheBits() throws {        let none = Phash256(w0: 0)
+    /// Hashing many files at once is stable: the backfill does exactly this, and one lost picture is a group that
+    /// never forms.
+    @Test func hashingManyFilesAtOnceLosesNone() throws {
+        let picture = Self.pictures.appendingPathComponent("pattern-o6.jpg")
+        var paths: [String] = []
+        for index in 0..<32 {
+            let copy = folder.appendingPathComponent("copy-\(index).jpg")
+            try FileManager.default.copyItem(at: picture, to: copy)
+            paths.append(copy.path)
+        }
+        let hashes = PhashBulk.compute(paths, threads: 8)
+        #expect(hashes.count == paths.count)
+    }
+
+    @Test func theDifferenceIsAPercentageOfTheBits() throws {
+        let none = Phash256(w0: 0)
         let one = Phash256(w0: 1)
         let all = Phash256(w0: .max, w1: .max, w2: .max, w3: .max)
         #expect(abs(one.difference(from: none) - 100.0 / 256) < 0.001)

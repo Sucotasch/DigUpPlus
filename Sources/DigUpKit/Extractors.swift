@@ -27,6 +27,9 @@ enum ImageExtractor {
         let width: Int
         let height: Int
         let taken: String?   // EXIF DateTimeOriginal, as written by the camera
+        /// The picture's look-alike fingerprint, taken while its pixels are in memory — no second read and no second
+        /// decode (the index keeps it for Find similar's groups). Nil for a picture whose reader keeps no bitmap.
+        var fingerprint: Phash256? = nil
     }
 }
 

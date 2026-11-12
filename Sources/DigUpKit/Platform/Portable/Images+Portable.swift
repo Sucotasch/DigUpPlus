@@ -39,7 +39,11 @@ extension ImageExtractor {
         }
         let out = folder.appendingPathComponent(UUID().uuidString + (png ? ".png" : ".jpg"))
         try image.write(to: out, png: png)
-        return Prepared(path: out.path, width: width, height: height, taken: exif?.dateTimeOriginal)
+        // From the pixels already here, before they go: the prepared copy is written from them, so hashing the file
+        // afterwards would decode the same picture twice (~4 ms, for every picture indexed).
+        let fingerprint = Phash256.of(gray: image.graySquare(side: Phash256.side))
+        return Prepared(path: out.path, width: width, height: height, taken: exif?.dateTimeOriginal,
+                        fingerprint: fingerprint)
     }
 
     /// The whole picture, through ffmpeg as 8-bit RGB (PPM down a pipe), turned the way the file says (irot/imir in

@@ -35,7 +35,8 @@ extension ImageExtractor {
         try write(thumbnail, to: out, png: png)
         let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
         return Prepared(path: out.path, width: width, height: height,
-                        taken: exif?[kCGImagePropertyExifDateTimeOriginal] as? String)
+                        taken: exif?[kCGImagePropertyExifDateTimeOriginal] as? String,
+                        fingerprint: Phash256.of(gray: grayPixels(of: thumbnail, side: Phash256.side) ?? []))
     }
 
     /// The picture as `side x side` grayscale bytes, for `Phash256`: ImageIO decodes straight at that size (with the
@@ -51,6 +52,12 @@ extension ImageExtractor {
             kCGImageSourceShouldCacheImmediately: true,
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return grayPixels(of: image, side: side)
+    }
+
+    /// The picture as `side x side` grayscale bytes (one high-quality draw into a gray context): for a fingerprint
+    /// taken from pixels the caller already has, and for the files `graySquare` reads.
+    static func grayPixels(of image: CGImage, side: Int) -> [UInt8]? {
         var bytes = [UInt8](repeating: 0, count: side * side)
         let drawn = bytes.withUnsafeMutableBytes { buffer -> Bool in
             guard let context = CGContext(data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8,
@@ -86,7 +93,8 @@ extension ImageExtractor {
         guard let bitmap = context.makeImage() else { throw ExtractError.unreadable("can't draw this picture") }
         let out = folder.appendingPathComponent(UUID().uuidString + (png ? ".png" : ".jpg"))
         try write(bitmap, to: out, png: png)
-        return Prepared(path: out.path, width: width, height: height, taken: nil)
+        return Prepared(path: out.path, width: width, height: height, taken: nil,
+                        fingerprint: Phash256.of(gray: grayPixels(of: bitmap, side: Phash256.side) ?? []))
     }
 
     static func fullImage(_ url: URL) -> CGImage? {
