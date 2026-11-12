@@ -2751,18 +2751,18 @@ $("group-difference").oninput = () => {
   const value = Number(field.value);
   if (field.value.trim() === "" || !Number.isFinite(value) || value < 0 || value > 50) return;
   clearTimeout(groupTyping);
-  groupTyping = setTimeout(() => {
-    state.groupDifference = value;
-    saveLookalike();
-    refreshGroups();
-  }, 250);
+  groupTyping = setTimeout(() => setDifference(value), 250);
 };
-$("group-reset").onclick = () => {
-  state.groupDifference = 6;
-  $("group-difference").value = 6;
+/// The panel's presets, as measured on a real collection: 6% folds copies (a resize, a re-compression, a monochrome
+/// save) and 33% a whole series of shots that differ in small details.
+function setDifference(value) {
+  state.groupDifference = value;
+  $("group-difference").value = value;
   saveLookalike();
   refreshGroups();
-};
+}
+$("group-preset-6").onclick = () => setDifference(6);
+$("group-preset-33").onclick = () => setDifference(33);
 // A click beside a confirmation puts it away; an operation under way has its own Cancel.
 $modal.onmousedown = (event) => { if (event.target === $modal && !state.busy) closeModal(); };
 

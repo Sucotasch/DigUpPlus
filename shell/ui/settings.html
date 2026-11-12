@@ -192,9 +192,9 @@
       <label class="option">
         <span class="text">
           <span class="name">How different two pictures may be</span>
-          <span class="info">A percentage of the 256 fingerprint bits: 0 groups only identical fingerprints, 6 is the
-            measured default (resized and re-compressed copies stay under 2%, a crop is past 25%), and past 20 groups
-            begin to mix shots that only share a layout.</span>
+          <span class="info">A percentage of the 256 fingerprint bits. Measured on a real collection: 6% folds the same
+            picture saved again (a resize, a re-compression, a monochrome copy); 33% gathers a whole series of shots
+            that differ only in small details; past 25% unrelated pictures with a shared layout begin to merge.</span>
         </span>
         <input id="lookalike-difference" type="number" min="0" max="50" step="0.5" value="6"
                aria-label="Look-alike difference, percent">
