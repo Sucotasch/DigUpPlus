@@ -45,8 +45,12 @@ here. What this fork changes is what surrounds the engine:
   listbox" its own search does): the chosen files, the ones shown, or every result of the search, in DigUp's order. No
   plugin; a portable copy's `totalcmd.exe` is chosen in Settings → General → Total Commander.
 - **Look-alike groups in Find similar.** Pictures that look alike (copies, resizes, re-compressed saves, a series of
-  variants) fold into one cell with how many others it holds; a click opens the group, and a difference in percent in
-  Settings → Search says how close two pictures must be. A normal search is unchanged.
+  variants) fold into one cell with how many others it holds; a click opens the group (`G` opens or folds the one under
+  the cursor, `Shift+G` all of them), and a difference in percent in Settings → Search says how close two pictures must
+  be. A normal search is unchanged.
+- **A large look on hover.** Rest the pointer on a picture for a moment and it comes up at close to its own size, up to
+  the window, without changing the selection or taking a click; the pointer alone decides, and moving on puts it away.
+  Space still shows the selected result over the whole window.
 - **The index and the model live where you point them.** Settings → Storage: use an index you already have in place
   (nothing is copied, and it is checked to open before it is chosen), move one to another disk, or point at model
   files you already downloaded.
@@ -175,9 +179,10 @@ usual and the index catches the changes; a new tab is the default, and the activ
 
 **Find similar** (a result's right-click menu) groups what it finds by look as well as by meaning: pictures with the
 same composition — a copy saved twice, a resized or re-compressed version, a series of variants — fold into one cell
-with a **+N** badge, in the place of their best match. A click opens the group and **Expand all** opens every one;
-nothing is hidden from selection, ticking or file operations, only folded, and folding takes the hidden files out of
-the selection. Independent of meaning, the grouping compares a 256-bit visual fingerprint of each picture, so
+with a **+N** badge, in the place of their best match. A click opens the group, **Expand all** opens every one, and the
+keyboard has the same two moves: **G** on the group under the cursor, **Shift+G** for all of them. Nothing is hidden
+from selection, ticking or file operations, only folded, and folding takes the hidden files out of the selection.
+Independent of meaning, the grouping compares a 256-bit visual fingerprint of each picture, so
 resizing, re-compression, a monochrome copy and a change of brightness stay together while a crop does not. How close
 two pictures must be is **difference** in Settings → Search (a percentage of the fingerprint's 256 bits; 6 by
 default, measured: a resized or re-compressed copy is under 2%, a 5% crop past 25%). The line under the kind chips

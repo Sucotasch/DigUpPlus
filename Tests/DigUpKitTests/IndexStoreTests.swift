@@ -387,13 +387,21 @@ import WinSDK
         try Data("x".utf8).write(to: picture)
         do {
             let store = try IndexStore(directory: index)
-            _ = try store.insert(file(picture.path, inode: 1))
+            let id = try store.insert(file(picture.path, inode: 1))
+            try store.finish(id, state: "done")
+            try store.setMeta("scans_ocr", "1")
+            try store.setMeta("pictures_drawn", "1")
             // The shape a 0.1.11 index has: no fingerprint column, schema 6.
             try store.db.execute("ALTER TABLE files DROP COLUMN phash; PRAGMA user_version = 6")
         }
         let reopened = try IndexStore(directory: index)
         let row = try #require(try reopened.file(at: picture.path))
         #expect(try reopened.phashes(for: [picture.path]).isEmpty)
+        // No WIC ever decoded for a schema 6 index, so its pictures aren't read again (unlike one the torn 0.1.12 build
+        // had embedded).
+        #if canImport(CWIC)
+        #expect(try reopened.readAgainOnce() == 0)
+        #endif
         try reopened.setPhash(Phash256(w0: 9), file: row.id)
         #expect(try reopened.phashes(for: [picture.path]) == [picture.path: Phash256(w0: 9)])
     }

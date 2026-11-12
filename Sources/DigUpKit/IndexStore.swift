@@ -276,6 +276,9 @@ public final class IndexStore {
             if !hasColumn { try db.execute("ALTER TABLE files ADD COLUMN phash BLOB") }
             try db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('phash_recipe', ?)",
                        [.text(Phash256.recipe)])
+            // An index that was schema 6 was written before WIC decoded anything here, so its pictures can't hold the
+            // vectors of torn copies (readAgainOnce) and needn't be read again.
+            try db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('pictures_repacked', '1')")
             try db.execute("PRAGMA user_version = 7")
         }
     }

@@ -226,6 +226,11 @@ command, args, timeout_ms 100..7000, max_output_bytes ≤4 MiB, enabled }`.
 `All to TC`, путь к портативному `totalcmd.exe` в Settings → General); движок и helper не менялись, поэтому к
 полному zip приложен `-shell-only.zip`. Детали — `docs/file-operations-plan.md` §13.
 
+**0.1.13** (2026-11-13) — группы похожих по облику в Find similar (pHash-256, рецепт `phash256-dct16-v3`, разворот
+кликом и клавишей `G`/`Shift+G`), подсказка картинки при наведении (300 мс, до размера окна), WIC-декод JPEG на
+Windows (досчёт отпечатков 8.3 → 6.4 мс на картинку) вместе с исправлением порванных строк и разовым перечитыванием
+картинок. Детали — `docs/lookalike-groups-plan.md`, `docs/hover-peek-plan.md`, `docs/wic-decode-plan.md`.
+
 **Общие риски:** MCP — утечка лишнего через сниппеты (ограничить бюджетом и `max_tokens`, не отдавать файл
 целиком), скоуп на Windows (junction/symlink — нормализовать, иначе обход), frecency меняет ранжирование
 (только с evals), fresh-retry может зациклиться на файле, который постоянно дописывается (жёсткий потолок 10 с,
