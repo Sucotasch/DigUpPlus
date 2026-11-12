@@ -555,24 +555,23 @@ function groupOpen(group) {
   return state.groupOpen.get(group[0]) ?? state.expandAll;
 }
 
-/// One list as it is drawn: a group's first picture where it ranks, its members right behind it while the group is
-/// open, and nothing of it while it is folded. A member whose first picture isn't in this list stays where it is.
-function shownHits(list) {
-  if (!groupingActive()) return list;
+/// One list as entries: a plain picture, or an open group's pictures together (the grid draws those in one frame).
+function groupEntries(list) {
+  if (!groupingActive()) return list.map((hit) => ({ hit }));
   const index = new Map(list.map((hit, at) => [hit.path, at]));
-  const out = [];
+  const entries = [];
   for (const hit of list) {
     const group = groupOf(hit.path);
-    if (!group || !index.has(group[0])) { out.push(hit); continue; }
+    if (!group || !index.has(group[0])) { entries.push({ hit }); continue; }
     if (hit.path !== group[0]) continue;
-    out.push(hit);
-    if (!groupOpen(group)) continue;
-    for (const path of group.slice(1)) {
-      const at = index.get(path);
-      if (at != null) out.push(list[at]);
-    }
+    if (!groupOpen(group)) { entries.push({ hit }); continue; }
+    entries.push({ group: group.map((path) => list[index.get(path)]).filter(Boolean) });
   }
-  return out;
+  return entries;
+}
+
+function shownHits(list) {
+  return groupEntries(list).flatMap((entry) => entry.group ?? [entry.hit]);
 }
 
 function rows() {
@@ -799,15 +798,15 @@ function renderContent() {
 
 function grid() {
   const box = element("div");
-  box.append(cells(shownHits(state.ranked), "grid"));
+  box.append(cells(state.ranked, "grid"));
   if (state.weaker.length) {
     box.append(weakerToggle());
-    if (state.showWeaker) box.append(cells(shownHits(state.weaker), "grid weaker-results"));
+    if (state.showWeaker) box.append(cells(state.weaker, "grid weaker-results"));
   }
   if (state.tiered && (state.hiddenTotal > 0 || state.hidden.length)) {
     box.append(hiddenToggle());
     if (state.showHidden) {
-      box.append(cells(shownHits(state.hidden), "grid hidden-results"));
+      box.append(cells(state.hidden, "grid hidden-results"));
       if (state.loadingHidden) box.append(element("div", "tier-note", "Loading hidden images…"));
       else if (state.hiddenError) box.append(element("div", "tier-note", "Couldn't load the hidden images"));
       else if (state.hiddenOffset < state.hiddenTotal) {
@@ -1002,7 +1001,16 @@ function cells(hits, className) {
     box.setAttribute("role", "listbox");
     box.setAttribute("aria-multiselectable", "true");
   }
-  for (const hit of hits) box.append(cell(hit));
+  for (const entry of groupEntries(hits)) {
+    if (!entry.group) {
+      box.append(cell(entry.hit));
+      continue;
+    }
+    // An open group is one green frame across the row, its pictures in a grid of their own.
+    const block = element("div", "group-block");
+    for (const hit of entry.group) block.append(cell(hit));
+    box.append(block);
+  }
   return box;
 }
 

@@ -214,6 +214,18 @@ svg { display: block; }
   padding: 16px;
 }
 
+/* An open look-alike group: one green frame across the row, its pictures in a grid of their own. */
+.group-block {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: 18px 14px;
+  padding: 10px;
+  border: 2px solid var(--leaf);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--leaf) 6%, transparent);
+}
+
 .cell { min-width: 0; outline: none; }
 
 .cell .picture {

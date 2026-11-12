@@ -136,7 +136,7 @@ the full package.
 | — | Insert / Ctrl+A | Selects results in the big window to copy, move or delete (Windows; Ctrl+A outside the search field) |
 | — | Tab | Switches the keyboard between the search field and the results (big window) |
 | — | Del | Deletes the file under the cursor, or the ticked ones (Windows); Enter confirms the Recycle Bin sheet |
-| — | Right click → Find similar | Searches by that file's own picture: the closest matches in the collection, the reference left out (Windows) |
+| - | Right click → Find similar | Searches by that file's own picture: the closest matches in the collection, with the picture itself first (Windows) |
 | — | Ctrl+1…6 | The big window's views: Images, Screenshots, Documents, Video, Audio, All files |
 | — | F5 / F6 / F8 | Copy To… / Move To… / Delete the selected files (Windows) |
 
@@ -162,7 +162,8 @@ or everything), whether subfolders are walked at all (**Scan subfolders** off = 
 recordings are read — by their **tags** (title, artist, album — no audio embedding) or by their sound. Changing a
 rule re-syncs that folder: files the new rule leaves out drop from the index, and they come back when the rule
 does. **Rescan** and **Re-read** re-run a folder on demand. And **Find similar** in a result's right-click menu
-searches by that file's own picture — the closest matches in the collection, the reference itself left out.
+searches by that file's own picture - the closest matches in the collection, with the picture itself first, and its
+look-alike copies folded under it.
 
 If Total Commander is installed (or you point Settings → General → **Total Commander** at a portable copy's
 `totalcmd.exe`), the bar under the results gains **Selected to TC** and **All to TC**. The first sends the ticked

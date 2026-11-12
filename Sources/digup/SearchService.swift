@@ -167,8 +167,9 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let started = Date()
             var vector: [Float]?
             var warning: String?
-            // Search by example ("Find similar"): the reference file's own vector is the query, ranked by cosine,
-            // the reference itself left out. The vectors are already in memory: nothing re-embeds.
+            // Search by example ("Find similar"): the reference file's own vector is the query, ranked by cosine.
+            // The reference is in its own results, first (cosine 1.0): it is what the person asked about, and it is
+            // the picture its look-alikes fold under. The vectors are already in memory: nothing re-embeds.
             var likeFile: Int64?
             if let path = request["like"] as? String, !path.isEmpty {
                 // Loud on failure: a silent fallback here would run a keyword search over the field's
@@ -207,8 +208,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                 page = try searcher.page(likeFile != nil ? "" : text, queryVector: vector, kinds: kinds,
                                          limit: limit, offset: offset, zGate: zGate, prefixLast: prefixLast,
                                          cosineFloor: cosineFloor, cosineCeiling: cosineCeiling,
-                                         byCosine: byCosine || likeFile != nil, tierThresholds: tierThresholds,
-                                         excluding: likeFile)
+                                         byCosine: byCosine || likeFile != nil, tierThresholds: tierThresholds)
             }
             let hits = page.hits.filter {
                 if code {
