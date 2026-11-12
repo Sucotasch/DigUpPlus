@@ -88,8 +88,21 @@ import Testing
         #expect(LookalikeGroups.group(paths: ["a"], hashes: hashes, difference: 6) == [])
     }
 
-    @Test func theDifferenceIsAPercentageOfTheBits() throws {
-        let none = Phash256(w0: 0)
+    /// Several pictures on several threads give the same fingerprints as one at a time, and a file that isn't a
+    /// picture is left out.
+    @Test func manyPicturesAreHashedLikeOneAtATime() throws {
+        let picture = Self.pictures.appendingPathComponent("pattern-o6.jpg")
+        let prepared = try ImageExtractor.prepare(picture, maxPixel: 1024, minSide: 1, to: folder, png: false)
+        let notes = folder.appendingPathComponent("notes.txt")
+        try "just words".write(to: notes, atomically: true, encoding: .utf8)
+        let bulk = PhashBulk.compute([picture.path, prepared.path, notes.path], threads: 3)
+        #expect(bulk.count == 2)
+        #expect(bulk[picture.path] == Phash256.ofFile(picture.path))
+        #expect(bulk[prepared.path] == Phash256.ofFile(prepared.path))
+        #expect(bulk[notes.path] == nil)
+    }
+
+    @Test func theDifferenceIsAPercentageOfTheBits() throws {        let none = Phash256(w0: 0)
         let one = Phash256(w0: 1)
         let all = Phash256(w0: .max, w1: .max, w2: .max, w3: .max)
         #expect(abs(one.difference(from: none) - 100.0 / 256) < 0.001)

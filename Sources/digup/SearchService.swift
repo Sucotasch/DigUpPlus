@@ -336,15 +336,22 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let paths = request["paths"] as? [String] ?? []
             let difference = request["difference"] as? Double ?? 6
             var hashes = try store.phashes(for: paths)
-            let deadline = Date().addingTimeInterval(1.0)
-            var computed = 0
-            for path in paths where hashes[path] == nil && Date() < deadline {
-                guard let file = try store.file(at: path), file.kind == .image || file.kind == .screenshot,
-                      let fingerprint = Phash256.ofFile(path) else { continue }
-                try? store.setPhash(fingerprint, file: file.id)
-                hashes[path] = fingerprint
-                computed += 1
+            // Missing fingerprints: a fixed number a call, on a few threads (about a second), kept for next time. The
+            // window asks again while this makes progress, so the first query after an upgrade fills in as it goes.
+            var wanted: [(id: Int64, path: String)] = []
+            for path in paths where hashes[path] == nil {
+                guard let file = try store.file(at: path), file.kind == .image || file.kind == .screenshot
+                else { continue }
+                wanted.append((file.id, path))
             }
+            let budget = Array(wanted.prefix(48))
+            let computedHashes = PhashBulk.compute(budget.map(\.path), threads: 4)
+            for (id, path) in budget {
+                guard let fingerprint = computedHashes[path] else { continue }
+                try? store.setPhash(fingerprint, file: id)
+                hashes[path] = fingerprint
+            }
+            let computed = computedHashes.count
             // `pending`: pictures that have no fingerprint yet and this call made progress on (a picture no reader can
             // open would otherwise look pending for ever); the window asks again while there are some.
             let pending = computed > 0 ? paths.filter { hashes[$0] == nil }.count : 0

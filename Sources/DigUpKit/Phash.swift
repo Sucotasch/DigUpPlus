@@ -6,6 +6,7 @@
 // The window's Find similar groups a result list by it: a fingerprint says "same look", never "same file" — nothing is
 // deleted, renamed or hidden from file operations by it.
 import Foundation
+import Dispatch
 
 public struct Phash256: Hashable, Sendable {
     /// Kept with the index: a changed recipe invalidates the stored hashes (they are cheap to recompute, and a mix of
@@ -100,8 +101,7 @@ public struct Phash256: Hashable, Sendable {
 }
 
 /// The groups of a result list: which of its pictures look alike, in the list's order.
-public enum LookalikeGroups {
-    /// The groups among `paths` (in the order given, which is the ranking), each starting with the member to show —
+public enum LookalikeGroups {    /// The groups among `paths` (in the order given, which is the ranking), each starting with the member to show —
     /// the best-ranked. `difference` is a percentage of the 256 bits, 0...50. A path with no fingerprint is skipped.
     public static func group(paths: [String], hashes: [String: Phash256], difference: Double) -> [[String]] {
         let limit = Int((max(0, min(50, difference)) / 100 * Double(Phash256.bits)).rounded())
@@ -132,5 +132,42 @@ public enum LookalikeGroups {
                 let two = paths.firstIndex(of: second[0]) ?? 0
                 return one < two
             }
+    }
+}
+
+/// Fingerprints for many pictures at once, on several threads. One decode a picture is the cost (stb reads the file
+/// whole: there is no scaled decode), so the bulk backfill and the window's first query both spread that over the
+/// cores, as AntiDuplPlus's collector does with its workers. A path a reader can't open is left out.
+public enum PhashBulk {
+    /// How many threads when the caller doesn't say: every core but one, so indexing and the UI keep theirs.
+    public static var defaultThreads: Int { max(2, ProcessInfo.processInfo.activeProcessorCount - 1) }
+
+    public static func compute(_ paths: [String], threads: Int? = nil) -> [String: Phash256] {
+        guard !paths.isEmpty else { return [:] }
+        let workers = max(1, min(paths.count, threads ?? defaultThreads))
+        // The workers write through a box of their own (the lock is the only sharing), which Swift 6's concurrency
+        // checks accept where a captured `var` wouldn't.
+        final class Box: @unchecked Sendable {
+            var hashes: [String: Phash256] = [:]
+            let lock = NSLock()
+            func merge(_ found: [String: Phash256]) {
+                lock.lock()
+                hashes.merge(found) { $1 }
+                lock.unlock()
+            }
+        }
+        let box = Box()
+        // Whole files a thread: each pays the lock once, and a slow picture doesn't hold up the rest.
+        let size = max(1, paths.count / workers)
+        let chunks = (paths.count + size - 1) / size
+        DispatchQueue.concurrentPerform(iterations: chunks) { chunk in
+            var found: [String: Phash256] = [:]
+            found.reserveCapacity(min(size, paths.count - chunk * size))
+            for index in (chunk * size)..<min(paths.count, (chunk + 1) * size) {
+                if let hash = Phash256.ofFile(paths[index]) { found[paths[index]] = hash }
+            }
+            box.merge(found)
+        }
+        return box.hashes
     }
 }

@@ -22,8 +22,10 @@ let usage = """
       digup repick --from OLD --to NEW [--apply] [--json]
                                               a chosen folder that moved: what the move would do, or rewrite its rows
       digup forget <folder>... [--json]       drop these folders' rows; the folders stay chosen
-      digup phash [--limit N]                 a picture's look-alike fingerprint for those indexed before schema 7
-                                              (Find similar's groups use them; one read each, no embedding)
+      digup phash [--limit N] [--threads N]
+                                              a picture's look-alike fingerprint for those indexed before schema 7
+                                              (Find similar's groups use them; one read each, no embedding; the
+                                              threads default to the cores minus one)
       digup status                            what's in the index
       digup speed [--model [--if-needed] [--when-quiet S] [--tries N]] [--json]
                                               this machine's speed next to the M4 Pro behind the estimates, and
@@ -82,7 +84,7 @@ struct Arguments {
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--offset", "--zgate", "--word-weight", "--new-limit",
                                       "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
                                       "--memory-limit", "--time-limit", "--tries", "--when-quiet", "--print-config",
-                                      "--from"]
+                                      "--from", "--threads"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--root-rule",
                                         "--tag-type", "--root"]
 
