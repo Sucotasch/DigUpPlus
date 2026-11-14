@@ -35,6 +35,8 @@ pub struct Settings {
     pub image_tiers: Option<String>,
     /// Find similar's look-alike groups (Settings → Search): off shows the results flat. None: on.
     pub lookalike_groups: Option<bool>,
+    /// Group look-alikes in every search, not only Find similar. None: off — the main list stays as it was unless asked.
+    pub lookalike_everywhere: Option<bool>,
     /// How different two pictures may be to share a group: a percentage of Phash256's 256 bits, 0...50. None: 6.
     pub lookalike_difference: Option<f64>,
     /// The panel's hotkey (Tauri's accelerator form); empty: the default.

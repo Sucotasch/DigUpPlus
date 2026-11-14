@@ -92,6 +92,7 @@ const state = {
   groupOpen: new Map(),
   expandAll: false,
   grouping: true,
+  groupingEverywhere: false,   // Settings: group look-alikes in every search, not only Find similar
   onlyGroups: false,     // Find similar: leave the pictures that look like nothing else out of the list
   groupDifference: 6,
   groupingPending: 0,
@@ -543,10 +544,12 @@ function setFilter(key) {
 
 /// Every result shown, in the order it's shown: the strong ones, then the weaker ones once they're unfolded; in the
 /// table, each group by the column chosen.
-/// Whether the window groups its results now: Find similar, pictures, and the setting on. The view doesn't matter: the
-/// table folds the same way (a swipe through the views must not lose the groups).
+/// Whether the window groups its results now. Find similar has its own switch (on unless turned off); a normal search
+/// groups only when Settings → Search asks for it, so the main list stays as it was. The view doesn't matter: the table
+/// folds the same way (a swipe through the views must not lose the groups).
 function groupingActive() {
-  return Boolean(state.like) && state.grouping && !isCode();
+  if (isCode()) return false;
+  return state.like ? state.grouping : state.groupingEverywhere;
 }
 
 /// The badge a group's representative carries: "+N" while folded, "−N" while open. The grid puts it on the picture, the
@@ -747,7 +750,8 @@ function applyGrouping() {
 /// another (`lookalikeSave`): two quick clicks must not finish in the other order and leave the old value in the file.
 let lookalikeSave = Promise.resolve();
 function saveLookalike() {
-  const value = { groups: state.grouping, difference: state.groupDifference };
+  const value = { groups: state.grouping, everywhere: state.groupingEverywhere,
+                  difference: state.groupDifference };
   lookalikeSave = lookalikeSave
     .then(() => invoke("set_lookalike", value))
     .then((saved) => {
@@ -761,15 +765,16 @@ function saveLookalike() {
 /// difference. It is the only new control in the window, and a normal search never sees it.
 function renderGroups() {
   const line = $("groups");
-  // The line belongs to Find similar and stays while grouping is off, so it can be turned back on without Settings.
-  const active = Boolean(state.like) && !isCode() && state.hasResults;
+  // Find similar always shows its line (that is where the switch lives); a normal search shows it only while it groups.
+  const on = state.like ? state.grouping : state.groupingEverywhere;
+  const active = !isCode() && state.hasResults && (Boolean(state.like) || state.groupingEverywhere);
   line.hidden = !active;
   if (!active) return;
   const groups = state.groups || [];
   const folded = groups.reduce((sum, group) => sum + (groupOpen(group) ? 0 : group.length - 1), 0);
   const chosen = groups.reduce((sum, group) => sum + group.filter((path) => state.selected.has(path)).length, 0);
   const pending = state.groupingPending;
-  $("groups-count").textContent = !state.grouping ? "Look-alike groups are off"
+  $("groups-count").textContent = !on ? "Look-alike groups are off"
     : groups.length
       ? `${groups.length.toLocaleString()} ${groups.length === 1 ? "group" : "groups"}`
         + (folded ? ` · ${folded.toLocaleString()} folded` : " · all shown")
@@ -778,13 +783,13 @@ function renderGroups() {
         + (pending ? ` · ${pending.toLocaleString()} getting a fingerprint` : "")
       : pending ? `${pending.toLocaleString()} pictures are getting a fingerprint`
       : "No look-alikes grouped";
-  $("groups-expand").hidden = !groups.length || !state.grouping;
+  $("groups-expand").hidden = !groups.length || !on;
   $("groups-expand").textContent = state.expandAll ? "Collapse all" : "Expand all";
   // The controls say what the window is doing; the number field keeps what is being typed into it.
-  $("group-on").checked = state.grouping;
+  $("group-on").checked = on;
   $("group-only").checked = state.onlyGroups;
   for (const id of ["group-only", "group-difference", "group-preset-6", "group-preset-33"]) {
-    $(id).disabled = !state.grouping;
+    $(id).disabled = !on;
   }
   if (document.activeElement !== $("group-difference")) $("group-difference").value = state.groupDifference;
 }
@@ -1116,8 +1121,8 @@ function cell(hit) {
   return item;
 }
 
-/// The tick that chooses a file for Move To, Copy To or Delete, in the grid's corner or the table's first column.
-/// Its press is its own: it neither starts a drag of the file nor takes the keyboard from the field.
+/// A click on the checkbox is the same choice as a click on the picture: plain takes it (a group's best match takes
+/// the group), Shift+click takes the range from the last one, Ctrl/⌘ toggles one.
 function checkboxFor(hit) {
   const box = element("button", "checkbox");
   box.type = "button";
@@ -1126,7 +1131,11 @@ function checkboxFor(hit) {
   box.setAttribute("aria-label", `Select ${nameOf(hit.path)}`);
   box.innerHTML = ICONS.check;
   box.onmousedown = (event) => { event.stopPropagation(); event.preventDefault(); };
-  box.onclick = (event) => { event.stopPropagation(); toggleSelected(hit.path); };
+  box.onclick = (event) => {
+    event.stopPropagation();
+    if (event.shiftKey) { pick(hit, event); return; }
+    toggleSelected(hit.path);
+  };
   return box;
 }
 
@@ -1529,7 +1538,8 @@ function pick(hit, event) {
   paintSelection();
 }
 
-/// Shift+↑ ↓: the range from where the choosing started to the focus now, in the media list (a row at a time).
+/// Shift+arrows: the range from where choosing started to the focus now. `step` counts results, so the caller passes
+/// a row's worth of columns in the grid and one in the table.
 function extendSelection(step) {
   const list = operable().map((hit) => hit.path);
   if (!list.length) return;
@@ -2931,7 +2941,9 @@ $("batch-tc-all").onclick = () => toTotalCommander(true);
 // Find similar's look-alike line: everything it does sits on it, in plain sight.
 $("groups-expand").onclick = toggleAllGroups;
 $("group-on").onchange = () => {
-  state.grouping = $("group-on").checked;
+  // The line's switch belongs to the mode: Find similar's own, or the "every search" one from Settings.
+  if (state.like) state.grouping = $("group-on").checked;
+  else state.groupingEverywhere = $("group-on").checked;
   saveLookalike();
   applyGrouping();
 };
@@ -3099,7 +3111,8 @@ document.addEventListener("keydown", (event) => {
       if (event.shiftKey) {
         if (event.altKey || event.ctrlKey || event.metaKey || !isWindows || !rows().length) return;
         event.preventDefault();
-        extendSelection(event.key === "ArrowDown" ? 1 : -1);
+        // A row at a time in the grid, one result in the table (columns() is 1 there).
+        extendSelection(event.key === "ArrowDown" ? columns() : -columns());
         return;
       }
       if (!plain || !rows().length) return;
@@ -3138,12 +3151,22 @@ document.addEventListener("keydown", (event) => {
       }
       return;
     case "ArrowLeft":
-    case "ArrowRight":
+    case "ArrowRight": {
+      const delta = event.key === "ArrowRight" ? 1 : -1;
+      // Shift takes the range one picture at a time, whatever the arrow; in the field it is the text's.
+      if (event.shiftKey) {
+        if (event.altKey || event.ctrlKey || event.metaKey || !isWindows) return;
+        if (document.activeElement === $query || !rows().length) return;
+        event.preventDefault();
+        extendSelection(delta);
+        return;
+      }
       // Tab into the results puts the keyboard on a picture; there the arrows are the grid's, not a text caret's.
       if (!plain || document.activeElement === $query || !rows().length) return;
       event.preventDefault();
-      move(event.key === "ArrowRight" ? 1 : -1);
+      move(delta);
       return;
+    }
     case "Enter": {
       const hit = state.hasResults && state.query.trim() ? selectedHit() : null;
       if (!hit) return;
@@ -3198,11 +3221,13 @@ tauri.event.listen("totalcmd", ({ payload }) => {
 // Settings → Search, look-alike groups: the window follows that change at once, without a new search.
 tauri.event.listen("lookalike", ({ payload }) => {
   const groups = payload?.groups !== false;
+  const everywhere = payload?.everywhere === true;
   const difference = Number(payload?.difference ?? 6);
-  if (groups === state.grouping && difference === state.groupDifference) return;
+  if (groups === state.grouping && everywhere === state.groupingEverywhere
+      && difference === state.groupDifference) return;
   state.grouping = groups;
+  state.groupingEverywhere = everywhere;
   state.groupDifference = difference;
-  $("group-on").checked = groups;
   if (document.activeElement !== $("group-difference")) $("group-difference").value = difference;
   applyGrouping();
 });
@@ -3306,6 +3331,7 @@ async function start() {
   state.app = info.state || {};
   state.tc = info.totalcmd?.path || null;
   state.grouping = info.lookalike?.groups !== false;
+  state.groupingEverywhere = info.lookalike?.everywhere === true;
   state.groupDifference = Number(info.lookalike?.difference ?? 6);
   // The index's age grows between events: the status bar's "synced 2 min ago" is redrawn without one.
   setInterval(renderStatus, 30000);

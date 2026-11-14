@@ -179,14 +179,23 @@
         </select>
       </label>
 
-      <h3>Find similar: look-alike groups</h3>
+      <h3>Look-alike groups</h3>
       <label class="option">
         <input type="checkbox" id="lookalike-groups">
         <span class="text">
-          <span class="name">Group pictures that look alike</span>
-          <span class="info">In Find similar, pictures with the same look (copies, resizes, re-compressions, a series of
-            variants) fold into one cell with how many others it holds. A click opens the group; nothing is hidden from
-            selection or file operations, only folded.</span>
+          <span class="name">Group pictures that look alike in Find similar</span>
+          <span class="info">Pictures with the same look (copies, resizes, re-compressions, a series of variants) fold
+            into one cell with how many others it holds. A click opens the group; nothing is hidden from selection or
+            file operations, only folded.</span>
+        </span>
+      </label>
+      <label class="option">
+        <input type="checkbox" id="lookalike-everywhere">
+        <span class="text">
+          <span class="name">Group look-alikes in every search</span>
+          <span class="info">Off: a normal search ranks its pictures as they are, and groups belong to Find similar
+            alone. On: copies fold under their best-ranked match in every search, with the look-alike line above the
+            results (its switch turns it off for the current one).</span>
         </span>
       </label>
       <label class="option">

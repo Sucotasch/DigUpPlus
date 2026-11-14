@@ -1053,24 +1053,26 @@ fn set_totalcmd_new_tab(shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), St
     settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))
 }
 
-/// Settings → Search → the look-alike groups Find similar draws, as the pages show it.
+/// Settings → Search → the look-alike groups the window draws, as the pages show it.
 fn lookalike_json(settings: &Settings) -> Value {
     json!({
         "groups": settings.lookalike_groups.unwrap_or(true),
+        "everywhere": settings.lookalike_everywhere.unwrap_or(false),
         "difference": settings.lookalike_difference.unwrap_or(6.0).clamp(0.0, 50.0),
     })
 }
 
-/// Settings → Search → Find similar's look-alike groups: on or off, and how different two pictures may be to share a
-/// group (a percentage of the 256 fingerprint bits). The window regroups at once (`lookalike`); the index isn't
-/// touched and no picture is read again.
+/// Settings → Search → look-alike groups: on or off for Find similar, whether every search groups too, and how
+/// different two pictures may be to share a group (a percentage of the 256 fingerprint bits). The window regroups at
+/// once (`lookalike`); the index isn't touched and no picture is read again.
 #[tauri::command]
-fn set_lookalike(app: AppHandle, shell: State<'_, Arc<Shell>>, groups: bool, difference: f64)
+fn set_lookalike(app: AppHandle, shell: State<'_, Arc<Shell>>, groups: bool, everywhere: bool, difference: f64)
     -> Result<Value, String> {
     let difference = (difference.clamp(0.0, 50.0) * 10.0).round() / 10.0;
     let answer = {
         let mut settings = shell.settings.lock().unwrap();
         settings.lookalike_groups = Some(groups);
+        settings.lookalike_everywhere = Some(everywhere);
         settings.lookalike_difference = Some(difference);
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
         lookalike_json(&settings)

@@ -47,8 +47,8 @@ here. What this fork changes is what surrounds the engine:
 - **Look-alike groups in Find similar.** Pictures that look alike (copies, resizes, re-compressed saves, a series of
   variants) fold into one cell with how many others it holds, in the grid and in the table; a click opens the group
   (`G` opens or folds the one under the cursor, `Shift+G` all of them), ticking the best match takes the whole group, and
-  **Groups only** leaves the lone pictures out. A difference in percent in Settings → Search says how close two pictures
-  must be. A normal search is unchanged.
+  **Groups only** leaves the lone pictures out. The same can be turned on for every search in Settings → Search. A
+  difference in percent (on the line, and in Settings) says how close two pictures must be. A normal search is unchanged.
 - **A large look on hover.** Rest the pointer on a picture for a moment and it comes up at close to its own size, up to
   the window, with the file's name, kind, date, size and folder along the top, without changing the selection or taking a
   click; the pointer alone decides, and moving on puts it away. Space still shows the selected result over the whole
@@ -183,7 +183,9 @@ usual and the index catches the changes; a new tab is the default, and the activ
 same composition — a copy saved twice, a resized or re-compressed version, a series of variants — fold into one cell
 with a **+N** badge, in the place of their best match. It works in the grid and in the table (the badge sits beside the
 name there). A click opens the group, **Expand all** opens every one, and the keyboard has the same two moves: **G** on
-the group under the cursor, **Shift+G** for all of them. Ticking a group's best match takes its copies with it — one
+the group under the cursor, **Shift+G** for all of them. The same grouping can be turned on for **every search** in
+Settings → Search (off by default, so a normal list stays as it is), and then the line above the results carries the
+switch, the difference and **Groups only** everywhere. Ticking a group's best match takes its copies with it — one
 click for the whole group — and unticking any file, the best match included, leaves the rest: keeping one copy and
 deleting the others is two clicks. Folded copies stay chosen, the badge says how many (`16 of 17 chosen`), and the
 delete sheet says when a group goes whole. **Groups only**, on the line above the results, leaves the pictures that

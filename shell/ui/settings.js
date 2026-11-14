@@ -64,6 +64,7 @@ function renderSearch() {
   if (document.activeElement !== $("zgate")) $("zgate").value = info.zgate ?? 2;
   if (document.activeElement !== $("image-tiers")) $("image-tiers").value = info.imageTiers || "standard";
   $("lookalike-groups").checked = info.lookalike?.groups !== false;
+  $("lookalike-everywhere").checked = info.lookalike?.everywhere === true;
   if (document.activeElement !== $("lookalike-difference")) {
     $("lookalike-difference").value = info.lookalike?.difference ?? 6;
   }
@@ -115,7 +116,11 @@ function saveLookalike() {
   clearTimeout(lookalikeSaving);
   lookalikeSaving = setTimeout(async () => {
     try {
-      const saved = await invoke("set_lookalike", { groups: $("lookalike-groups").checked, difference });
+      const saved = await invoke("set_lookalike", {
+        groups: $("lookalike-groups").checked,
+        everywhere: $("lookalike-everywhere").checked,
+        difference,
+      });
       info.lookalike = saved;
       if (document.activeElement !== field) field.value = saved.difference;
     } catch (error) {
@@ -124,6 +129,7 @@ function saveLookalike() {
   }, 400);
 }
 $("lookalike-groups").addEventListener("change", saveLookalike);
+$("lookalike-everywhere").addEventListener("change", saveLookalike);
 $("lookalike-difference").addEventListener("input", saveLookalike);
 $("lookalike-difference").addEventListener("change", saveLookalike);
 
