@@ -32,7 +32,8 @@ words, and it finds the match, whatever kind of file it is.
 **Contents:** [This fork vs upstream](#this-fork-vs-upstream) · [What you can find](#what-you-can-find) ·
 [Private](#private) · [Install](#install) · [Using it](#using-it) · [What it reads](#what-it-reads) ·
 [Code](#code) · [Agents](#agents) · [How it works](#how-it-works) · [For scripts](#for-scripts) ·
-[Build from source](#build-from-source) · [FAQ](#faq) · [Contributing](#contributing) · [Thanks](#thanks)
+[Build from source](#build-from-source) · [FAQ](#faq) · [Contributing](#contributing) · [Thanks](#thanks) ·
+[License](#license)
 
 ## This fork vs upstream
 
