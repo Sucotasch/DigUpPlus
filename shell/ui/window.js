@@ -1129,9 +1129,11 @@ function checkboxFor(hit) {
   const box = element("button", "checkbox");
   box.type = "button";
   box.setAttribute("role", "checkbox");
-  box.setAttribute("aria-checked", String(state.selected.has(hit.path)));
   box.setAttribute("aria-label", `Select ${nameOf(hit.path)}`);
   box.innerHTML = ICONS.check;
+  const mixed = mixedChoice(hit.path);
+  box.classList.toggle("mixed", mixed);
+  box.setAttribute("aria-checked", mixed ? "mixed" : String(state.selected.has(hit.path)));
   box.onmousedown = (event) => { event.stopPropagation(); event.preventDefault(); };
   box.onclick = (event) => {
     event.stopPropagation();
@@ -1139,6 +1141,15 @@ function checkboxFor(hit) {
     toggleSelected(hit.path);
   };
   return box;
+}
+
+/// A group's representative whose own file is not chosen while some of its copies are: the tick goes grey (aria "mixed")
+/// and the next click clears the copies — the second step after "drop the head, keep the copies".
+function mixedChoice(path) {
+  if (!groupingActive()) return false;
+  const group = groupOf(path);
+  return Boolean(group && group[0] === path && !state.selected.has(path)
+    && group.some((member) => state.selected.has(member)));
 }
 
 /// The picture of a cell: the photo or screenshot, the frame or page that matched (from the helper, once the cell
@@ -1491,12 +1502,22 @@ function selectAll() {
 }
 
 function toggleSelected(path) {
-  if (state.selected.has(path)) {
-    // Off one file only, even for a group's representative: "keep this one and drop the copies" stays one click.
+  const group = groupingActive() ? groupOf(path) : null;
+  if (group && group[0] === path) {
+    // The representative is a three-step switch: all → the copies alone (grey tick) → none → all.
+    if (state.selected.has(path)) {
+      state.selected.delete(path);
+    } else if (group.some((member) => state.selected.has(member))) {
+      for (const member of group) state.selected.delete(member);
+    } else {
+      for (const member of group) state.selected.add(member);
+      state.anchor = path;
+    }
+  } else if (state.selected.has(path)) {
+    // Off one file only, even for a copy: "keep this one and drop the rest" stays one click.
     state.selected.delete(path);
   } else {
     state.selected.add(path);
-    selectWholeGroup(path);
     state.anchor = path;
   }
   state.navigated = true;
@@ -1577,14 +1598,26 @@ function extendSelection(step) {
 /// The chosen files' checkboxes and the panel, without rebuilding the grid (which would lose the scroll place).
 function paintSelection() {
   const paint = (item) => {
-    const chosen = state.selected.has(item.dataset.path);
+    const path = item.dataset.path;
+    const chosen = state.selected.has(path);
     item.classList.toggle("checked", chosen);
     item.setAttribute("aria-selected", String(chosen));
-    item.querySelector(".checkbox")?.setAttribute("aria-checked", String(chosen));
+    const box = item.querySelector(".checkbox");
+    if (box) {
+      const mixed = mixedChoice(path);
+      box.classList.toggle("mixed", mixed);
+      box.setAttribute("aria-checked", mixed ? "mixed" : String(chosen));
+    }
   };
   // Only the cells whose state can have changed (what was chosen before, and what is now); a big change, or a first
-  // paint, goes over all of them.
+  // paint, goes over all of them. A copy's change can flip its group head's grey tick, so the heads come along.
   const touched = new Set([...(painted ?? []), ...state.selected]);
+  if (groupingActive()) {
+    for (const path of [...touched]) {
+      const group = groupOf(path);
+      if (group && group[0] !== path) touched.add(group[0]);
+    }
+  }
   if (painted && touched.size <= 64) {
     for (const path of touched) {
       const item = $content.querySelector(`[data-path="${CSS.escape(path)}"]`);
