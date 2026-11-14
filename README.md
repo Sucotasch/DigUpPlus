@@ -35,6 +35,8 @@ words, and it finds the match, whatever kind of file it is.
 [Build from source](#build-from-source) · [FAQ](#faq) · [Contributing](#contributing) · [Thanks](#thanks) ·
 [License](#license)
 
+По-русски: [README.ru.md](README.ru.md) — краткая русская версия.
+
 ## This fork vs upstream
 
 The engine is the same Swift code as upstream's: one `DigUpKit` behind the app shell, the same model, the same index
@@ -137,26 +139,26 @@ the full package.
 
 ## Using it
 
-| Windows and Linux | What it does |
+| Key or gesture | What it does |
 |---|---|
 | Ctrl+Shift+Space | Opens the search panel from any app (you can change it) |
 | ↓ ↑ | Moves through the results |
 | Enter | Opens the result: PDFs at the page, recordings and videos at the moment, code in your editor at the line |
 | Space | A big preview, at the page or moment (once you've moved to a result) |
-| — | Hovering a picture | A larger look at it — up to the window's size, without changing the selection or taking a click |
+| Hovering a picture | A larger look at it — up to the window's size, without changing the selection or taking a click |
 | Ctrl+Enter | Shows it in Explorer or your file manager |
-| ⌘C | Ctrl+C (in the window) | Copies the file, to paste anywhere |
-| ⌘O | Ctrl+O | The same search in a bigger window, with a picture grid and filters |
-| — | Clicking a picture | Moves the preview cursor; ticks nothing (the box on the picture, or Ctrl/Shift+click, ticks) |
-| — | Shift+arrows | Extends the ticked range, a row at a time in the grid (Windows) |
-| — | Alt+click | Lets go of that look-alike group's ticked files (Find similar) |
-| — | Insert / Ctrl+A | Selects results in the big window to copy, move or delete (Windows; Ctrl+A outside the search field) |
-| — | Tab | Switches the keyboard between the search field and the results (big window) |
-| — | Del | Deletes the file under the cursor, or the ticked ones (Windows); Enter confirms the Recycle Bin sheet |
-| - | Right click → Find similar | Searches by that file's own picture: the closest matches in the collection, with the picture itself first (Windows) |
-| — | G / Shift+G | Opens or folds the look-alike group under the cursor, or every group (Find similar) |
-| — | Ctrl+1…6 | The big window's views: Images, Screenshots, Documents, Video, Audio, All files |
-| — | F5 / F6 / F8 | Copy To… / Move To… / Delete the selected files (Windows) |
+| Ctrl+C (⌘C on a Mac) | Copies the file, to paste anywhere |
+| Ctrl+O (⌘O on a Mac) | The same search in a bigger window, with a picture grid and filters |
+| Clicking a picture | Moves the preview cursor; ticks nothing (the box on the picture, or Ctrl/Shift+click, ticks) |
+| Shift+arrows | Extends the ticked range, a row at a time in the grid |
+| Alt+click | Lets go of that look-alike group's ticked files (Find similar) |
+| Insert / Ctrl+A | Selects results in the big window to copy, move or delete (Ctrl+A outside the search field) |
+| Tab | Switches the keyboard between the search field and the results (big window) |
+| Del | Deletes the file under the cursor, or the ticked ones; Enter confirms the Recycle Bin sheet |
+| Right click → Find similar | Searches by that file's own picture: the closest matches in the collection, with the picture itself first |
+| G / Shift+G | Opens or folds the look-alike group under the cursor, or every group (Find similar) |
+| Ctrl+1…6 | The big window's views: Images, Screenshots, Documents, Video, Audio, All files |
+| F5 / F6 / F8 | Copy To… / Move To… / Delete the selected files (Windows) |
 
 DigUp Plus lives in the tray, where you can see how indexing is going,
 pause it, or open Settings. Opening it from the Start menu or your app list shows the search window, which opens on
