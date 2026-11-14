@@ -761,27 +761,32 @@ function saveLookalike() {
 /// difference. It is the only new control in the window, and a normal search never sees it.
 function renderGroups() {
   const line = $("groups");
-  const active = groupingActive() && state.hasResults;
+  // The line belongs to Find similar and stays while grouping is off, so it can be turned back on without Settings.
+  const active = Boolean(state.like) && !isCode() && state.hasResults;
   line.hidden = !active;
-  if (!active) {
-    $("group-panel").hidden = true;
-    return;
-  }
+  if (!active) return;
   const groups = state.groups || [];
   const folded = groups.reduce((sum, group) => sum + (groupOpen(group) ? 0 : group.length - 1), 0);
+  const chosen = groups.reduce((sum, group) => sum + group.filter((path) => state.selected.has(path)).length, 0);
   const pending = state.groupingPending;
   $("groups-count").textContent = !state.grouping ? "Look-alike groups are off"
     : groups.length
       ? `${groups.length.toLocaleString()} ${groups.length === 1 ? "group" : "groups"}`
         + (folded ? ` · ${folded.toLocaleString()} folded` : " · all shown")
         + (state.onlyGroups ? " · groups only" : "")
+        + (chosen ? ` · ${chosen.toLocaleString()} chosen` : "")
         + (pending ? ` · ${pending.toLocaleString()} getting a fingerprint` : "")
       : pending ? `${pending.toLocaleString()} pictures are getting a fingerprint`
       : "No look-alikes grouped";
   $("groups-expand").hidden = !groups.length || !state.grouping;
   $("groups-expand").textContent = state.expandAll ? "Collapse all" : "Expand all";
-  $("groups-difference").textContent = `difference ${state.groupDifference}%`;
-  $("groups-difference").setAttribute("aria-expanded", String(!$("group-panel").hidden));
+  // The controls say what the window is doing; the number field keeps what is being typed into it.
+  $("group-on").checked = state.grouping;
+  $("group-only").checked = state.onlyGroups;
+  for (const id of ["group-only", "group-difference", "group-preset-6", "group-preset-33"]) {
+    $(id).disabled = !state.grouping;
+  }
+  if (document.activeElement !== $("group-difference")) $("group-difference").value = state.groupDifference;
 }
 
 function selectedHit() {  const shown = rows();
@@ -1560,6 +1565,7 @@ function paintSelection() {
   }
   painted = new Set(state.selected);
   paintGroupBadges();
+  renderGroups();
   renderBatch();
   renderSide();
   renderStatus();
@@ -2922,21 +2928,8 @@ $("batch-delete").onclick = confirmDelete;
 $("batch-tc").onclick = () => toTotalCommander(false);
 $("batch-tc-all").onclick = () => toTotalCommander(true);
 
-// Find similar's look-alike line: all or none, and the small panel the difference opens.
+// Find similar's look-alike line: everything it does sits on it, in plain sight.
 $("groups-expand").onclick = toggleAllGroups;
-$("groups-difference").onclick = () => {
-  const panel = $("group-panel");
-  panel.hidden = !panel.hidden;
-  if (!panel.hidden) {
-    $("group-on").checked = state.grouping;
-    $("group-only").checked = state.onlyGroups;
-    $("group-difference").value = state.groupDifference;
-    $("group-difference").focus();
-    $("group-difference").select();
-  }
-  renderGroups();
-};
-$("group-done").onclick = () => { $("group-panel").hidden = true; renderGroups(); };
 $("group-on").onchange = () => {
   state.grouping = $("group-on").checked;
   saveLookalike();
@@ -2956,7 +2949,7 @@ $("group-difference").oninput = () => {
   clearTimeout(groupTyping);
   groupTyping = setTimeout(() => setDifference(value), 250);
 };
-/// The panel's presets, as measured on a real collection: 6% folds copies (a resize, a re-compression, a monochrome
+/// The line's presets, as measured on a real collection: 6% folds copies (a resize, a re-compression, a monochrome
 /// save) and 33% a whole series of shots that differ in small details.
 function setDifference(value) {
   state.groupDifference = value;
@@ -3008,12 +3001,6 @@ document.addEventListener("keydown", (event) => {
   if (!$menu.hidden && event.key === "Escape") {
     event.preventDefault();
     hideMenu();
-    return;
-  }
-  if (!$("group-panel").hidden && event.key === "Escape") {
-    event.preventDefault();
-    $("group-panel").hidden = true;
-    renderGroups();
     return;
   }
   // A button with the keyboard answers Enter and Space itself (a checkbox's tick, a sheet's, the bar's).
@@ -3215,10 +3202,8 @@ tauri.event.listen("lookalike", ({ payload }) => {
   if (groups === state.grouping && difference === state.groupDifference) return;
   state.grouping = groups;
   state.groupDifference = difference;
-  if (!$("group-panel").hidden) {
-    $("group-on").checked = groups;
-    $("group-difference").value = difference;
-  }
+  $("group-on").checked = groups;
+  if (document.activeElement !== $("group-difference")) $("group-difference").value = difference;
   applyGrouping();
 });
 

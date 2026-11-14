@@ -186,13 +186,14 @@ name there). A click opens the group, **Expand all** opens every one, and the ke
 the group under the cursor, **Shift+G** for all of them. Ticking a group's best match takes its copies with it — one
 click for the whole group — and unticking any file, the best match included, leaves the rest: keeping one copy and
 deleting the others is two clicks. Folded copies stay chosen, the badge says how many (`16 of 17 chosen`), and the
-delete sheet says when a group goes whole. **Groups only**, in the difference panel, leaves the pictures that look like
-nothing else out of the list. Independent of meaning, the grouping compares a 256-bit visual fingerprint of each
-picture, so
+delete sheet says when a group goes whole. **Groups only**, on the line above the results, leaves the pictures that
+look like nothing else out of the list. Independent of meaning, the grouping compares a 256-bit visual fingerprint of
+each picture, so
 resizing, re-compression, a monochrome copy and a change of brightness stay together while a crop does not. How close
-two pictures must be is **difference** in Settings → Search (a percentage of the fingerprint's 256 bits; 6 by
-default, measured: a resized or re-compressed copy is under 2%, a 5% crop past 25%). The line under the kind chips
-shows the count and the difference while in that mode; a normal search has neither.
+two pictures must be is **Difference** on that line, with **6%** and **33%** beside it (and the same number in
+Settings → Search): a percentage of the fingerprint's 256 bits, 6 by default — measured: a resized or re-compressed copy
+is under 2%, a 5% crop past 25%, a series of shots from 33%. The line also shows the count while in that mode; a normal
+search has neither.
 
 A few things differ by system:
 

@@ -144,20 +144,17 @@ svg { display: block; }
 .groups { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; font-size: 12px;
           color: var(--secondary); }
 .groups .groups-count { white-space: nowrap; }
+.groups-divider { width: 1px; height: 14px; background: var(--line); }
 .groups-action { border: 0; padding: 0; background: none; font: inherit; font-size: 12px; color: var(--accent); }
 .groups-action:hover { text-decoration: underline; }
 .groups-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
-.group-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 8px; padding: 10px 12px;
-               border: 1px solid var(--line); border-radius: 8px; background: var(--pane); font-size: 12px; }
-.group-panel[hidden] { display: none; }
+.groups-action:disabled { color: var(--tertiary); text-decoration: none; }
 .group-option { display: flex; align-items: center; gap: 6px; }
+.group-option input { accent-color: var(--accent); }
 .group-option input[type="number"] { width: 68px; font: inherit; font-size: 12px; color: var(--text);
                                       background: var(--card); border: 1px solid var(--line); border-radius: 6px;
                                       padding: 3px 6px; }
-.group-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
-.group-actions button { padding: 4px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 6px;
-                        background: var(--surface); color: inherit; }
-.group-actions .link { border: 0; background: none; color: var(--accent); padding: 0; }
+.group-option input[type="number"]:disabled { color: var(--tertiary); }
 .group-note { margin: 0; font-size: 11px; color: var(--tertiary); }
 
 .chip {
@@ -293,8 +290,12 @@ svg { display: block; }
 }
 .group-badge:hover { background: var(--moss); }
 .group-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-/* Some of the group's files are chosen: the folded copies are hidden, so the badge carries the fact. */
-.group-badge.chosen { box-shadow: 0 0 0 2px var(--accent), 0 1px 3px rgba(0, 0, 0, 0.3); }
+/* Some of the group's files are chosen: the folded copies are hidden, so the badge itself turns the selection's blue
+   (green means "a group", blue means "a group with chosen files") and gains a white ring to stand off any photo. */
+.group-badge.chosen {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px #fff, 0 1px 3px rgba(0, 0, 0, 0.35);
+}
 .cell .group-badge {
   position: absolute;
   left: 6px;
