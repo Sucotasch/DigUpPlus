@@ -18,6 +18,8 @@ builds. <a href="#this-fork-vs-upstream">What it changes over upstream</a>.</p>
 <a href="LICENSE"><img src="https://img.shields.io/github/license/Sucotasch/DigUpPlus?style=flat-square" alt="MIT license"></a>
 </p>
 
+<p align="center">English · <a href="README.ru.md">Русский</a></p>
+
 <p align="center"><img src="docs/demo.gif" width="800" alt="DigUp's search panel on a Mac, on Windows and on Linux: a zebra in a video, a podcast minute, a clause in a lease, a dog on the beach in English, Bengali and Arabic, and code that opens in Zed."></p>
 
 EmbeddingGemma 2 is the multimodal embedding model Google DeepMind released in October 2026. It puts text, images,
@@ -34,8 +36,6 @@ words, and it finds the match, whatever kind of file it is.
 [Code](#code) · [Agents](#agents) · [How it works](#how-it-works) · [For scripts](#for-scripts) ·
 [Build from source](#build-from-source) · [FAQ](#faq) · [Contributing](#contributing) · [Thanks](#thanks) ·
 [License](#license)
-
-По-русски: [README.ru.md](README.ru.md) — краткая русская версия.
 
 ## This fork vs upstream
 
