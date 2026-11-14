@@ -850,6 +850,7 @@ function chip(title, icon, count, selected, action, number) {
 }
 
 function renderContent() {
+  hidePeek();   // the cells are rebuilt: a peek attached to an old one would be stale (and its album with it)
   painted = null;
   thumbnails.disconnect();
   $content.replaceChildren();
@@ -2608,7 +2609,10 @@ function peekOnHover(cell, hit) {
 function showPeek(hit) {
   if (peekHit !== hit) return;
   const group = groupingActive() ? groupOf(hit.path) : null;
-  peekHits = (group ?? [hit.path]).map(hitForPath).filter(Boolean);
+  // Only a folded group is an album: its one card stands for the series, so the wheel turns through it. An open
+  // group's copies are cards of their own, and the wheel on one of them belongs to the list.
+  const album = group && !groupOpen(group) ? group : null;
+  peekHits = (album ?? [hit.path]).map(hitForPath).filter(Boolean);
   if (!peekHits.length) return;
   peekIndex = Math.max(0, peekHits.findIndex((one) => one.path === hit.path));
   peekWheel = 0;

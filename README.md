@@ -51,9 +51,9 @@ here. What this fork changes is what surrounds the engine:
   difference in percent (on the line, and in Settings) says how close two pictures must be. A normal search is unchanged.
 - **A large look on hover.** Rest the pointer on a picture for a moment and it comes up at close to its own size, up to
   the window, with the file's name, kind, date, size and folder along the top, without changing the selection or taking a
-  click; the pointer alone decides, and moving on puts it away. On a look-alike group the **wheel over that picture turns
-  through the group's copies** (`3 of 17`) without opening it. Space still shows the selected result over the whole
-  window.
+  click; the pointer alone decides, and moving on puts it away. On a **folded** look-alike group the wheel over that
+  picture turns through the group's copies (`3 of 17`) without opening it; once the group is open, each copy is its own
+  card and the wheel is the list's. Space still shows the selected result over the whole window.
 - **The index and the model live where you point them.** Settings → Storage: use an index you already have in place
   (nothing is copied, and it is checked to open before it is chosen), move one to another disk, or point at model
   files you already downloaded.
