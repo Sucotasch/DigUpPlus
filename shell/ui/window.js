@@ -783,6 +783,7 @@ function renderGroups() {
         + (pending ? ` · ${pending.toLocaleString()} getting a fingerprint` : "")
       : pending ? `${pending.toLocaleString()} pictures are getting a fingerprint`
       : "No look-alikes grouped";
+  $("groups-count").title = chosen ? "Alt+click a picture to clear its look-alike group's selection" : "";
   $("groups-expand").hidden = !groups.length || !on;
   $("groups-expand").textContent = state.expandAll ? "Collapse all" : "Expand all";
   // The controls say what the window is doing; the number field keeps what is being typed into it.
@@ -1512,6 +1513,20 @@ function selectWholeGroup(path) {
 /// A click on a result: one picks it (and only it), Ctrl adds or takes it away, Shift takes the range from the last
 /// one picked. A document or a piece of code can't be moved, copied or deleted: clicking one clears what was chosen.
 function pick(hit, event) {
+  // Alt+click: let go of this picture's look-alike group, and only it — the fast way out of a whole group being
+  // ticked. The badge keeps its one job (folding); an empty group or no grouping leaves the gesture unused.
+  if (event.altKey && isWindows && MEDIA.has(hit.kind)) {
+    const group = groupingActive() ? groupOf(hit.path) : null;
+    if (!group) return;
+    let cleared = false;
+    for (const path of group) if (state.selected.delete(path)) cleared = true;
+    if (cleared) {
+      state.anchor = hit.path;
+      select(hit.path);
+      paintSelection();
+    }
+    return;
+  }
   if (!isWindows || !MEDIA.has(hit.kind)) {
     clearSelection();
     select(hit.path);

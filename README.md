@@ -187,7 +187,8 @@ the group under the cursor, **Shift+G** for all of them. The same grouping can b
 Settings → Search (off by default, so a normal list stays as it is), and then the line above the results carries the
 switch, the difference and **Groups only** everywhere. Ticking a group's best match takes its copies with it — one
 click for the whole group — and unticking any file, the best match included, leaves the rest: keeping one copy and
-deleting the others is two clicks. Folded copies stay chosen, the badge says how many (`16 of 17 chosen`), and the
+deleting the others is two clicks. **Alt+click** on any picture of a group lets go of just that group's ticked files,
+leaving the rest of the selection alone. Folded copies stay chosen, the badge says how many (`16 of 17 chosen`), and the
 delete sheet says when a group goes whole. **Groups only**, on the line above the results, leaves the pictures that
 look like nothing else out of the list. Independent of meaning, the grouping compares a 256-bit visual fingerprint of
 each picture, so
