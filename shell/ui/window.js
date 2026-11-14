@@ -1512,6 +1512,9 @@ function selectWholeGroup(path) {
 
 /// A click on a result: one picks it (and only it), Ctrl adds or takes it away, Shift takes the range from the last
 /// one picked. A document or a piece of code can't be moved, copied or deleted: clicking one clears what was chosen.
+/// A click on a result moves the cursor (the blue frame and the side preview) and nothing else: ticking is deliberate —
+/// the checkbox, Ctrl/Shift+click, Insert or Ctrl+A — so browsing can't choose a file, or a whole look-alike group, by
+/// accident. A document can't be ticked at all.
 function pick(hit, event) {
   // Alt+click: let go of this picture's look-alike group, and only it — the fast way out of a whole group being
   // ticked. The badge keeps its one job (folding); an empty group or no grouping leaves the gesture unused.
@@ -1528,15 +1531,20 @@ function pick(hit, event) {
     return;
   }
   if (!isWindows || !MEDIA.has(hit.kind)) {
-    clearSelection();
     select(hit.path);
     return;
   }
   const list = operable().map((item) => item.path);
-  if (event.shiftKey && state.anchor && list.includes(state.anchor) && list.includes(hit.path)) {
-    const from = list.indexOf(state.anchor), to = list.indexOf(hit.path);
-    if (!event.ctrlKey && !event.metaKey) state.selected.clear();
-    for (let index = Math.min(from, to); index <= Math.max(from, to); index += 1) state.selected.add(list[index]);
+  if (event.shiftKey) {
+    if (state.anchor && list.includes(state.anchor) && list.includes(hit.path)) {
+      const from = list.indexOf(state.anchor), to = list.indexOf(hit.path);
+      if (!event.ctrlKey && !event.metaKey) state.selected.clear();
+      for (let index = Math.min(from, to); index <= Math.max(from, to); index += 1) state.selected.add(list[index]);
+    } else {
+      state.selected.add(hit.path);
+      selectWholeGroup(hit.path);
+      state.anchor = hit.path;
+    }
   } else if (event.ctrlKey || event.metaKey) {
     if (state.selected.has(hit.path)) state.selected.delete(hit.path);
     else {
@@ -1545,9 +1553,7 @@ function pick(hit, event) {
     }
     state.anchor = hit.path;
   } else {
-    state.selected = new Set([hit.path]);
-    selectWholeGroup(hit.path);
-    state.anchor = hit.path;
+    state.anchor = hit.path;   // where a Shift+click would start from; no file is chosen by it
   }
   select(hit.path);
   paintSelection();
@@ -2562,17 +2568,33 @@ $peek.append($peekPicture, $peekCaption);
 document.body.append($peek);
 
 let peekHit = null;                     // the result the pointer rests on
+let peekCell = null;                    // its element: the wheel belongs to the peek only while it is on this one
 let peekTimer = 0;                      // the 300 ms before its picture comes up
 let peekPoint = { x: 0, y: 0 };         // where the pointer stopped: the picture's bottom-right corner
-let peekWant = null;                    // the render asked for, so an answer (or a failure) for another one is dropped
+let peekHits = [];                      // the group's results (or just the one), in album order
+let peekIndex = 0;                      // which of them is on screen
+let peekShown = null;                   // the path asked for last, so a late answer for another is dropped
+let peekShowing = null;                 // the result on screen: the caption is its
+let peekWant = null;                    // the render asked for, for forgetting a preview the helper has since deleted
+let peekWheel = 0;                      // wheel travel kept, so a touchpad's trickle is one picture per notch
+
+/// The result a group's path names, from everything the window has loaded (folded copies aren't in `rows()`).
+function hitForPath(path) {
+  for (const list of [state.ranked, state.weaker, state.hidden]) {
+    const found = list.find((hit) => hit.path === path);
+    if (found) return found;
+  }
+  return null;
+}
 
 function peekOnHover(cell, hit) {
   if (hit.kind !== "image" && hit.kind !== "screenshot") return;
   cell.addEventListener("pointermove", (event) => {
     if (event.buttons) return hidePeek();               // a drag: nobody is looking at the picture
-    if (peekHit === hit && !$peek.hidden) return;       // up already, and the pointer hasn't left this one
+    if (peekHit === hit && !$peek.hidden) { peekCell = cell; return; }   // up already, still on this one
     if (peekHit !== hit) hidePeek();
     peekHit = hit;
+    peekCell = cell;
     peekPoint = { x: event.clientX, y: event.clientY };
     clearTimeout(peekTimer);
     peekTimer = setTimeout(() => showPeek(hit), PEEK_DELAY);
@@ -2581,25 +2603,45 @@ function peekOnHover(cell, hit) {
   cell.addEventListener("pointerleave", () => { if (peekHit === hit) hidePeek(); });
 }
 
+/// Shows the picture under the pointer, and the group it belongs to behind it: the wheel turns through the group like
+/// an album, without opening it.
 function showPeek(hit) {
   if (peekHit !== hit) return;
+  const group = groupingActive() ? groupOf(hit.path) : null;
+  peekHits = (group ?? [hit.path]).map(hitForPath).filter(Boolean);
+  if (!peekHits.length) return;
+  peekIndex = Math.max(0, peekHits.findIndex((one) => one.path === hit.path));
+  peekWheel = 0;
+  renderPeek(peekHits[peekIndex]);
+}
+
+function renderPeek(hit) {
   const what = renderOf(hit);
-  if (!what) return;
+  if (!what) return hidePeek();
   // The size Space asks for: one render serves both, and hovering warms what Space will show.
   const pixels = Math.round(Math.max(innerWidth, innerHeight) * (window.devicePixelRatio || 1));
+  peekShown = hit.path;
   peekWant = { path: hit.path, kind: what[0], loc: what[1], pixels };
   rendered(hit.path, what[0], what[1], pixels).then((file) => {
-    if (peekWant?.path !== hit.path || peekHit !== hit) return;
+    if (peekShown !== hit.path) return;
+    peekShowing = hit;
     $peekPicture.onload = placePeek;
     $peekPicture.src = fileURL(file);
     if ($peekPicture.complete) placePeek();
   }).catch(hidePeek);
 }
 
+/// One wheel notch: the next picture of the group, round the end.
+function cyclePeek(step) {
+  if (peekHits.length < 2) return;
+  peekIndex = (peekIndex + step + peekHits.length) % peekHits.length;
+  renderPeek(peekHits[peekIndex]);
+}
+
 /// The picture's bottom-right corner at the pointer, then inside the window; never larger than the picture itself.
 function placePeek() {
   const naturalWidth = $peekPicture.naturalWidth, naturalHeight = $peekPicture.naturalHeight;
-  if (!naturalWidth || !naturalHeight || !peekHit) return hidePeek();
+  if (!naturalWidth || !naturalHeight || !peekHit || !peekShowing) return hidePeek();
   const roomWidth = Math.max(320, innerWidth - PEEK_GAP * 2);
   const roomHeight = Math.max(240, innerHeight - PEEK_GAP * 2);
   const scale = Math.min(1, roomWidth / naturalWidth, roomHeight / naturalHeight);
@@ -2609,10 +2651,11 @@ function placePeek() {
   $peek.style.left = `${Math.max(PEEK_GAP, Math.min(innerWidth - PEEK_GAP - width, peekPoint.x - width))}px`;
   $peek.style.top = `${Math.max(PEEK_GAP, Math.min(innerHeight - PEEK_GAP - height, peekPoint.y - height))}px`;
   // What the file is: the side pane's line, so the two can't drift apart; a narrow picture drops the folder to keep
-  // the strip from covering it.
-  $peekName.textContent = nameOf(peekHit.path);
-  $peekFacts.textContent = details(peekHit);
-  $peekPlace.textContent = folderOf(peekHit);
+  // the strip from covering it. In a group, where this one sits in the album.
+  const at = peekHits.findIndex((one) => one.path === peekShowing.path) + 1;
+  $peekName.textContent = nameOf(peekShowing.path);
+  $peekFacts.textContent = (peekHits.length > 1 ? `${at} of ${peekHits.length} · ` : "") + details(peekShowing);
+  $peekPlace.textContent = folderOf(peekShowing);
   $peek.classList.toggle("small", width < 260);
   $peek.hidden = false;
 }
@@ -2620,7 +2663,13 @@ function placePeek() {
 function hidePeek() {
   clearTimeout(peekTimer);
   peekHit = null;
+  peekCell = null;
+  peekHits = [];
+  peekIndex = 0;
+  peekShown = null;
+  peekShowing = null;
   peekWant = null;
+  peekWheel = 0;
   $peek.hidden = true;
 }
 
@@ -2635,7 +2684,26 @@ $peekPicture.onerror = () => {
 // Anything that means the pointer isn't just resting on a picture puts it away.
 $content.addEventListener("scroll", hidePeek, { passive: true });
 document.addEventListener("pointerdown", hidePeek, true);
-document.addEventListener("wheel", hidePeek, { passive: true, capture: true });
+
+/// The wheel over the peek turns through its group (and doesn't scroll the list under it); anywhere else it puts the
+/// peek away, as it always did. A mouse notch is ~100, a touchpad's trickle a few pixels at a time, so the travel is
+/// added up: one picture per notch, however it arrives.
+document.addEventListener("wheel", (event) => {
+  if ($peek.hidden) return;
+  const under = document.elementFromPoint(event.clientX, event.clientY);
+  const overIt = under instanceof Element && peekCell && under.closest(".cell") === peekCell;
+  if (!overIt || peekHits.length < 2 || !event.deltaY) {
+    hidePeek();
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (Math.sign(peekWheel) !== Math.sign(event.deltaY)) peekWheel = 0;
+  peekWheel += event.deltaY;
+  if (Math.abs(peekWheel) < 60) return;
+  peekWheel = 0;
+  cyclePeek(event.deltaY > 0 ? 1 : -1);
+}, { passive: false, capture: true });
 document.addEventListener("keydown", hidePeek, true);
 document.addEventListener("contextmenu", hidePeek, true);
 window.addEventListener("blur", hidePeek);

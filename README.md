@@ -51,7 +51,8 @@ here. What this fork changes is what surrounds the engine:
   difference in percent (on the line, and in Settings) says how close two pictures must be. A normal search is unchanged.
 - **A large look on hover.** Rest the pointer on a picture for a moment and it comes up at close to its own size, up to
   the window, with the file's name, kind, date, size and folder along the top, without changing the selection or taking a
-  click; the pointer alone decides, and moving on puts it away. Space still shows the selected result over the whole
+  click; the pointer alone decides, and moving on puts it away. On a look-alike group the **wheel over that picture turns
+  through the group's copies** (`3 of 17`) without opening it. Space still shows the selected result over the whole
   window.
 - **The index and the model live where you point them.** Settings → Storage: use an index you already have in place
   (nothing is copied, and it is checked to open before it is chosen), move one to another disk, or point at model
@@ -140,6 +141,7 @@ the full package.
 | Ctrl+Enter | Shows it in Explorer or your file manager |
 | ⌘C | Ctrl+C (in the window) | Copies the file, to paste anywhere |
 | ⌘O | Ctrl+O | The same search in a bigger window, with a picture grid and filters |
+| — | Clicking a picture | Moves the preview cursor; ticks nothing (the box on the picture, or Ctrl/Shift+click, ticks) |
 | — | Insert / Ctrl+A | Selects results in the big window to copy, move or delete (Windows; Ctrl+A outside the search field) |
 | — | Tab | Switches the keyboard between the search field and the results (big window) |
 | — | Del | Deletes the file under the cursor, or the ticked ones (Windows); Enter confirms the Recycle Bin sheet |
@@ -158,7 +160,9 @@ Closing the window with its **X quits DigUp Plus outright** (indexing pauses and
 **Esc** and **Ctrl+W** put the window away into the tray instead — the app keeps running and indexing.
 
 On Windows, the big window can move, copy and delete the pictures, screenshots, video and audio a search shows:
-select them and use the bar under the results or the right-click menu. A name that's taken gets a number
+tick the ones you mean with the box on the picture (or Ctrl/Shift+click, or Ctrl+A) and use the bar under the results
+or the right-click menu. A plain click only moves the cursor and the preview, so opening, dragging or simply looking at
+a picture chooses nothing. A name that's taken gets a number
 (`photo (2).jpg`) instead of overwriting a file; Delete goes to the Recycle Bin, and the confirmation sheet opens with
 the keyboard on the delete itself (Enter confirms, Escape keeps the files). If a path is too long for the Recycle
 Bin, DigUp lists the affected folders and offers a separate permanent delete only after you confirm that it cannot be
