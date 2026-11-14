@@ -1123,7 +1123,7 @@ function cell(hit) {
 }
 
 /// A click on the checkbox is the same choice as a click on the picture: plain takes it (a group's best match takes
-/// the group), Shift+click takes the range from the last one, Ctrl/⌘ toggles one.
+/// the group), Shift+click takes the range from the last one, Alt+click lets go of its group, Ctrl/⌘ toggles one.
 function checkboxFor(hit) {
   const box = element("button", "checkbox");
   box.type = "button";
@@ -1134,7 +1134,7 @@ function checkboxFor(hit) {
   box.onmousedown = (event) => { event.stopPropagation(); event.preventDefault(); };
   box.onclick = (event) => {
     event.stopPropagation();
-    if (event.shiftKey) { pick(hit, event); return; }
+    if (event.shiftKey || event.altKey) { pick(hit, event); return; }
     toggleSelected(hit.path);
   };
   return box;
