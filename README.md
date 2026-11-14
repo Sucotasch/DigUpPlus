@@ -29,6 +29,11 @@ DigUp brings that to the files on your computer. Pick the folders to search, and
 reads the pictures, PDFs, documents, recordings and videos in them. Then describe what you're looking for, in your own
 words, and it finds the match, whatever kind of file it is.
 
+**Contents:** [This fork vs upstream](#this-fork-vs-upstream) · [What you can find](#what-you-can-find) ·
+[Private](#private) · [Install](#install) · [Using it](#using-it) · [What it reads](#what-it-reads) ·
+[Code](#code) · [Agents](#agents) · [How it works](#how-it-works) · [For scripts](#for-scripts) ·
+[Build from source](#build-from-source) · [FAQ](#faq) · [Contributing](#contributing) · [Thanks](#thanks)
+
 ## This fork vs upstream
 
 The engine is the same Swift code as upstream's: one `DigUpKit` behind the app shell, the same model, the same index
@@ -142,6 +147,8 @@ the full package.
 | ⌘C | Ctrl+C (in the window) | Copies the file, to paste anywhere |
 | ⌘O | Ctrl+O | The same search in a bigger window, with a picture grid and filters |
 | — | Clicking a picture | Moves the preview cursor; ticks nothing (the box on the picture, or Ctrl/Shift+click, ticks) |
+| — | Shift+arrows | Extends the ticked range, a row at a time in the grid (Windows) |
+| — | Alt+click | Lets go of that look-alike group's ticked files (Find similar) |
 | — | Insert / Ctrl+A | Selects results in the big window to copy, move or delete (Windows; Ctrl+A outside the search field) |
 | — | Tab | Switches the keyboard between the search field and the results (big window) |
 | — | Del | Deletes the file under the cursor, or the ticked ones (Windows); Enter confirms the Recycle Bin sheet |
@@ -296,6 +303,32 @@ them with PDFium, ffmpeg, stb and miniz, and the app around it is built with [Ta
 
 The index remembers which model version made its vectors. An update that leaves the vectors unchanged keeps your
 index, and a test checks every llama.cpp update against stored reference vectors before it ships.
+
+## For scripts
+
+The engine is also a command-line program: `helper\digup.exe` in the unpacked folder, or `digup` built from source. It
+takes the index folder with `--index` and the model from `DIGUP_MODELS`:
+
+```powershell
+$env:DIGUP_MODELS = ".\data\models"
+
+# what a folder would cost to index, without indexing it
+.\helper\digup.exe estimate "D:\Photos" --index ".\data\index" --json
+
+# the same ranking the window shows, for a script
+.\helper\digup.exe search "clause about pets" --index ".\data\index" --kind pdf -n 20 --json
+
+# look-alike fingerprints for pictures indexed before Find similar knew them
+.\helper\digup.exe phash --index ".\data\index" --threads 6
+
+# a chosen folder moved: rewrite its rows without re-embedding (without --apply it only reports)
+.\helper\digup.exe repick --index ".\data\index" --from "D:\Old" --to "E:\New" --apply
+
+# the MCP config for an agent (the tools and their limits: docs/agent-access.md)
+.\helper\digup.exe mcp --index ".\data\index" --root "D:\Documents" --print-config claude-desktop
+```
+
+`digup --help` lists the rest — `status`, `speed`, `eval`, `forget`, `download-model`, the helper services.
 
 ## Build from source
 
