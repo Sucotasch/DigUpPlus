@@ -211,7 +211,7 @@ runtime, Swift runtime, C++ CRT, ffmpeg/ffprobe) → `scripts/notices.py` → `n
 --bundles nsis` с `helper/` и `THIRD-PARTY-NOTICES.txt` как resources.
 
 Выход: `shell/src-tauri/target/release/bundle/nsis/DigUp Plus_<version>_x64-setup.exe` (~440 МБ).
-Версия берётся из `shell/src-tauri/tauri.conf.json` (сейчас `0.1.13`), не из `Cargo.toml` (там `0.1.0` у пакета
+Версия берётся из `shell/src-tauri/tauri.conf.json` (сейчас `0.1.14`), не из `Cargo.toml` (там `0.1.0` у пакета
 оболочки, но имя файла и настройки идут от `tauri.conf.json`). Подписи и update-артефактов больше нет: `signing` из
 скрипта убран вместе с плагином updater.
 
@@ -368,13 +368,14 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
 - `node --check` по всем `shell/ui/*.js` — чисто;
 - пер-корневые правила (типы, top-level-only), пороги поиска и записи по тегам проверены на живой сборке:
   `docs/per-folder-rules-plan.md` §1.8, «Фаза 2», «Фаза 3»;
-- версия в `tauri.conf.json` — `0.1.13` (0.1.6 выпущен 2026-11-04; 0.1.7–0.1.9 выпущены 2026-11-05 одним тегом
+- версия в `tauri.conf.json` — `0.1.14` (0.1.6 выпущен 2026-11-04; 0.1.7–0.1.9 выпущены 2026-11-05 одним тегом
   `v0.1.9`: аудио по правилам папки, Rescan/Re-read, надёжность инкремента, MCP; 0.1.10 выпущен 2026-11-12:
   жизненный цикл папки (Re-pick, пустая папка), пакет из upstream и исправление выделения; 0.1.11 выпущен
   2026-11-12: результаты окна открываются списком в панели Total Commander; helper не менялся, поэтому к полному
   zip приложен `-shell-only.zip`; 0.1.13 выпущен 2026-11-13: группы похожих по облику в Find similar (с клавишей
   `G`/`Shift+G`), подсказка картинки при наведении, WIC-декод JPEG (досчёт отпечатков 8.3 → 6.4 мс на картинку) и
-  исправление порванных превью; helper изменился, поэтому нужен полный zip);
+  исправление порванных превью; helper изменился, поэтому нужен полный zip; в дереве — `0.1.14`: группы в табличном
+  виде, «Groups only», выделение группы целиком и подпись на подсказке при наведении);
 - на 2026-11-13: `python .build/swift_test.py` — 194 теста, 193 прошли (тот же symlink-тест), `cargo test --locked`
   — 75; `docs/hover-peek-plan.md` и `docs/wic-decode-plan.md` описывают две последние работы;
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`

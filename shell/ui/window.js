@@ -92,6 +92,7 @@ const state = {
   groupOpen: new Map(),
   expandAll: false,
   grouping: true,
+  onlyGroups: false,     // Find similar: leave the pictures that look like nothing else out of the list
   groupDifference: 6,
   groupingPending: 0,
   groupTries: 0,
@@ -433,13 +434,13 @@ function appendHits(strongHits, weakHits) {
       body.append(weakerRow);
     }
     if (!state.sort) {
-      for (const hit of strongHits) {
+      for (const hit of shownHits(strongHits)) {
         const row = tableRow(hit);
         if (weakerRow) body.insertBefore(row, weakerRow); else body.append(row);
       }
       // A fold opened for the first time shows the weaker rows the first page had put there as well.
       const weak = freshWeak ? state.weaker : weakHits;
-      if (weak.length && state.showWeaker) for (const hit of weak) body.append(tableRow(hit));
+      if (weak.length && state.showWeaker) for (const hit of shownHits(weak)) body.append(tableRow(hit));
       return true;
     }
     // Sorted: insert each row where it belongs between the rows already there, instead of redrawing the whole table
@@ -465,12 +466,12 @@ function appendHits(strongHits, weakHits) {
       body.insertBefore(row, rows[low] ?? before ?? null);
       rows.splice(low, 0, row);
     };
-    for (const hit of sortedHits(strongHits)) insert(strongRows, hit, tableRow(hit), weakerRow);
+    for (const hit of shownHits(sortedHits(strongHits))) insert(strongRows, hit, tableRow(hit), weakerRow);
     if (weakHits.length && state.showWeaker) {
       if (!weakerRow) return false;
       // On a first fold, render the weak rows already received as well; later pages only add their own.
       const weak = weakRows.length === 0 ? state.weaker : weakHits;
-      for (const hit of sortedHits(weak)) insert(weakRows, hit, tableRow(hit), null);
+      for (const hit of shownHits(sortedHits(weak))) insert(weakRows, hit, tableRow(hit), null);
     }
     return true;
   }
@@ -542,9 +543,33 @@ function setFilter(key) {
 
 /// Every result shown, in the order it's shown: the strong ones, then the weaker ones once they're unfolded; in the
 /// table, each group by the column chosen.
-/// Whether the window groups its results now: Find similar, pictures, the grid, and the setting on.
+/// Whether the window groups its results now: Find similar, pictures, and the setting on. The view doesn't matter: the
+/// table folds the same way (a swipe through the views must not lose the groups).
 function groupingActive() {
-  return Boolean(state.like) && state.grouping && !isCode() && state.view === "grid";
+  return Boolean(state.like) && state.grouping && !isCode();
+}
+
+/// The badge a group's representative carries: "+N" while folded, "−N" while open. The grid puts it on the picture, the
+/// table beside the name; either way a click toggles the group, as G does for the result under the cursor.
+function groupBadge(hit) {
+  const group = groupOf(hit.path);
+  if (!group || hit.path !== group[0]) return null;
+  const badge = element("button", "group-badge", `${groupOpen(group) ? "−" : "+"}${group.length - 1}`);
+  badge.type = "button";
+  badge.dataset.group = group[0];
+  badge.setAttribute("aria-expanded", String(groupOpen(group)));
+  badge.onmousedown = (event) => { event.stopPropagation(); event.preventDefault(); };
+  badge.onclick = (event) => { event.stopPropagation(); toggleGroup(group); };
+  decorateGroupBadge(badge, group);
+  return badge;
+}
+
+/// Says how many of the group's files are chosen, so a folded group with hidden copies shows it at a glance.
+function decorateGroupBadge(badge, group) {
+  const chosen = group.filter((path) => state.selected.has(path)).length;
+  badge.classList.toggle("chosen", chosen > 0);
+  badge.title = (groupOpen(group) ? "Fold these look-alikes (G)" : `${group.length - 1} more like this (G)`)
+    + (chosen ? ` · ${chosen} of ${group.length} chosen` : "");
 }
 
 function groupOf(path) {
@@ -562,7 +587,13 @@ function groupEntries(list) {
   const entries = [];
   for (const hit of list) {
     const group = groupOf(hit.path);
-    if (!group || !index.has(group[0])) { entries.push({ hit }); continue; }
+    // "Groups only": a picture that looks like nothing else is left out; a copy keeps its place when the picture it
+    // belongs to ranks outside this list (that is where the list shows it).
+    if (!group) {
+      if (!state.onlyGroups) entries.push({ hit });
+      continue;
+    }
+    if (!index.has(group[0])) { entries.push({ hit }); continue; }
     if (hit.path !== group[0]) continue;
     if (!groupOpen(group)) { entries.push({ hit }); continue; }
     entries.push({ group: group.map((path) => list[index.get(path)]).filter(Boolean) });
@@ -594,11 +625,17 @@ function clearGroups() {
   state.expandAll = false;
 }
 
-/// What a fold leaves: chosen paths that are no longer shown leave the selection, and the cursor moves to a picture
-/// that is.
+/// What a fold leaves: a chosen file that is no longer shown leaves the selection, unless it is one of a group's
+/// copies folded under its representative — those stay chosen (that is what ticking the group is for), and the
+/// representative's badge says how many. The cursor moves to a picture that is shown.
 function settleSelection() {
   const shown = new Set(rows().map((hit) => hit.path));
-  for (const path of state.selected) if (!shown.has(path)) state.selected.delete(path);
+  for (const path of [...state.selected]) {
+    if (shown.has(path)) continue;
+    const group = groupOf(path);
+    if (group && group[0] !== path && shown.has(group[0])) continue;
+    state.selected.delete(path);
+  }
   if (state.anchor && !shown.has(state.anchor)) state.anchor = null;
   if (state.selection && !shown.has(state.selection)) state.selection = rows()[0]?.path ?? null;
 }
@@ -654,17 +691,8 @@ async function refreshGroups() {
   }
 }
 
-/// Opens or folds one group; a single choice steps out of "Expand all" without folding the others.
-function toggleGroup(group) {
-  const opening = !groupOpen(group);
-  // Leaving "Expand all": every group keeps what it was showing, and only this one changes.
-  if (state.expandAll) {
-    for (const other of state.groups ?? []) state.groupOpen.set(other[0], state.expandAll);
-    state.expandAll = false;
-  }
-  state.groupOpen.set(group[0], opening);
-  // Folding with the cursor on a copy: it lands on the picture the group folds under, not at the top of the list.
-  if (!opening && state.selection && group.includes(state.selection)) state.selection = group[0];
+/// Redraws what a change to the grouping touches, keeping the scroll place (opening a group must not jump the list).
+function redrawGroups() {
   settleSelection();
   painted = null;
   const scroll = $content.scrollTop;
@@ -676,19 +704,25 @@ function toggleGroup(group) {
   renderStatus();
 }
 
+/// Opens or folds one group; a single choice steps out of "Expand all" without folding the others.
+function toggleGroup(group) {
+  const opening = !groupOpen(group);
+  // Leaving "Expand all": every group keeps what it was showing, and only this one changes.
+  if (state.expandAll) {
+    for (const other of state.groups ?? []) state.groupOpen.set(other[0], state.expandAll);
+    state.expandAll = false;
+  }
+  state.groupOpen.set(group[0], opening);
+  // Folding with the cursor on a copy: it lands on the picture the group folds under, not at the top of the list.
+  if (!opening && state.selection && group.includes(state.selection)) state.selection = group[0];
+  redrawGroups();
+}
+
 /// Expand all, or fold every group back (the line's button, and Shift+G).
 function toggleAllGroups() {
   state.expandAll = !state.expandAll;
   state.groupOpen.clear();
-  settleSelection();
-  painted = null;
-  const scroll = $content.scrollTop;
-  renderContent();
-  $content.scrollTop = scroll;
-  renderSide();
-  renderBatch();
-  renderGroups();
-  renderStatus();
+  redrawGroups();
 }
 
 /// The Group look-alikes switch: off shows the list flat, on asks the helper for the groups again.
@@ -740,6 +774,7 @@ function renderGroups() {
     : groups.length
       ? `${groups.length.toLocaleString()} ${groups.length === 1 ? "group" : "groups"}`
         + (folded ? ` · ${folded.toLocaleString()} folded` : " · all shown")
+        + (state.onlyGroups ? " · groups only" : "")
         + (pending ? ` · ${pending.toLocaleString()} getting a fingerprint` : "")
       : pending ? `${pending.toLocaleString()} pictures are getting a fingerprint`
       : "No look-alikes grouped";
@@ -813,6 +848,9 @@ function renderContent() {
   else if (state.codePhase) $content.append(codeHintOrOff());
   else if (!state.hasResults) $content.append(centered(element("div", "spinner")));
   else if (!state.ranked.length && !state.weaker.length && !state.hiddenTotal) $content.append(nothingFound());
+  else if (groupingActive() && state.onlyGroups && !state.groups?.length) {
+    $content.append(centered(element("div", "tier-note", "No look-alikes at this difference.")));
+  }
   else if (isCode()) $content.append(codeList());
   else if (state.view === "table") $content.append(resultsTable());
   else $content.append(grid());
@@ -874,15 +912,15 @@ function resultsTable() {
   }
   head.append(headRow);
   const body = element("tbody");
-  for (const hit of sortedHits(state.ranked)) body.append(tableRow(hit));
+  for (const hit of shownHits(sortedHits(state.ranked))) body.append(tableRow(hit));
   if (state.weaker.length) {
     body.append(weakerTableRow());
-    if (state.showWeaker) for (const hit of sortedHits(state.weaker)) body.append(tableRow(hit));
+    if (state.showWeaker) for (const hit of shownHits(sortedHits(state.weaker))) body.append(tableRow(hit));
   }
   if (state.tiered && (state.hiddenTotal > 0 || state.hidden.length)) {
     body.append(hiddenTableRow());
     if (state.showHidden) {
-      for (const hit of sortedHits(state.hidden)) body.append(tableRow(hit));
+      for (const hit of shownHits(sortedHits(state.hidden))) body.append(tableRow(hit));
       if (state.hiddenOffset < state.hiddenTotal) body.append(hiddenMoreRow());
     }
   }
@@ -947,6 +985,9 @@ function tableRow(hit) {
   name.append(icon, text);
   const place = placeOf(hit);
   if (place) name.append(element("span", "place", place));
+  const group = groupingActive() ? groupOf(hit.path) : null;
+  if (group && hit.path === group[0]) name.append(groupBadge(hit));
+  else if (group) row.classList.add("group-member");
   nameCell.append(name);
   const type = typeOf(hit), date = dateOf(hit.modified), properties = propertiesOf(hit);
   const typeCell = tableCell("type", type);
@@ -1056,14 +1097,7 @@ function cell(hit) {
   }
   const group = groupingActive() ? groupOf(hit.path) : null;
   if (group && hit.path === group[0]) {
-    const open = groupOpen(group);
-    const badge = element("button", "group-badge", `${open ? "−" : "+"}${group.length - 1}`);
-    badge.type = "button";
-    badge.title = open ? `Fold these look-alikes (G)` : `${group.length - 1} more like this (G)`;
-    badge.setAttribute("aria-expanded", String(open));
-    badge.onmousedown = (event) => { event.stopPropagation(); event.preventDefault(); };
-    badge.onclick = (event) => { event.stopPropagation(); toggleGroup(group); };
-    picture.append(badge);
+    picture.append(groupBadge(hit));
   } else if (group) {
     item.classList.add("group-member");
   }
@@ -1392,9 +1426,11 @@ function operable() {
   });
 }
 
-/// The chosen results, in the order they're shown (a path chosen and since gone is left out).
+/// The chosen results, in the order they're shown (a path chosen and since gone is left out). Folded copies count:
+/// an operation on a group acts on all of it, not only on the representative left in sight.
 function selectedHits() {
-  const byPath = new Map(operable().map((hit) => [hit.path, hit]));
+  const known = [...state.ranked, ...(state.showWeaker ? state.weaker : []), ...(state.showHidden ? state.hidden : [])];
+  const byPath = new Map(known.map((hit) => [hit.path, hit]));
   return [...state.selected].map((path) => byPath.get(path)).filter(Boolean);
 }
 
@@ -1441,13 +1477,22 @@ function selectAll() {
 }
 
 function toggleSelected(path) {
-  if (state.selected.has(path)) state.selected.delete(path);
-  else {
+  if (state.selected.has(path)) {
+    // Off one file only, even for a group's representative: "keep this one and drop the copies" stays one click.
+    state.selected.delete(path);
+  } else {
     state.selected.add(path);
+    selectWholeGroup(path);
     state.anchor = path;
   }
   state.navigated = true;
   paintSelection();
+}
+
+/// A representative taken as a whole: its copies come with it. Ticking a copy takes only that copy.
+function selectWholeGroup(path) {
+  const group = groupingActive() ? groupOf(path) : null;
+  if (group && group[0] === path) for (const member of group) state.selected.add(member);
 }
 
 /// A click on a result: one picks it (and only it), Ctrl adds or takes it away, Shift takes the range from the last
@@ -1465,10 +1510,14 @@ function pick(hit, event) {
     for (let index = Math.min(from, to); index <= Math.max(from, to); index += 1) state.selected.add(list[index]);
   } else if (event.ctrlKey || event.metaKey) {
     if (state.selected.has(hit.path)) state.selected.delete(hit.path);
-    else state.selected.add(hit.path);
+    else {
+      state.selected.add(hit.path);
+      selectWholeGroup(hit.path);
+    }
     state.anchor = hit.path;
   } else {
     state.selected = new Set([hit.path]);
+    selectWholeGroup(hit.path);
     state.anchor = hit.path;
   }
   select(hit.path);
@@ -1510,9 +1559,18 @@ function paintSelection() {
     for (const item of $content.querySelectorAll("[data-path]")) paint(item);
   }
   painted = new Set(state.selected);
+  paintGroupBadges();
   renderBatch();
   renderSide();
   renderStatus();
+}
+
+/// A group's badge says when some of its files are chosen — folded copies included, so a hidden selection is visible.
+function paintGroupBadges() {
+  for (const badge of $content.querySelectorAll(".group-badge")) {
+    const group = groupOf(badge.dataset.group);
+    if (group) decorateGroupBadge(badge, group);
+  }
 }
 
 function copyPaths() {
@@ -1724,6 +1782,17 @@ async function confirmDelete() {
     box.append(element("h2", "", `Move ${files.length === 1 ? "this file" : `${files.length} files`} to the Recycle Bin?`));
     box.append(element("p", "", `${bytes(selectedSize(files))}. You can put ${files.length === 1 ? "it" : "them"} back `
       + `from the Recycle Bin. A file too large for it may be deleted for good instead; Windows asks before that.`));
+    // A group taken whole goes as a whole, folded copies included: say so, so a series is not deleted unaware.
+    const byGroup = new Map();
+    for (const hit of files) {
+      const group = groupOf(hit.path);
+      if (group) byGroup.set(group[0], (byGroup.get(group[0]) ?? 0) + 1);
+    }
+    const whole = [...byGroup.values()].filter((count) => count > 1).length;
+    if (whole) {
+      box.append(element("p", "", `${whole === 1 ? "One of them is a group" : `${whole} of them are groups`} of `
+        + `look-alikes taken whole: every copy in ${whole === 1 ? "it" : "them"} goes as well.`));
+    }
     const actions = element("div", "modal-actions");
     const cancel = element("button", "", "Cancel");
     cancel.onclick = closeModal;
@@ -2451,7 +2520,14 @@ const $peek = element("div", "peek");
 $peek.hidden = true;
 const $peekPicture = element("img");
 $peekPicture.alt = "";
-$peek.append($peekPicture);
+// The strip along the top: the pointer rests at the picture's bottom-right corner, so the top is the one part of it the
+// pointer never covers.
+const $peekCaption = element("div", "peek-caption");
+const $peekName = element("div", "peek-name");
+const $peekFacts = element("div", "peek-facts");
+const $peekPlace = element("div", "peek-place");
+$peekCaption.append($peekName, $peekFacts, $peekPlace);
+$peek.append($peekPicture, $peekCaption);
 document.body.append($peek);
 
 let peekHit = null;                     // the result the pointer rests on
@@ -2492,7 +2568,7 @@ function showPeek(hit) {
 /// The picture's bottom-right corner at the pointer, then inside the window; never larger than the picture itself.
 function placePeek() {
   const naturalWidth = $peekPicture.naturalWidth, naturalHeight = $peekPicture.naturalHeight;
-  if (!naturalWidth || !naturalHeight) return hidePeek();
+  if (!naturalWidth || !naturalHeight || !peekHit) return hidePeek();
   const roomWidth = Math.max(320, innerWidth - PEEK_GAP * 2);
   const roomHeight = Math.max(240, innerHeight - PEEK_GAP * 2);
   const scale = Math.min(1, roomWidth / naturalWidth, roomHeight / naturalHeight);
@@ -2501,6 +2577,12 @@ function placePeek() {
   $peekPicture.style.height = `${height}px`;
   $peek.style.left = `${Math.max(PEEK_GAP, Math.min(innerWidth - PEEK_GAP - width, peekPoint.x - width))}px`;
   $peek.style.top = `${Math.max(PEEK_GAP, Math.min(innerHeight - PEEK_GAP - height, peekPoint.y - height))}px`;
+  // What the file is: the side pane's line, so the two can't drift apart; a narrow picture drops the folder to keep
+  // the strip from covering it.
+  $peekName.textContent = nameOf(peekHit.path);
+  $peekFacts.textContent = details(peekHit);
+  $peekPlace.textContent = folderOf(peekHit);
+  $peek.classList.toggle("small", width < 260);
   $peek.hidden = false;
 }
 
@@ -2847,6 +2929,7 @@ $("groups-difference").onclick = () => {
   panel.hidden = !panel.hidden;
   if (!panel.hidden) {
     $("group-on").checked = state.grouping;
+    $("group-only").checked = state.onlyGroups;
     $("group-difference").value = state.groupDifference;
     $("group-difference").focus();
     $("group-difference").select();
@@ -2858,6 +2941,12 @@ $("group-on").onchange = () => {
   state.grouping = $("group-on").checked;
   saveLookalike();
   applyGrouping();
+};
+// "Groups only" is a view of the list, not a setting: it leaves the pictures that look like nothing else out, so a
+// series can be worked through without the singles in between.
+$("group-only").onchange = () => {
+  state.onlyGroups = $("group-only").checked;
+  redrawGroups();
 };
 let groupTyping = null;   // ms after the last keystroke until the difference is applied
 $("group-difference").oninput = () => {

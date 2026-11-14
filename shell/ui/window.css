@@ -273,13 +273,10 @@ svg { display: block; }
 }
 .cell .checkbox:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* Find similar's look-alikes: the cell that stands for a group carries how many others it holds; its members show a
-   small accent dot before the name, so a series reads as one thing. */
-.cell .group-badge {
-  position: absolute;
-  left: 6px;
-  bottom: 6px;
-  z-index: 1;
+/* Find similar's look-alikes: the result that stands for a group carries how many others it holds; its members show a
+   small accent dot before the name, so a series reads as one thing. In the grid the badge lies on the picture, in the
+   table it follows the name. */
+.group-badge {
   min-width: 26px;
   height: 22px;
   padding: 0 8px;
@@ -294,8 +291,34 @@ svg { display: block; }
   font-variant-numeric: tabular-nums;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
-.cell .group-badge:hover { background: var(--moss); }
-.cell .group-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.group-badge:hover { background: var(--moss); }
+.group-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Some of the group's files are chosen: the folded copies are hidden, so the badge carries the fact. */
+.group-badge.chosen { box-shadow: 0 0 0 2px var(--accent), 0 1px 3px rgba(0, 0, 0, 0.3); }
+.cell .group-badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  z-index: 1;
+}
+.results-table .group-badge {
+  flex: none;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  font-size: 10.5px;
+}
+.results-table tr.group-member .name::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
 .cell.group-member .name::before {
   content: "";
   display: inline-block;
@@ -1020,3 +1043,20 @@ svg { display: block; }
 }
 .peek[hidden] { display: none; }
 .peek img { display: block; }
+/* The file's line sits along the top: the pointer is at the picture's bottom-right corner, so this corner stays clear. */
+.peek-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  padding: 9px 12px 20px;
+  background: linear-gradient(rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0));
+  color: white;
+  font-size: 12px;
+  line-height: 1.35;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+.peek-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.peek-facts { opacity: 0.85; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.peek-place { opacity: 0.72; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.peek.small .peek-place { display: none; }
