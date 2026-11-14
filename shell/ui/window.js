@@ -1348,27 +1348,25 @@ function wire(item, hit) {
   item.ondblclick = () => open(hit);
   item.oncontextmenu = (event) => {
     event.preventDefault();
-    if (isWindows && MEDIA.has(hit.kind)) {
-      // On one of the chosen files: the menu works on all of them; on another: it chooses that one first.
-      if (!state.selected.has(hit.path)) { state.selected = new Set([hit.path]); state.anchor = hit.path; }
-      select(hit.path);
-      paintSelection();
-    } else {
-      clearSelection();
-      select(hit.path);
-    }
-    const chosen = selectedHits();
+    // The menu acts on what was clicked — every ticked file when it is one of them, just this file otherwise — and
+    // never changes the selection: a right click is how one opens a menu, not how one chooses files.
+    select(hit.path);
+    const ticked = state.selected.has(hit.path) ? selectedHits() : [];
+    const media = isWindows && MEDIA.has(hit.kind);
+    const fileTargets = ticked.length ? ticked : media ? [hit] : [];
+    const pathTargets = ticked.length ? ticked : [hit];
     const items = [
       ["Open", () => open(hit)],
       [`Show in ${FILE_MANAGER}`, () => reveal(hit)],
       null,
       ["Copy", () => invoke("copy_file", { path: hit.path }).catch(failed)],
-      [chosen.length > 1 ? "Copy Paths" : "Copy Path", copyPaths],
+      [pathTargets.length > 1 ? "Copy Paths" : "Copy Path", () => copyPaths(pathTargets)],
     ];
     if (MEDIA.has(hit.kind)) items.push(null, ["Find similar", () => findSimilar(hit)]);
-    if (isWindows && chosen.length) {
-      items.push(null, ["Move To…", () => moveOrCopy("move")], ["Copy To…", () => moveOrCopy("copy")],
-                 ["Delete (Recycle Bin)", confirmDelete]);
+    if (fileTargets.length) {
+      items.push(null, ["Move To…", () => moveOrCopy("move", fileTargets)],
+                 ["Copy To…", () => moveOrCopy("copy", fileTargets)],
+                 ["Delete (Recycle Bin)", () => confirmDelete(fileTargets)]);
     }
     showMenu(event.clientX, event.clientY, items);
   };
@@ -1611,9 +1609,9 @@ function paintGroupBadges() {
   }
 }
 
-function copyPaths() {
-  const chosen = selectedHits();
-  const paths = chosen.length ? chosen.map((hit) => hit.path) : [state.selection].filter(Boolean);
+function copyPaths(chosen = null) {
+  const hits = chosen ?? selectedHits();
+  const paths = hits.length ? hits.map((hit) => hit.path) : [state.selection].filter(Boolean);
   if (!paths.length) return;
   navigator.clipboard.writeText(paths.join("\n"))
     .then(() => setNote(paths.length === 1 ? "Copied the path" : `Copied ${paths.length.toLocaleString()} paths`))
@@ -1763,8 +1761,8 @@ async function destinationConflicts(destination, files) {
 let choosing = false;
 
 /// Move To… / Copy To…: the folder (the system's picker), then, for several files, a sheet saying what will happen.
-async function moveOrCopy(kind) {
-  const files = selectedHits();
+async function moveOrCopy(kind, chosen = null) {
+  const files = chosen ?? selectedHits();
   if (!isWindows || !files.length || state.busy || !$modal.hidden || choosing) return;
   choosing = true;
   try {
@@ -1807,8 +1805,8 @@ async function moveOrCopy(kind) {
 }
 
 /// Delete: to the Recycle Bin, with this sheet in between unless Settings turned the question off.
-async function confirmDelete() {
-  const files = deletableHits();
+async function confirmDelete(chosen = null) {
+  const files = chosen ?? deletableHits();
   if (!isWindows || !files.length || state.busy || !$modal.hidden || choosing) return;
   choosing = true;
   try {
@@ -3018,10 +3016,10 @@ $batchToggle.onclick = () => {
   if (selectedHits().length) clearSelection();
   else selectAll();
 };
-$("batch-paths").onclick = copyPaths;
+$("batch-paths").onclick = () => copyPaths();
 $("batch-copy").onclick = () => moveOrCopy("copy");
 $("batch-move").onclick = () => moveOrCopy("move");
-$("batch-delete").onclick = confirmDelete;
+$("batch-delete").onclick = () => confirmDelete();
 $("batch-tc").onclick = () => toTotalCommander(false);
 $("batch-tc-all").onclick = () => toTotalCommander(true);
 

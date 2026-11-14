@@ -162,7 +162,8 @@ Closing the window with its **X quits DigUp Plus outright** (indexing pauses and
 On Windows, the big window can move, copy and delete the pictures, screenshots, video and audio a search shows:
 tick the ones you mean with the box on the picture (or Ctrl/Shift+click, or Ctrl+A) and use the bar under the results
 or the right-click menu. A plain click only moves the cursor and the preview, so opening, dragging or simply looking at
-a picture chooses nothing. A name that's taken gets a number
+a picture chooses nothing; a right-click acts on the file under it — or on the whole ticked set when that file is one of
+them — and never changes the selection either. A name that's taken gets a number
 (`photo (2).jpg`) instead of overwriting a file; Delete goes to the Recycle Bin, and the confirmation sheet opens with
 the keyboard on the delete itself (Enter confirms, Escape keeps the files). If a path is too long for the Recycle
 Bin, DigUp lists the affected folders and offers a separate permanent delete only after you confirm that it cannot be
