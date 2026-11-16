@@ -51,6 +51,24 @@ import Testing
         #expect(RTF.text("{\\rtf1 \\u4294967296?x}") == "x")
     }
 
+    /// \\'hh bytes are one byte each in the document's code page: Windows-1251 for Russian, as Word writes it.
+    @Test func rtfReadsBytesInTheDeclaredCodePage() {
+        let declared = "{\\rtf1\\ansi\\ansicpg1251\\deff0{\\fonttbl{\\f0\\fcharset204 Arial;}}\\f0 \\'cf\\'f0\\'e8\\'e2\\'e5\\'f2}"
+        #expect(RTF.text(declared) == "Привет")
+        // No \ansicpg, but the font says Cyrillic: the same bytes, not Windows-1252.
+        let hinted = "{\\rtf1\\ansi{\\fonttbl{\\f0\\fcharset204 Arial;}}\\f0 \\'cf\\'f0\\'e8\\'e2\\'e5\\'f2}"
+        #expect(RTF.text(hinted) == "Привет")
+    }
+
+    /// Word also writes the text as raw code-page bytes with no \\'hh escapes; the whole file is decoded by its
+    /// header, not by Foundation's guess (which read Russian RTF as "Êîëëåêòèâ").
+    @Test func rtfRawBytesFollowTheHeaderCodePage() {
+        var bytes = Array("{\\rtf1\\ansi\\ansicpg1251\\deff0{\\fonttbl{\\f0\\fcharset204 Arial;}}\\f0 ".utf8)
+        bytes += Array("Привет".data(using: .windowsCP1251)!)
+        bytes += Array("}".utf8)
+        #expect(RTF.text(Data(bytes)) == "Привет")
+    }
+
     /// The books here are half UTF-8 and half Windows-1251: the declaration decides, and the base64 pictures must not
     /// become text.
     @Test func fb2ReadsTheBodyInEitherEncoding() throws {

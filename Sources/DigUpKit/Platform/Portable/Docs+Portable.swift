@@ -14,7 +14,7 @@ extension DocExtractor {
             return plainText(fromHTML: asHTML(try Zip.entry("content.xml", in: url), paragraphs: ["text:p", "text:h"],
                                               breaks: ["text:line-break"], spaces: ["text:tab", "text:s"]))
         case "rtf":
-            return RTF.text(try readText(url))
+            return RTF.text(try Data(contentsOf: url))
         case "doc":
             return try WordDoc.text(of: url)
         default:
@@ -112,6 +112,18 @@ enum RTF {
         "datastore", "xmlnstbl", "latentstyles", "pgdsctbl", "filetbl", "revtbl", "mmathPr", "fldinst", "object",
     ]
 
+    /// The file as text: its raw 8-bit bytes are in the code page the header names, not UTF-8, so the file is
+    /// decoded as a whole rather than guessed by Foundation.
+    static func text(_ data: Data) -> String {
+        let head = String(decoding: data.prefix(400), as: UTF8.self)
+        var encoding: String.Encoding = head.contains("\\fcharset204") ? .windowsCP1251 : .windowsCP1252
+        if let range = head.range(of: #"\\ansicpg[0-9]+"#, options: .regularExpression),
+           let page = Int(head[range].dropFirst(8)) {
+            encoding = codePage(page)
+        }
+        return text(String(data: data, encoding: encoding) ?? String(decoding: data, as: UTF8.self))
+    }
+
     static func text(_ rtf: String) -> String {
         let chars = Array(rtf.unicodeScalars)
         var out = String.UnicodeScalarView()
@@ -119,6 +131,9 @@ enum RTF {
         var skipDepth = 0        // inside a skipped group: its nesting depth
         var unicodeSkip = 1      // \ucN: characters after \uN to skip
         var pendingSkip = 0
+        // \'hh is one byte of the document's ANSI code page: Word writes \ansicpg1251 for Russian, and a Cyrillic
+        // font's \fcharset204 is the next best hint when the header has none.
+        var encoding: String.Encoding = rtf.contains("\\fcharset204") ? .windowsCP1251 : .windowsCP1252
         func isLetter(_ c: Unicode.Scalar) -> Bool { ("a"..."z").contains(c) || ("A"..."Z").contains(c) }
         func isDigit(_ c: Unicode.Scalar) -> Bool { ("0"..."9").contains(c) }
         while i < chars.count {
@@ -156,9 +171,9 @@ enum RTF {
                 i += 1
                 guard i < chars.count else { break }
                 let next = chars[i]
-                if next == "'" {   // \'hh: a byte in the document's code page (Windows-1252 here)
+                if next == "'" {   // \'hh: a byte in the document's code page
                     if i + 2 < chars.count, let byte = UInt8(String(String.UnicodeScalarView(chars[(i + 1)...(i + 2)])), radix: 16) {
-                        if pendingSkip > 0 { pendingSkip -= 1 } else { out.append(windows1252(byte)) }
+                        if pendingSkip > 0 { pendingSkip -= 1 } else { out.append(contentsOf: decode(byte, as: encoding).unicodeScalars) }
                         i += 3
                     } else {
                         i += 1
@@ -180,6 +195,7 @@ enum RTF {
                     case "ldblquote": out.append("“")
                     case "rdblquote": out.append("”")
                     case "bullet": out.append("•")
+                    case "ansicpg": encoding = codePage(Int(number) ?? 1252)
                     case "uc": unicodeSkip = Int(number) ?? 1
                     case "u":
                         // \uN is a signed 16-bit value (negative ones wrap); anything past that is a broken file, not a trap.
@@ -208,6 +224,22 @@ enum RTF {
             }
         }
         return String(out)
+    }
+
+    /// One byte of text in the document's code page; Foundation knows the Windows ones up to 1254.
+    private static func decode(_ byte: UInt8, as encoding: String.Encoding) -> String {
+        if encoding == .windowsCP1252 { return String(windows1252(byte)) }
+        return String(data: Data([byte]), encoding: encoding) ?? "?"
+    }
+
+    private static func codePage(_ page: Int) -> String.Encoding {
+        switch page {
+        case 1250: .windowsCP1250
+        case 1251: .windowsCP1251
+        case 1253: .windowsCP1253
+        case 1254: .windowsCP1254
+        default: .windowsCP1252
+        }
     }
 
     /// Windows-1252's upper half; the rest is Latin-1.
