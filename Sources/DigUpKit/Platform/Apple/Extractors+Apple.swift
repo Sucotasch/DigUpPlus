@@ -136,9 +136,12 @@ extension OCR {
         return (try? request.supportedRecognitionLanguages())?.contains { $0.hasPrefix("ar") } ?? false
     }()
 
-    /// The text in the image at `url`, for keyword search (read at full resolution).
-    static func text(ofImageAt url: URL) -> String {
-        ImageExtractor.fullImage(url).map(text(in:)) ?? ""
+    /// The text in the image at `url`, for keyword search (read at full resolution). One reading: Vision picks the
+    /// language itself.
+    static func readings(ofImageAt url: URL) -> [String] {
+        guard let image = ImageExtractor.fullImage(url) else { return [] }
+        let read = text(in: image)
+        return read.isEmpty ? [] : [read]
     }
 }
 
@@ -148,7 +151,8 @@ extension PDFExtractor {
     /// the rendered page where the words came out in glyph order (Bengali, which OCR can't read). On the multilingual
     /// eval (2026-10-08), a glyph-order page as picture + garbled-text vector beat the picture alone: R@1 0.75 vs 0.73,
     /// MRR 0.84 vs 0.81 (an English query for a Bengali page found it only through the text vector).
-    static func pages(of url: URL, range: (Int) -> Range<Int>, minText: Int, renderPixels: Int, to folder: URL)
+    static func pages(of url: URL, range: (Int) -> Range<Int>, minText: Int, renderPixels: Int, ocrScans: Bool,
+                      to folder: URL)
         throws -> (pages: [Page], total: Int, title: String?) {
         guard let document = PDFDocument(url: url) else { throw ExtractError.unreadable("can't open PDF") }
         if document.isLocked { throw ExtractError.locked }
@@ -183,11 +187,12 @@ extension PDFExtractor {
             guard let image = render(page, pixels: renderPixels) else { continue }
             let out = folder.appendingPathComponent(UUID().uuidString + ".png")
             try ImageExtractor.write(image, to: out, png: true)
-            // A scan, or a page that's mostly a picture: its words come from OCR, for keyword search only (an invoice
-            // number on a scan, as on a screenshot), and its meaning stays the picture's vector. Not for a text layer
-            // that came out in glyph order (Bengali), which OCR can't read either.
+            // A scan, or a page that's mostly a picture: its words come from OCR when the folder asks for them, for
+            // keyword search only (an invoice number on a scan, as on a screenshot), and its meaning stays the
+            // picture's vector. Not for a text layer that came out in glyph order (Bengali), which OCR can't read
+            // either.
             var ocr = false
-            if garbled == nil {
+            if ocrScans, garbled == nil {
                 let read = OCR.text(in: image).trimmingCharacters(in: .whitespacesAndNewlines)
                 if read.count > text.count { (text, ocr) = (read, true) }
             }

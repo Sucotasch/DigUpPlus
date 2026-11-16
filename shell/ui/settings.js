@@ -621,6 +621,30 @@ function ruleEditor(folder) {
   depth.checked = !rule.shallow;
   shallow.append(depth, "Scan its subfolders");
   box.append(shallow);
+  // Text on pictures, and on a PDF's scanned pages. Reading words is the costly part of a picture, so a folder says
+  // how much of it to do: screenshots alone unless it says otherwise.
+  const textLabel = element("label", "option");
+  textLabel.append(element("span", "text", "Text on pictures"));
+  const pictures = document.createElement("select");
+  pictures.className = "field";
+  pictures.title = "Reading words is the slow part of indexing a picture";
+  for (const [value, label] of [["off", "Don't read it"], ["screenshots", "Screenshots only"],
+                                ["all", "Every picture"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = (rule.ocrPictures || "screenshots") === value;
+    pictures.append(option);
+  }
+  textLabel.append(pictures);
+  box.append(textLabel);
+  const scansChoice = element("label", "choice");
+  const scans = document.createElement("input");
+  scans.type = "checkbox";
+  scans.checked = rule.ocrScans === true;
+  scans.title = "A scanned page costs a render and an OCR each";
+  scansChoice.append(scans, "Read text on scanned PDF pages");
+  box.append(scansChoice);
   const actions = element("div", "actions");
   if (saved) {
     const remove = element("button", "danger", "Remove rule");
@@ -628,7 +652,7 @@ function ruleEditor(folder) {
     remove.onclick = async () => {
       try {
         await invoke("set_root_rule", { folder, kinds: [], shallow: false, audioTags: false, audioContent: false,
-                                        skipTypes: [] });
+                                        skipTypes: [], ocrPictures: "screenshots", ocrScans: false });
         ruling = null;
         await refresh();
       } catch (error) {
@@ -653,7 +677,8 @@ function ruleEditor(folder) {
     try {
       const skipTypes = skip.value.split(",").map((type) => type.trim()).filter(Boolean);
       await invoke("set_root_rule", { folder, kinds, shallow: !depth.checked,
-                                      audioTags: tagsBox.checked, audioContent: contentBox.checked, skipTypes });
+                                      audioTags: tagsBox.checked, audioContent: contentBox.checked, skipTypes,
+                                      ocrPictures: pictures.value, ocrScans: scans.checked });
       ruling = null;
       await refresh();
     } catch (error) {
@@ -679,6 +704,9 @@ function ruleText(rule) {
   else if (tags) parts.push("recordings by tags only");
   else if (content) parts.push("recordings by sound");
   if ((rule.skipTypes || []).length) parts.push(`skips ${rule.skipTypes.join(", ")}`);
+  if (rule.ocrPictures === "all") parts.push("text on every picture");
+  else if (rule.ocrPictures === "off") parts.push("no text on pictures");
+  if (rule.ocrScans) parts.push("text on scans");
   if (rule.shallow) parts.push("top level only");
   return parts.join(" · ");
 }

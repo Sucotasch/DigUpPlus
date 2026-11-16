@@ -102,11 +102,18 @@ pub struct RootRule {
     /// File types this folder skips on top of the ones skipped everywhere, as extensions ("html").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip_types: Vec<String>,
+    /// Text on pictures: "off", "screenshots" (the default) or "all".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_pictures: Option<String>,
+    /// Read the words on a PDF's scanned pages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_scans: Option<bool>,
 }
 
 impl Default for RootRule {
     fn default() -> Self {
-        RootRule { kinds: Vec::new(), shallow: false, audio_tags: None, audio_content: None, skip_types: Vec::new() }
+        RootRule { kinds: Vec::new(), shallow: false, audio_tags: None, audio_content: None, skip_types: Vec::new(),
+                   ocr_pictures: None, ocr_scans: None }
     }
 }
 

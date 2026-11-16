@@ -258,20 +258,17 @@ import Testing
         // A page that's only a picture of its text, as a scanner or a phone makes it: no text layer at all.
         try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
         try ScannedPDF.write("Invoice QXTEST87231. Payment due Friday.", to: files.appendingPathComponent("scan.pdf"))
+        // Reading a scan is a folder's choice (off by default): a render and an OCR a page.
+        var options = IndexOptions()
+        options.rootRules = [RootRule(root: files.path, ocrScans: true)]
         let store = try store()
-        let indexer = try indexer(store, FakeEmbedder())
+        let indexer = try indexer(store, FakeEmbedder(), options: options)
         _ = try indexer.sync([files])
         _ = try indexer.run()
         #expect(try found(store, "qxtest87231") == [1])   // OCR's words, for keyword search; its meaning stays the picture's
         var kinds: [String] = []
         try store.db.query("SELECT kind FROM segments WHERE kind != 'name'") { kinds.append($0.text(0) ?? "") }
         #expect(kinds == ["page_image"])
-
-        // An index made before scans had words reads them once more, and only once.
-        try store.setMeta("scans_ocr", nil)
-        #expect(try store.readAgainOnce() == 1)
-        #expect(try store.pendingCount() == 1)
-        #expect(try store.readAgainOnce() == 0)
     }
     #endif
 

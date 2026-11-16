@@ -135,10 +135,41 @@ extension ImageExtractor {
 }
 
 extension OCR {
-    static let isAvailable = false
+    /// Text recognition runs here when the shim is beside the helper (`ocr.exe`, built from Sources/OcrShim).
+    static var isAvailable: Bool { locate() != nil }
 
-    /// No text recognition here yet: screenshots have their picture vector and their name.
-    static func text(ofImageAt url: URL) -> String { "" }
+    /// The words on the picture, one reading per engine: the Windows profile's language, then English when the profile
+    /// isn't English (a single Windows engine reads its own language and mangles the other, so screenshots with code or
+    /// a second language need both). Empty when the shim is missing or fails: the picture keeps its vector and name.
+    static func readings(ofImageAt url: URL) -> [String] {
+        guard let tool = locate() else { return [] }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = [url.path]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        do { try process.run() } catch { return [] }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0, let text = String(data: data, encoding: .utf8) else { return [] }
+        // The shim separates readings with a U+001E line: never part of recognized text.
+        return text.components(separatedBy: "\u{1E}")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
+
+    /// `ocr.exe` beside the helper (the package puts it there); `DIGUP_OCR` names another.
+    private static func locate() -> String? {
+        var folders: [String] = []
+        if let chosen = ProcessInfo.processInfo.environment["DIGUP_OCR"], !chosen.isEmpty { folders.append(chosen) }
+        if let executable = Bundle.main.executableURL { folders.append(executable.deletingLastPathComponent().path) }
+        for folder in folders {
+            let candidate = folder + "/" + FileSystem.program("ocr")
+            if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+        }
+        return nil
+    }
 }
 
 /// Packed 8-bit RGB in memory: what stb decodes to and encodes from.

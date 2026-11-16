@@ -157,10 +157,12 @@ public final class Indexer {
         try store.db.transaction {
             for file in crawl.candidates {
                 if let row = byPath[file.path] {
-                    // tagsOnly is part of the row's identity: a folder's audio bits or the tag list changed, so this
-                    // recording must be read the other way (sound instead of tags, or back).
+                    // tagsOnly, ocrPictures and ocrScans are part of the row's identity: a folder's bits or the tag
+                    // list changed, so this file must be read the other way (sound instead of tags, or back; words on
+                    // the picture, or not).
                     if row.size != file.size || abs(row.mtime - file.mtime) > 0.001 || row.kind != file.kind
-                        || row.tagsOnly != file.tagsOnly {
+                        || row.tagsOnly != file.tagsOnly || row.ocrPictures != file.ocrPictures
+                        || row.ocrScans != file.ocrScans {
                         try store.requeue(row.id, as: file)
                         summary.changed += 1
                         summary.queued.append(row.id)
@@ -522,7 +524,11 @@ public final class Indexer {
                         let image = try ImageExtractor.prepare(url, maxPixel: screenshot ? 1536 : 1024,
                                                                minSide: options.minImageSide, to: folder,
                                                                png: screenshot)
-                        let ocr = screenshot ? OCR.text(ofImageAt: url) : ""
+                        // Text on the picture, as the folder asks: screenshots alone (the default), every picture, or
+                        // none. Two readings come back where the platform has two engines (Windows: the profile's
+                        // language and English); both go into keyword search, since one engine mangles the other's.
+                        let reads = screenshot ? file.ocrPictures != .off : file.ocrPictures == .all
+                        let ocr = reads ? OCR.readings(ofImageAt: url).joined(separator: "\n\n") : ""
                         // Its look-alike fingerprint was taken with the pixels `prepare` already had: no second read,
                         // no second decode (a picture whose reader keeps no bitmap simply has none).
                         let phash = image.fingerprint
@@ -543,7 +549,7 @@ public final class Indexer {
                     wanted = (job.step ?? (total > options.bigPDFPages ? 0..<options.pdfStep : 0..<options.maxPages))
                         .clamped(to: 0..<min(total, options.maxPages))
                     return wanted
-                }, minText: options.minPageText, renderPixels: 1400, to: folder)
+                }, minText: options.minPageText, renderPixels: 1400, ocrScans: batch[0].ocrScans, to: folder)
                 prepared.payload = .pdf(pages: read.pages, read: wanted, total: read.total, title: read.title)
             case .doc:
                 // The chunks are cut the same way every time, so a later step goes on where the last one stopped.
@@ -706,9 +712,9 @@ public final class Indexer {
                 }
                 var info = ["width": "\(item.image.width)", "height": "\(item.image.height)"]
                 if let taken = item.image.taken { info["taken"] = taken }
-                if screenshot { info["ocr_chars"] = "\(item.ocr.count)" }
+                if !item.ocr.isEmpty { info["ocr_chars"] = "\(item.ocr.count)" }
                 try store.finish(file.id, state: "done", info: info)
-                results[item.slot] = ("done", screenshot ? "ocr \(item.ocr.count) chars" : nil)
+                results[item.slot] = ("done", item.ocr.isEmpty ? nil : "ocr \(item.ocr.count) chars")
             }
         }
     }

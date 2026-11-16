@@ -15,6 +15,10 @@ public struct FileRecord: Sendable {
     /// A recording read by its tags alone (`Candidate.tagsOnly`): the way it's read, kept so a restart reads it the
     /// same and a rule change can tell what changed.
     public let tagsOnly: Bool
+    /// Text on the picture (`Candidate.ocrPictures`), kept for the same reason.
+    public let ocrPictures: PictureText
+    /// Read the words on a PDF's scanned pages (`Candidate.ocrScans`).
+    public let ocrScans: Bool
 }
 
 /// The on-disk index: one SQLite file with files, their segments (with fp16 vectors), and an FTS5 table.
@@ -25,7 +29,7 @@ public struct FileRecord: Sendable {
 public final class IndexStore {
     public let directory: URL
     public let db: Database
-    static let schemaVersion: Int64 = 7
+    static let schemaVersion: Int64 = 8
 
     /// Keyword search's tokenizer. Marks (M*) count as letters, so Bengali vowel signs and Arabic harakat stay inside
     /// their words: by default SQLite splits on them ("কলকাতায়" became "কলক", "ত", "য").
@@ -139,6 +143,7 @@ public final class IndexStore {
             if (1...4).contains(version) { try migrateLongFiles() }
             if (1...5).contains(version) { try migrateTagsOnly() }
             if (1...6).contains(version) { try migratePhash() }
+            if (1...7).contains(version) { try migrateOCRFields() }
         }
         try checkPhashRecipe()
     }
@@ -159,6 +164,8 @@ public final class IndexStore {
                 info TEXT,                                -- JSON: pixels, pages, duration, date taken; read_to/read_end
                 indexed_at REAL,
                 tags_only INTEGER NOT NULL DEFAULT 0,     -- a recording read by its tags alone
+                ocr_pictures TEXT NOT NULL DEFAULT 'screenshots',  -- text on pictures: off, screenshots or all
+                ocr_scans INTEGER NOT NULL DEFAULT 0,     -- words on a PDF's scanned pages
                 phash BLOB                                -- Phash256 of a picture: Find similar's groups
             );
             CREATE INDEX files_inode ON files(device, inode);
@@ -283,6 +290,26 @@ public final class IndexStore {
         }
     }
 
+    /// Schema 7 → 8: whether a folder reads the words on its pictures (`ocr_pictures`: off, screenshots, all) and on
+    /// its PDFs' scanned pages (`ocr_scans`). The defaults are what every folder did before: screenshots alone, and no
+    /// scans (the Mac app read scans by itself, the Windows helper had no OCR at all). Nothing is read here; a rule
+    /// that changes either bit requeues exactly the files it changes (the crawler, then `Indexer.sync`).
+    private func migrateOCRFields() throws {
+        var columns = Set<String>()
+        try db.query("PRAGMA table_info(files)") { row in
+            if let name = row.text(1) { columns.insert(name) }
+        }
+        try db.transaction {
+            if !columns.contains("ocr_pictures") {
+                try db.execute("ALTER TABLE files ADD COLUMN ocr_pictures TEXT NOT NULL DEFAULT 'screenshots'")
+            }
+            if !columns.contains("ocr_scans") {
+                try db.execute("ALTER TABLE files ADD COLUMN ocr_scans INTEGER NOT NULL DEFAULT 0")
+            }
+            try db.execute("PRAGMA user_version = 8")
+        }
+    }
+
     /// The fingerprint recipe changed: every stored hash was made the old way, and two recipes together would group
     /// nothing. They go, to be computed again; the pictures and their vectors are untouched.
     private func checkPhashRecipe() throws {
@@ -313,13 +340,14 @@ public final class IndexStore {
 
     // MARK: Files
 
-    static let fileColumns = "id, path, kind, size, mtime, inode, device, state, detail, tags_only"
+    static let fileColumns = "id, path, kind, size, mtime, inode, device, state, detail, tags_only, ocr_pictures, ocr_scans"
 
     static func record(_ row: Statement) -> FileRecord {
         FileRecord(id: row.int(0), path: row.text(1) ?? "", kind: FileKind(rawValue: row.text(2) ?? "") ?? .doc,
                    size: row.int(3), mtime: row.double(4), inode: UInt64(bitPattern: row.int(5)),
                    device: UInt64(bitPattern: row.int(6)), state: row.text(7) ?? "pending", detail: row.text(8),
-                   tagsOnly: row.int(9) != 0)
+                   tagsOnly: row.int(9) != 0, ocrPictures: PictureText(rawValue: row.text(10) ?? "") ?? .screenshots,
+                   ocrScans: row.int(11) != 0)
     }
 
     /// Every file under one of `roots`.
@@ -390,10 +418,13 @@ public final class IndexStore {
     @discardableResult
     public func insert(_ file: Candidate) throws -> Int64 {
         try db.transaction {   // the row and its name entry together
-            try db.run("INSERT INTO files(path, kind, size, mtime, inode, device, tags_only) VALUES(?, ?, ?, ?, ?, ?, ?)",
+            try db.run("""
+                INSERT INTO files(path, kind, size, mtime, inode, device, tags_only, ocr_pictures, ocr_scans)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                        [.text(file.path), .text(file.kind.rawValue), .int(file.size), .double(file.mtime),
                         .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device)),
-                        .int(file.tagsOnly ? 1 : 0)])
+                        .int(file.tagsOnly ? 1 : 0), .text(file.ocrPictures.rawValue), .int(file.ocrScans ? 1 : 0)])
             let id = db.lastInsertID
             try addNameRow(file: id, path: file.path)
             return id
@@ -405,11 +436,13 @@ public final class IndexStore {
         try db.transaction {
             try deleteSegments(of: id, keepingName: true)
             try db.run("""
-                UPDATE files SET kind = ?, size = ?, mtime = ?, inode = ?, device = ?, tags_only = ?, state = 'pending',
+                UPDATE files SET kind = ?, size = ?, mtime = ?, inode = ?, device = ?, tags_only = ?,
+                    ocr_pictures = ?, ocr_scans = ?, state = 'pending',
                     detail = NULL, info = NULL, indexed_at = NULL WHERE id = ?
                 """, [.text(file.kind.rawValue), .int(file.size), .double(file.mtime),
                       .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device)),
-                      .int(file.tagsOnly ? 1 : 0), .int(id)])
+                      .int(file.tagsOnly ? 1 : 0), .text(file.ocrPictures.rawValue), .int(file.ocrScans ? 1 : 0),
+                      .int(id)])
         }
     }
 
@@ -642,18 +675,23 @@ public final class IndexStore {
                    [.text(state), .optional(detail), .optional(json), .double(Date().timeIntervalSince1970), .int(id)])
     }
 
-    /// Files read once more because DigUp reads them better now, each kind once per index (the schema stays as it was,
-    /// so an older DigUp still opens the index): PDFs with pages read as pictures, whose words come from OCR now
-    /// (`meta` "scans_ocr"), pictures that couldn't be read at all, like SVGs, which AppKit draws now
+    /// Files read once more because DigUp reads them better now, each kind once per index (no schema change of its own,
+    /// so an older DigUp still opens the index): screenshots without stored text, on a machine whose OCR reads pictures
+    /// now (`meta` "screenshots_ocr"), pictures that couldn't be read at all, like SVGs, which AppKit draws now
     /// ("pictures_drawn"), and pictures embedded by 0.1.12's Windows decoder, which read WIC's four-byte row padding
     /// as packed pixels and so vectorized a torn copy ("pictures_repacked"). Only where this machine does any of it.
     /// Returns how many files.
     @discardableResult
     public func readAgainOnce() throws -> Int {
         var files = Set<Int64>(), flags: [String] = []
-        if OCR.isAvailable, try meta("scans_ocr") == nil {
-            try db.query("SELECT DISTINCT file FROM segments WHERE kind = 'page_image'") { files.insert($0.int(0)) }
-            flags.append("scans_ocr")
+        if OCR.isAvailable, try meta("screenshots_ocr") == nil {
+            // The words a screenshot has were never read here before: it kept `ocr_chars` 0 (or nothing) and a rule
+            // change can't tell, since `screenshots` is the default it holds now.
+            try db.query("""
+                SELECT id FROM files WHERE kind = 'screenshot' AND state IN ('done', 'partial')
+                    AND coalesce(json_extract(info, '$.ocr_chars'), 0) = 0
+                """) { files.insert($0.int(0)) }
+            flags.append("screenshots_ocr")
         }
         if ImageExtractor.drawsVectorPictures, try meta("pictures_drawn") == nil {
             try db.query("SELECT id FROM files WHERE kind = 'image' AND state = 'skipped' AND detail = ?",

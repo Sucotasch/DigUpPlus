@@ -235,4 +235,70 @@ import Testing
         #expect(widened.added == 1 && widened.removed == 0)
         #expect(try store.files(under: [folder.path]).map(\.path).sorted() == [photo.path, innerPhoto.path, clip.path].sorted())
     }
+
+    // MARK: Text on pictures and scans
+
+    @Test func aRuleReadsTheTextFieldsFromTheShellsJSON() throws {
+        let json = #"{"root":"/x","kinds":["image"],"shallow":false,"audioTags":true,"audioContent":true,"ocrPictures":"all","ocrScans":true}"#
+        let rule = try JSONDecoder().decode(RootRule.self, from: Data(json.utf8))
+        #expect(rule.ocrPictures == .all)
+        #expect(rule.ocrScans == true)
+        #expect(rule.picturesText == .all && rule.readsScans)
+    }
+
+    @Test func aFolderSaysHowMuchTextToRead() throws {
+        try write("photo.jpg")
+        try write("Screenshots/shot.png")
+        try write("book.pdf")
+        let screens = folder.appendingPathComponent("Screenshots", isDirectory: true)
+        let report = Crawler.crawl([folder], options: options([
+            RootRule(root: folder.path, ocrPictures: .all, ocrScans: true),
+            RootRule(root: screens.path, ocrPictures: .off),
+        ]))
+        func candidate(_ name: String) -> Candidate? { report.candidates.first { $0.path.hasSuffix(name) } }
+        #expect(candidate("photo.jpg")?.ocrPictures == .all)
+        #expect(candidate("shot.png")?.ocrPictures == .off)
+        #expect(candidate("book.pdf")?.ocrScans == true)
+        // Each choice stays with the kind it concerns: a document's picture bit, or a picture's scan bit, never changes
+        // with the rule, so one folder setting doesn't requeue the rest of its files.
+        #expect(candidate("book.pdf")?.ocrPictures == .screenshots)
+        #expect(candidate("photo.jpg")?.ocrScans == false)
+    }
+
+    @Test func noRuleReadsScreenshotsAloneAndNoScans() throws {
+        try write("photo.jpg")
+        try write("Screenshots/shot.png")
+        try write("book.pdf")
+        let report = Crawler.crawl([folder], options: options([]))
+        #expect(report.candidates.allSatisfy { $0.ocrPictures == .screenshots && !$0.ocrScans })
+    }
+
+    @Test func aTextRuleRequeuesOnlyWhatItChanges() throws {
+        let photo = try write("photo.jpg")
+        let shot = try write("Screenshots/shot.png")
+        let pdf = try write("book.pdf")
+        try write("notes.txt")
+        let store = try IndexStore(directory: folder.appendingPathComponent("index-ocr"))
+        func sync(_ rules: [RootRule]) throws -> Indexer.SyncSummary {
+            let indexer = try Indexer(store: store, options: options(rules),
+                                      makeEmbedder: { throw WorkerError.notFound("sync doesn't need a model") })
+            return try indexer.sync([folder])
+        }
+        func finishAll() throws {
+            for file in try store.files(under: [folder.path]) { try store.finish(file.id, state: "done") }
+        }
+        #expect(try sync([]).added == 4)
+        try finishAll()
+        // Every picture: both pictures are read again, the document and the PDF aren't.
+        let pictures = try sync([RootRule(root: folder.path, ocrPictures: .all)])
+        #expect(pictures.changed == 2 && pictures.added == 0 && pictures.removed == 0)
+        #expect(Set(try store.pending(limit: nil).map(\.path)) == [photo.path, shot.path])
+        #expect(try store.file(at: pdf.path)?.state == "done")
+        try finishAll()
+        // Scans: the PDF alone.
+        let scans = try sync([RootRule(root: folder.path, ocrPictures: .all, ocrScans: true)])
+        #expect(scans.changed == 1 && scans.added == 0 && scans.removed == 0)
+        #expect(try store.pending(limit: nil).map(\.path) == [pdf.path])
+        #expect(try store.file(at: photo.path)?.state == "done")
+    }
 }

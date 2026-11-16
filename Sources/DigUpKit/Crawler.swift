@@ -12,9 +12,13 @@ public struct Candidate: Sendable {
     /// Kept in the index (`files.tags_only`), so `Indexer.prepare` reads it the same way after a restart, and so a rule
     /// change re-reads exactly the recordings whose way of being read changed.
     public let tagsOnly: Bool
+    /// Text on this picture (`RootRule.picturesText`): screenshots alone, every picture, or none.
+    public let ocrPictures: PictureText
+    /// Read the words on this PDF's scanned pages (`RootRule.ocrScans`).
+    public let ocrScans: Bool
 
     public init(path: String, kind: FileKind, size: Int64, mtime: Double, inode: UInt64, device: UInt64,
-                tagsOnly: Bool = false) {
+                tagsOnly: Bool = false, ocrPictures: PictureText = .screenshots, ocrScans: Bool = false) {
         self.path = path
         self.kind = kind
         self.size = size
@@ -22,6 +26,8 @@ public struct Candidate: Sendable {
         self.inode = inode
         self.device = device
         self.tagsOnly = tagsOnly
+        self.ocrPictures = ocrPictures
+        self.ocrScans = ocrScans
     }
 }
 
@@ -253,6 +259,19 @@ public enum Crawler {
                             return
                         }
                     }
+                    // The folder's rule also says whether words on the picture (and, for a PDF, on its scanned pages)
+                    // are read: a setting like the audio bits, carried with the row so a rule change re-reads exactly
+                    // the pictures whose reading changed. Each flag stays at its default for the kinds it doesn't
+                    // concern, so a folder's picture choice doesn't requeue its documents.
+                    var ocrPictures = PictureText.screenshots
+                    var ocrScans = false
+                    if !options.code {
+                        switch kind {
+                        case .image, .screenshot: ocrPictures = rules[ruleOwner]?.picturesText ?? .screenshots
+                        case .pdf: ocrScans = rules[ruleOwner]?.readsScans ?? false
+                        default: break
+                        }
+                    }
                     guard let info = FileSystem.info(of: url.path), info.isRegular else {
                         leftOut("link or special file", under: reportOwner)
                         return
@@ -278,7 +297,8 @@ public enum Crawler {
                     guard foundRoot[url.path] == nil else { return }
                     foundRoot[url.path] = reportOwner
                     found.append(Candidate(path: url.path, kind: kind, size: info.size, mtime: info.mtime,
-                                           inode: info.inode, device: info.device, tagsOnly: tagsOnly))
+                                           inode: info.inode, device: info.device, tagsOnly: tagsOnly,
+                                           ocrPictures: ocrPictures, ocrScans: ocrScans))
                 }
             }
 

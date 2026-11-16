@@ -91,6 +91,11 @@ public struct IndexOptions: Sendable {
     }
 }
 
+/// Text on pictures, as a folder asks for it: none, on screenshots alone (the default), or on every picture.
+public enum PictureText: String, Codable, Sendable {
+    case off, screenshots, all
+}
+
 /// What a chosen folder holds: the kinds to index (nil: every kind), whether its subfolders are walked, and how its
 /// recordings are read. The crawler applies it to the nearest chosen folder of each path, so a folder chosen inside
 /// another keeps its own rule.
@@ -106,10 +111,20 @@ public struct RootRule: Codable, Sendable, Equatable {
     /// File types this folder skips on top of the ones skipped everywhere (Settings → Folders → Skip these types), as
     /// extensions ("html"). nil for a rule saved before this was a setting.
     public var skipTypes: [String]?
+    /// Text on pictures: screenshots alone unless the folder says otherwise. nil for a rule saved before this was a
+    /// setting, which read screenshots alone.
+    public var ocrPictures: PictureText?
+    /// Read the words on a PDF's scanned pages (a render and an OCR a page, so off unless the folder asks). nil for a
+    /// rule saved before this was a setting.
+    public var ocrScans: Bool?
 
     /// The two bits, with the "not stored yet" default of yes.
     public var readsAudioByTags: Bool { audioTags ?? true }
     public var readsAudioByContent: Bool { audioContent ?? true }
+    /// Text on pictures, with the "not stored yet" default of screenshots alone.
+    public var picturesText: PictureText { ocrPictures ?? .screenshots }
+    /// Scanned pages are read by default? No.
+    public var readsScans: Bool { ocrScans ?? false }
 
     /// `skipTypes` as the comparison wants them: lowercased, without a leading dot or spaces.
     public var skippedTypes: Set<String> {
@@ -121,13 +136,16 @@ public struct RootRule: Codable, Sendable, Equatable {
     }
 
     public init(root: String, kinds: Set<FileKind>? = nil, shallow: Bool = false, audioTags: Bool? = nil,
-                audioContent: Bool? = nil, skipTypes: [String]? = nil) {
+                audioContent: Bool? = nil, skipTypes: [String]? = nil, ocrPictures: PictureText? = nil,
+                ocrScans: Bool? = nil) {
         self.root = root
         self.kinds = kinds
         self.shallow = shallow
         self.audioTags = audioTags
         self.audioContent = audioContent
         self.skipTypes = skipTypes
+        self.ocrPictures = ocrPictures
+        self.ocrScans = ocrScans
     }
 }
 

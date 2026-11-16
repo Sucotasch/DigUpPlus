@@ -207,11 +207,12 @@ developer environment, `scripts/fetch-vendor.sh`, `scripts/build-llama.sh`, `scr
 в MSYS2 MINGW64), Swift, Rust, Python, Node.
 
 Внутри: `swift build -c release --product digup` → сбор helper-папки (`digup.exe`, DLL llama.cpp, PDFium, CUDA
-runtime, Swift runtime, C++ CRT, ffmpeg/ffprobe) → `scripts/notices.py` → `npx @tauri-apps/cli@2.12.2 build
---bundles nsis` с `helper/` и `THIRD-PARTY-NOTICES.txt` как resources.
+runtime, Swift runtime, C++ CRT, ffmpeg/ffprobe, Windows OCR shim `ocr.exe` из `scripts/build-ocr.sh`) →
+`scripts/notices.py` → `npx @tauri-apps/cli@2.12.2 build --bundles nsis` с `helper/` и
+`THIRD-PARTY-NOTICES.txt` как resources.
 
 Выход: `shell/src-tauri/target/release/bundle/nsis/DigUp Plus_<version>_x64-setup.exe` (~440 МБ).
-Версия берётся из `shell/src-tauri/tauri.conf.json` (сейчас `0.1.14`), не из `Cargo.toml` (там `0.1.0` у пакета
+Версия берётся из `shell/src-tauri/tauri.conf.json` (сейчас `0.1.15`), не из `Cargo.toml` (там `0.1.0` у пакета
 оболочки, но имя файла и настройки идут от `tauri.conf.json`). Подписи и update-артефактов больше нет: `signing` из
 скрипта убран вместе с плагином updater.
 
@@ -384,8 +385,13 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
   и фрагменты книг; документы участвуют в выделении и файловых операциях (включая Total Commander); строка
   группировки осталась только там, где есть картинки; кэш превью ограничен 512 файлами; helper изменился, нужен
   полный zip);
-- на 2026-11-16: `python .build/swift_test.py` — 201 тест, 200 прошли (тот же symlink-тест), `cargo test --locked`
-  — 75, все прошли;
+- 0.1.16 (в работе, 2026-11-16): текст на картинках и сканах — Windows OCR (`Windows.Media.Ocr`) в отдельном
+  `ocr.exe` рядом с helper: движок языка профиля и английский, оба чтения идут в keyword-поиск; правило папки (и
+  подпапки) выбирает «не читать / только скриншоты / все картинки» и «читать текст на сканах PDF» (по умолчанию
+  скриншоты, сканы выключены); схема индекса 8 (`ocr_pictures`, `ocr_scans`), смена бита перечитывает только
+  затронутые файлы, а не всю папку; shim собирается `scripts/build-ocr.sh`; helper изменился, нужен полный zip;
+- на 2026-11-16: `python .build/swift_test.py` — 210 тестов, 209 прошли (тот же symlink-тест), `cargo test --locked`
+  — 76, все прошли;
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
   (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` удалён. Default branch —
   `file-operations`; сборки только вручную (`scripts/package-portable.sh`).

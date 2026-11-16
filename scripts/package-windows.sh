@@ -35,6 +35,8 @@ cp "$cuda"/cublas64_*.dll "$cuda"/cublasLt64_*.dll "$cuda"/cudart64_*.dll "$help
 cp "$swift_runtime"/*.dll "$helper/"
 cp "$crt"/*.dll "$helper/"   # over the Swift runtime's copies of the same: the newer C++ runtime
 cp Vendor/ffmpeg/bin/ffmpeg.exe Vendor/ffmpeg/bin/ffprobe.exe "$helper/"   # the small static build, no DLLs
+# Windows OCR: the C++/WinRT shim the Swift engine spawns, built from Sources/OcrShim.
+bash scripts/build-ocr.sh "$helper"
 
 # No update signing: DigUp Plus ships by hand (scripts/package-portable.sh is what most builds go out as), and the
 # in-app updater this fork had from upstream is gone rather than pointed at a feed of its own.

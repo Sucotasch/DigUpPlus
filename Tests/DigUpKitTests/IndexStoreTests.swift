@@ -406,6 +406,28 @@ import WinSDK
         #expect(try reopened.phashes(for: [picture.path]) == [picture.path: Phash256(w0: 9)])
     }
 
+    /// A schema 7 index gets the text-on-pictures columns with what every folder did before them: screenshots alone,
+    /// and no scans.
+    @Test func anIndexFromSchemaSevenGetsTheTextColumns() throws {
+        let index = folder.appendingPathComponent("index-ocr-columns")
+        let picture = folder.appendingPathComponent("shot.png")
+        try Data("x".utf8).write(to: picture)
+        do {
+            let store = try IndexStore(directory: index)
+            let id = try store.insert(file(picture.path, inode: 1))
+            try store.finish(id, state: "done")
+            try store.db.execute("""
+                ALTER TABLE files DROP COLUMN ocr_pictures;
+                ALTER TABLE files DROP COLUMN ocr_scans;
+                PRAGMA user_version = 7
+                """)
+        }
+        let reopened = try IndexStore(directory: index)
+        let row = try #require(try reopened.file(at: picture.path))
+        #expect(row.ocrPictures == .screenshots && !row.ocrScans)
+        #expect(row.state == "done")
+    }
+
     /// A changed fingerprint recipe drops the stored ones (a mix of two would group nothing); the pictures and their
     /// vectors stay.
     @Test func aNewRecipeDropsOldFingerprints() throws {

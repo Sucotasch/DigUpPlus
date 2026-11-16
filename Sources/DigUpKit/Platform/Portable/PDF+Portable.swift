@@ -87,7 +87,8 @@ enum PDFium {
 extension PDFExtractor {
     /// Reads the pages in `range(pageCount)` (0-based). Pages with real text become text; scans, slides and pages whose
     /// text layer came out in glyph order are rendered.
-    static func pages(of url: URL, range: (Int) -> Range<Int>, minText: Int, renderPixels: Int, to folder: URL)
+    static func pages(of url: URL, range: (Int) -> Range<Int>, minText: Int, renderPixels: Int, ocrScans: Bool,
+                      to folder: URL)
         throws -> (pages: [Page], total: Int, title: String?) {
         try PDFium.withDocument(url) { document in
             let total = Int(FPDF_GetPageCount(document))
@@ -109,7 +110,16 @@ extension PDFExtractor {
                 guard let image = PDFium.render(page, pixels: renderPixels) else { continue }
                 let out = folder.appendingPathComponent(UUID().uuidString + ".png")
                 try image.write(to: out, png: true)
-                pages.append(Page(number: index + 1, text: text, imagePath: out.path, garbled: garbled))
+                // A folder that asks for the words on its scans: same as a picture's, for keyword search only (the
+                // page's meaning stays the picture's vector). Not for a text layer that came out in glyph order,
+                // which OCR can't read either.
+                var ocr = false
+                if ocrScans, garbled == nil {
+                    let read = OCR.readings(ofImageAt: out).joined(separator: "\n\n")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if read.count > text.count { (text, ocr) = (read, true) }
+                }
+                pages.append(Page(number: index + 1, text: text, imagePath: out.path, ocr: ocr, garbled: garbled))
             }
             return (pages, total, PDFium.meta(document, "Title"))
         }

@@ -43,6 +43,10 @@ cp "$swift_runtime"/*.dll "$helper/"
 cp "$crt"/*.dll "$helper/"   # over the Swift runtime's copies of the same: the newer C++ runtime
 cp Vendor/ffmpeg/bin/ffmpeg.exe Vendor/ffmpeg/bin/ffprobe.exe "$helper/"   # the small static build, no DLLs
 
+# Windows OCR: Windows.Media.Ocr behind a tiny C++/WinRT shim beside the helper (the Swift engine spawns it; find it in
+# Sources/OcrShim). Its headers come with the Windows SDK the developer environment names, so nothing is fetched.
+bash scripts/build-ocr.sh "$helper"
+
 # The licenses of everything the folder carries, beside the app. (python3 can be the Store's stub.)
 python=python3
 python3 -c '' 2> /dev/null || python=python
@@ -73,9 +77,10 @@ cp shell/src-tauri/THIRD-PARTY-NOTICES.txt "$release/"
 # %APPDATA% and %LOCALAPPDATA%. `--data <folder>` or DIGUP_DATA points them anywhere else.
 printf 'DigUp Plus keeps its settings, logs, index and model in the data folder beside this file.\n' > "$release/portable.txt"
 # The helper's hash decides whether a release also ships a shell-only zip (see docs/roadmap-plan.md): the same
-# hash as the previous release means only DigUpPlus.exe moved, and updating is a small download. Cut releases check
-# this line against the previous release's notes instead of trusting memory.
-helper_sha=$(sha256sum "$release/helper/digup.exe" | cut -d" " -f1)
+# hash as the previous release means only DigUpPlus.exe moved, and updating is a small download. The OCR shim is
+# part of the helper folder, so its bytes count too. Cut releases check this line against the previous release's
+# notes instead of trusting memory.
+helper_sha=$(cat "$release/helper/digup.exe" "$release/helper/ocr.exe" | sha256sum | cut -d" " -f1)
 echo "HELPER SHA256: $helper_sha"
 if [[ "${SHELL_ONLY:-0}" == "1" ]]; then
   small="$PWD/.build/DigUpPlus-$version-shell-only.zip"
