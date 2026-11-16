@@ -277,7 +277,7 @@ function renderFolders() {
     if (removing && samePath(removing, folder)) rows.append(confirmRemoval(folder, summary));
     if (rereading && samePath(rereading, folder)) rows.append(confirmReread(folder));
     if (repicking && samePath(repicking.folder, folder)) rows.append(confirmRepick(repicking));
-    if (ruling && samePath(ruling, folder)) rows.append(ruleEditor(folder));
+    if (ruling && samePath(ownerFolder(ruling), folder)) rows.append(ruleEditor(ruling));
   }
   const skipped = $("skipped-rows");
   skipped.replaceChildren();
@@ -340,6 +340,17 @@ function folderRow(folder, summary, code = false) {
   // A rule of its own (Rules…): what it takes, so the folder's line says why it holds fewer files.
   const rule = Object.entries(info.rootRules || {}).find(([path]) => samePath(path, folder))?.[1];
   if (rule) text.append(element("div", "counts", ruleText(rule)));
+  // Rules on folders inside this one: a subfolder with its own rule (the folder itself is still searched as part of
+  // this one, not as a root of its own).
+  for (const [path, subRule] of Object.entries(info.rootRules || {})) {
+    if (samePath(path, folder) || !insidePath(path, folder) || !samePath(ownerFolder(path), folder)) continue;
+    const line = element("div", "counts");
+    const link = element("button", "link", `${nameOf(path)}: ${ruleText(subRule)}`);
+    link.title = `Rules for ${shown(path)}`;
+    link.onclick = () => { ruling = path; renderFolders(); };
+    line.append(link);
+    text.append(line);
+  }
   const side = element("div", "side");
   if (summary) {
     side.append(element("div", "indexed", summary.missing || summary.unreadable ? "Kept for when it's back"
@@ -372,7 +383,7 @@ function folderRow(folder, summary, code = false) {
     }
   }
   row.append(text, side, ...(code ? [] : [rescanButton(folder), rereadButton(folder), repickButton(folder),
-    ruleButton(folder)]),
+    ruleButton(folder), subRuleButton(folder)]),
     removeButton(code ? "Stop searching the code in this folder" : "Stop searching this folder", () => {
     if (code) {
       removingCode = folder;
@@ -528,6 +539,25 @@ function ruleButton(folder) {
   return button;
 }
 
+/// "Subfolder rules…": give a folder inside this one its own rule (a screenshots folder inside an image store, a
+/// recordings folder read by tags), without making it a search root of its own.
+function subRuleButton(folder) {
+  const button = element("button", "link", "Subfolder rules…");
+  button.title = "Give a folder inside this one its own rule";
+  button.onclick = async () => {
+    try {
+      const picked = (await invoke("pick_folders")) || [];
+      const path = picked.find((one) => insidePath(one, folder) && !samePath(one, folder));
+      if (!path) return;   // cancelled, or a folder outside this one
+      ruling = path;
+      renderFolders();
+    } catch (error) {
+      fail(error);
+    }
+  };
+  return button;
+}
+
 // What a folder's rule offers: the file kinds, with screenshots counted as pictures (a screenshot is a picture with a
 // kind of its own in the index, and "only pictures" must not drop them). Recordings are not a box here: their two bits
 // decide whether they're in the rule at all (either one puts `audio` in the kinds).
@@ -543,6 +573,10 @@ function ruleEditor(folder) {
   const tags = rule.audioTags ?? inKinds;
   const content = rule.audioContent ?? inKinds;
   const box = element("div", "confirm rules");
+  if (!(info.folders || []).some((path) => samePath(path, folder))) {
+    box.append(element("p", "note",
+      `A rule for “${nameOf(folder)}”: its files are still searched as part of “${nameOf(ownerFolder(folder) || folder)}”.`));
+  }
   box.append(element("p", "", `What “${nameOf(folder)}” holds:`));
   const checks = RULE_KINDS.map(([kind, label]) => {
     const choice = element("label", "choice");
@@ -588,6 +622,21 @@ function ruleEditor(folder) {
   shallow.append(depth, "Scan its subfolders");
   box.append(shallow);
   const actions = element("div", "actions");
+  if (saved) {
+    const remove = element("button", "danger", "Remove rule");
+    remove.title = "Read this folder by the defaults again";
+    remove.onclick = async () => {
+      try {
+        await invoke("set_root_rule", { folder, kinds: [], shallow: false, audioTags: false, audioContent: false,
+                                        skipTypes: [] });
+        ruling = null;
+        await refresh();
+      } catch (error) {
+        fail(error);
+      }
+    };
+    actions.append(remove);
+  }
   const cancel = element("button", "", "Cancel");
   cancel.onclick = () => { ruling = null; renderFolders(); };
   const save = element("button", "", "Save");
@@ -1210,6 +1259,20 @@ function shown(path) {
 function samePath(a, b) {
   const plain = (path) => (path || "").replaceAll("\\", "/").replace(/\/$/, "");
   return isWindows ? plain(a).toLowerCase() === plain(b).toLowerCase() : plain(a) === plain(b);
+}
+
+/// `path` is `folder` or inside it (the two as Settings spells them).
+function insidePath(path, folder) {
+  const plain = (value) => (value || "").replaceAll("\\", "/").replace(/\/$/, "");
+  const at = isWindows ? plain(path).toLowerCase() : plain(path);
+  const root = isWindows ? plain(folder).toLowerCase() : plain(folder);
+  return at === root || at.startsWith(root + "/");
+}
+
+/// The chosen root a path is searched as: the nearest one that contains it.
+function ownerFolder(path) {
+  return (info.folders || []).filter((folder) => samePath(path, folder) || insidePath(path, folder))
+    .sort((a, b) => b.length - a.length)[0] || null;
 }
 
 function element(tag, className, text) {

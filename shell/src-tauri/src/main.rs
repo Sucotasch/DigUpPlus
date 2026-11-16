@@ -375,16 +375,20 @@ fn clean_rule(kinds: Vec<String>, shallow: bool, audio_tags: bool, audio_content
     }
 }
 
-/// The rules that go with the folders being added: keys as those folders are spelled, nothing for a folder that isn't
-/// chosen, and nothing for a rule that would say "everything" (the crawl is the same either way).
+/// The rules that go with the folders being added: keys as those folders are spelled, rules for chosen folders and for
+/// any folder inside one (a subfolder rule), nothing for a folder that isn't searched, and nothing for a rule that would
+/// say "everything" (the crawl is the same either way).
 fn rules_for(folders: &[String], sent: BTreeMap<String, settings::RootRule>) -> BTreeMap<String, settings::RootRule> {
     let mut out = BTreeMap::new();
     for (path, rule) in sent {
-        let Some(chosen) = folders.iter().find(|folder| models::same_path(Path::new(folder), Path::new(&path)))
-        else { continue };
+        let Some(owner) = folders.iter()
+            .filter(|folder| models::same_path(Path::new(folder), Path::new(&path)) || inside(&path, folder))
+            .max_by_key(|folder| folder.len()) else { continue };
+        // The chosen folder's stored spelling, or the subfolder's own path.
+        let key = if models::same_path(Path::new(owner), Path::new(&path)) { owner.clone() } else { path };
         let (tags, content) = (rule.tags_bit(), rule.content_bit());
         if let Some(rule) = clean_rule(rule.kinds, rule.shallow, tags, content, rule.skip_types) {
-            out.insert(chosen.clone(), rule);
+            out.insert(key, rule);
         }
     }
     out
@@ -425,11 +429,16 @@ fn tag_arguments(settings: &Settings) -> Vec<String> {
 }
 
 /// `path` is `folder`, or inside it. Windows compares paths without case (`remove_folder` used `Path::starts_with`,
-/// which keeps `c:\one\photos\sub` when `C:\One\Photos` goes).
+/// which keeps `c:\one\photos\sub` when `C:\One\Photos` goes), and both separators count as the same one: a folder
+/// picked with `/` and a root saved with `\` describe the same place.
 fn inside(path: &str, folder: &str) -> bool {
-    let key = |text: &str| if cfg!(windows) { text.to_lowercase() } else { text.to_string() };
-    let (path, folder) = (key(path.trim_end_matches(['\\', '/'])), key(folder.trim_end_matches(['\\', '/'])));
-    path == folder || path.strip_prefix(&folder).is_some_and(|rest| rest.starts_with('\\') || rest.starts_with('/'))
+    let key = |text: &str| {
+        let text = text.replace('\\', "/");
+        let text = text.trim_end_matches('/');
+        if cfg!(windows) { text.to_lowercase() } else { text.to_string() }
+    };
+    let (path, folder) = (key(path), key(folder));
+    path == folder || path.strip_prefix(&folder).is_some_and(|rest| rest.starts_with('/'))
 }
 
 // MARK: Commands
@@ -3050,17 +3059,28 @@ fn set_skipped(app: AppHandle, shell: State<'_, Arc<Shell>>, skipped: Vec<String
 #[tauri::command]
 fn set_root_rule(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, kinds: Vec<String>, shallow: bool,
                  audio_tags: bool, audio_content: bool, skip_types: Vec<String>) -> Result<(), String> {
+    // The folders actually searched: the launch arguments' in a dev run, else the settings'.
+    let searched = shell.folders();
     {
         let mut settings = shell.settings.lock().unwrap();
-        let Some(chosen) = settings.folders.iter()
-            .find(|path| models::same_path(Path::new(path), Path::new(&folder))).cloned() else {
-            return Err("That folder isn't searched any more.".into());
+        // A chosen folder, or any folder inside one: a subfolder rule changes how files under it are read without
+        // making it a search root of its own.
+        let Some(owner) = searched.iter()
+            .filter(|path| models::same_path(Path::new(path), Path::new(&folder)) || inside(&folder, path))
+            .max_by_key(|path| path.len()).cloned() else {
+            return Err("That folder isn't inside a searched folder any more.".into());
         };
+        // The chosen folder's stored spelling, or the subfolder's own path.
+        let key = if models::same_path(Path::new(&owner), Path::new(&folder)) { owner } else { folder };
+        // One key per folder, whatever its case: replace the rule saved under another spelling.
+        if let Some(existing) = settings.root_rules.keys()
+            .find(|path| models::same_path(Path::new(path), Path::new(&key))).cloned() {
+            settings.root_rules.remove(&existing);
+        }
         // The engine's order, without repeats, and nothing it doesn't know.
-        match clean_rule(kinds, shallow, audio_tags, audio_content, skip_types) {
-            Some(rule) => settings.root_rules.insert(chosen, rule),
-            None => settings.root_rules.remove(&chosen),
-        };
+        if let Some(rule) = clean_rule(kinds, shallow, audio_tags, audio_content, skip_types) {
+            settings.root_rules.insert(key, rule);
+        }
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
     }
     apply_folders(&app);
@@ -3893,5 +3913,10 @@ mod tests {
         // Windows compares paths without case (`FolderSelection.isInside` does too).
         #[cfg(windows)]
         assert!(super::inside("c:/one/photos/a.jpg", "C:/One/Photos"));
+        // A folder picked with / and a root saved with \ are the same place.
+        #[cfg(windows)]
+        assert!(super::inside("C:\\One\\Photos\\a.jpg", "C:/One/Photos"));
+        #[cfg(windows)]
+        assert!(super::inside("C:/One/Photos", "C:\\One\\Photos\\"));
     }
 }

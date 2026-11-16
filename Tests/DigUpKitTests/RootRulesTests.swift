@@ -171,4 +171,68 @@ import Testing
         #expect(widened.added == 1 && widened.removed == 0)
         #expect(try store.files(under: [folder.path]).count == 2)
     }
+
+    // MARK: A rule on a folder inside a chosen one
+
+    @Test func aSubfolderRuleAppliesWithoutBeingAChosenRoot() throws {
+        try write("photo.jpg")
+        try write("Screenshoot/one.jpg")
+        try write("Screenshoot/two.png")
+        try write("Screenshoot/clip.mp4")
+        let screens = folder.appendingPathComponent("Screenshoot", isDirectory: true)
+        let report = Crawler.crawl([folder], options: options([
+            RootRule(root: folder.path, kinds: [.image, .screenshot]),
+            RootRule(root: screens.path, kinds: [.video]),
+        ]))
+        #expect(names(report) == ["Screenshoot/clip.mp4", "photo.jpg"])
+        // The pictures under the subfolder take its rule; the reason is filed under the chosen folder Settings shows.
+        #expect(report.leftOut[folder.path]?["of a kind this folder doesn't index"] == 2)
+    }
+
+    @Test func aSubfolderRuleReadsItsRecordingsByTags() throws {
+        try write("root.wav")
+        try write("Records/song.wav")
+        try write("Records/podcast.mp3")
+        let records = folder.appendingPathComponent("Records", isDirectory: true)
+        let report = Crawler.crawl([folder], options: options([
+            RootRule(root: folder.path, kinds: [.audio], audioTags: false, audioContent: true),
+            RootRule(root: records.path, kinds: [.audio], audioTags: true, audioContent: false),
+        ], tagTypes: ["wav"]))
+        #expect(names(report) == ["Records/song.wav", "root.wav"])
+        #expect(report.candidates.first { $0.path.hasSuffix("root.wav") }?.tagsOnly == false)
+        #expect(report.candidates.first { $0.path.hasSuffix("song.wav") }?.tagsOnly == true)
+        #expect(report.leftOut[folder.path]?["audio not in the tag list here"] == 1)
+    }
+
+    @Test func aShallowSubfolderRuleStopsAtItsOwnFiles() throws {
+        try write("photo.jpg")
+        try write("Screens/one.jpg")
+        try write("Screens/deep/two.jpg")
+        let screens = folder.appendingPathComponent("Screens", isDirectory: true)
+        let report = Crawler.crawl([folder], options: options([RootRule(root: screens.path, shallow: true)]))
+        #expect(names(report) == ["Screens/one.jpg", "photo.jpg"])
+        #expect(report.leftOut[folder.path]?["folders beyond the top level"] == 1)
+    }
+
+    @Test func aSubfolderRuleNarrowsAndWidensOnlyItsOwnRows() throws {
+        let photo = try write("photo.jpg")
+        let innerPhoto = try write("Screens/one.jpg")
+        let clip = try write("Screens/clip.mp4")
+        let screens = folder.appendingPathComponent("Screens", isDirectory: true)
+        let store = try IndexStore(directory: folder.appendingPathComponent("index-subrules"))
+        func sync(_ rules: [RootRule]) throws -> Indexer.SyncSummary {
+            let indexer = try Indexer(store: store, options: options(rules),
+                                      makeEmbedder: { throw WorkerError.notFound("sync doesn't need a model") })
+            return try indexer.sync([folder])
+        }
+        #expect(try sync([]).added == 3)
+        // The subfolder's rule leaves its own picture out and keeps its video; the root's picture is untouched.
+        let narrowed = try sync([RootRule(root: screens.path, kinds: [.video])])
+        #expect(narrowed.removed == 1 && narrowed.added == 0)
+        #expect(try store.files(under: [folder.path]).map(\.path).sorted() == [photo.path, clip.path].sorted())
+        // Taking it away brings the picture back.
+        let widened = try sync([])
+        #expect(widened.added == 1 && widened.removed == 0)
+        #expect(try store.files(under: [folder.path]).map(\.path).sorted() == [photo.path, innerPhoto.path, clip.path].sorted())
+    }
 }
