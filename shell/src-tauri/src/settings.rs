@@ -109,6 +109,10 @@ pub struct RootRule {
     /// its kinds said it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub looks_pictures: Option<bool>,
+    /// Index the documents as documents (the Documents results). None for a rule saved before the bit: its kinds said
+    /// it. A PDF is still read for scanned pages' text when `ocr_scans` is on and this is off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub looks_documents: Option<bool>,
     /// Read the words on a PDF's scanned pages.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ocr_scans: Option<bool>,
@@ -117,7 +121,7 @@ pub struct RootRule {
 impl Default for RootRule {
     fn default() -> Self {
         RootRule { kinds: Vec::new(), shallow: false, audio_tags: None, audio_content: None, skip_types: Vec::new(),
-                   ocr_pictures: None, looks_pictures: None, ocr_scans: None }
+                   ocr_pictures: None, looks_pictures: None, looks_documents: None, ocr_scans: None }
     }
 }
 

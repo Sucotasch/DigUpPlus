@@ -356,23 +356,28 @@ const KINDS: [&str; 7] = ["screenshot", "image", "pdf", "doc", "audio", "video",
 /// included when either of its bits is on, and left out when neither is — the editor has no "Audio" box of its own.
 fn clean_rule(kinds: Vec<String>, shallow: bool, audio_tags: bool, audio_content: bool,
               skip_types: Vec<String>, ocr_pictures: Option<String>, looks_pictures: Option<bool>,
-              ocr_scans: bool) -> Option<settings::RootRule> {
+              looks_documents: Option<bool>, ocr_scans: bool) -> Option<settings::RootRule> {
     let sent = kinds;
-    // A rule saved before the picture bits existed said whether it looked at pictures by its kinds; the new editor
-    // always sends both bits. An empty kind list in an old rule meant every kind. Audio is two reading bits too: its
-    // kinds follow them.
+    // A rule saved before the picture/document bits existed said whether it read them by its kinds; the new editor
+    // always sends the bits. An empty kind list in an old rule meant every kind. Audio is two reading bits too.
     let old = looks_pictures.is_none() && ocr_pictures.is_none();
     let sent_all = old && sent.is_empty();
     let sent_pictures = sent_all || sent.iter().any(|kind| kind == "image" || kind == "screenshot");
     let looks = looks_pictures.unwrap_or(if old { sent_pictures } else { true });
-    // A new rule with no text choice keeps the text default (screenshots); an old rule read them when it had pictures.
-    let ocr = ocr_pictures.or_else(|| {
-        if old { sent_pictures.then(|| "screenshots".to_string()) } else { Some("screenshots".to_string()) }
-    });
+    // A new rule with no text choice keeps OCR off; the 0.1.16 betas' screenshots-only value is now every picture.
+    let ocr = ocr_pictures.map(|value| if value == "screenshots" { "all".to_string() } else { value });
     let pictures = looks || ocr.as_deref().unwrap_or("off") != "off";
+    // Documents: an old rule had them when its kinds included pdf/doc; a new one says it with its bit. A PDF is still
+    // read for its scanned pages' text when Documents is off and OCR Documents is on.
+    let sent_documents = sent_all || sent.iter().any(|kind| kind == "pdf" || kind == "doc");
+    let looks_documents = looks_documents.unwrap_or(if looks_documents.is_none() { sent_documents } else { true });
+    let documents = looks_documents || ocr_scans;
     let kinds: Vec<String> = KINDS.iter().filter(|kind| match **kind {
         "image" | "screenshot" => pictures,
         "audio" => audio_tags || audio_content,
+        "pdf" => documents,
+        // A text document has no OCR of its own: only Documents reads it.
+        "doc" => looks_documents,
         // The code index has kinds of its own and never gets a folder rule.
         "code" => false,
         _ => sent_all || sent.iter().any(|sent| sent == *kind),
@@ -382,9 +387,11 @@ fn clean_rule(kinds: Vec<String>, shallow: bool, audio_tags: bool, audio_content
     // Only a choice that differs from the default is stored: screenshots alone, looked at, and no scans are what a
     // rule without these bits says. A rule that keeps the words and not the look keeps its bit.
     let looks_pictures = (!looks).then_some(false);
+    let looks_documents = (!looks_documents).then_some(false);
     let ocr_scans = ocr_scans.then_some(true);
-    let plain = looks && ocr.as_deref().unwrap_or("screenshots") == "screenshots" && ocr_scans.is_none();
-    let ocr_pictures = ocr.filter(|value| value == "off" || value == "all");
+    let plain = looks && ocr.as_deref().unwrap_or("off") == "off"
+        && looks_documents.is_none() && ocr_scans.is_none();
+    let ocr_pictures = ocr.filter(|value| value == "all");
     // Every kind the main index has (the code index has kinds of its own and never gets a folder rule).
     let all_kinds = !kinds.iter().any(|kind| kind == "code") && kinds.len() == KINDS.len() - 1;
     // Everything, all the way down, no type skipped, and a picture read the default way: no rule at all.
@@ -398,7 +405,7 @@ fn clean_rule(kinds: Vec<String>, shallow: bool, audio_tags: bool, audio_content
         // just that.
         Some(settings::RootRule { kinds: if all_kinds { Vec::new() } else { kinds }, shallow,
                                   audio_tags: Some(audio_tags), audio_content: Some(audio_content), skip_types,
-                                  ocr_pictures, looks_pictures, ocr_scans })
+                                  ocr_pictures, looks_pictures, looks_documents, ocr_scans })
     }
 }
 
@@ -416,7 +423,7 @@ fn rules_for(folders: &[String], sent: BTreeMap<String, settings::RootRule>) -> 
         let (tags, content) = (rule.tags_bit(), rule.content_bit());
         let scans = rule.ocr_scans.unwrap_or(false);
         if let Some(rule) = clean_rule(rule.kinds, rule.shallow, tags, content, rule.skip_types,
-                                       rule.ocr_pictures, rule.looks_pictures, scans) {
+                                       rule.ocr_pictures, rule.looks_pictures, rule.looks_documents, scans) {
             out.insert(key, rule);
         }
     }
@@ -437,8 +444,10 @@ fn rules_to_arguments(rules: &BTreeMap<String, settings::RootRule>) -> Vec<Strin
         let skip_types: Vec<&str> = rule.skip_types.iter().map(String::as_str).collect();
         let pictures = rule.ocr_pictures.as_deref().filter(|value| *value == "off" || *value == "all");
         let looks = rule.looks_pictures.unwrap_or(true);
+        let looks_documents = rule.looks_documents.unwrap_or(true);
         let scans = rule.ocr_scans.unwrap_or(false);
-        if kinds.is_empty() && !rule.shallow && skip_types.is_empty() && pictures.is_none() && looks && !scans {
+        if kinds.is_empty() && !rule.shallow && skip_types.is_empty() && pictures.is_none() && looks
+            && looks_documents && !scans {
             continue;
         }
         let mut payload = json!({ "root": root, "shallow": rule.shallow,
@@ -454,6 +463,9 @@ fn rules_to_arguments(rules: &BTreeMap<String, settings::RootRule>) -> Vec<Strin
         }
         if !looks {
             payload["looksPictures"] = json!(false);
+        }
+        if !looks_documents {
+            payload["looksDocuments"] = json!(false);
         }
         if scans {
             payload["ocrScans"] = json!(true);
@@ -3122,7 +3134,8 @@ fn set_skipped(app: AppHandle, shell: State<'_, Arc<Shell>>, skipped: Vec<String
 #[tauri::command]
 fn set_root_rule(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, kinds: Vec<String>, shallow: bool,
                  audio_tags: bool, audio_content: bool, skip_types: Vec<String>,
-                 ocr_pictures: Option<String>, looks_pictures: Option<bool>, ocr_scans: bool) -> Result<(), String> {
+                 ocr_pictures: Option<String>, looks_pictures: Option<bool>, looks_documents: Option<bool>,
+                 ocr_scans: bool) -> Result<(), String> {
     // The folders actually searched: the launch arguments' in a dev run, else the settings'.
     let searched = shell.folders();
     {
@@ -3143,7 +3156,7 @@ fn set_root_rule(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, k
         }
         // The engine's order, without repeats, and nothing it doesn't know.
         if let Some(rule) = clean_rule(kinds, shallow, audio_tags, audio_content, skip_types, ocr_pictures,
-                                       looks_pictures, ocr_scans) {
+                                       looks_pictures, looks_documents, ocr_scans) {
             settings.root_rules.insert(key, rule);
         }
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
@@ -3950,21 +3963,21 @@ mod tests {
     #[test]
     fn the_audio_bits_put_audio_into_the_folder_kinds() {
         // Both bits: recordings are in the kinds, whatever the page sent for them.
-        let rule = super::clean_rule(vec!["image".into()], false, true, true, Vec::new(), None, None, false).unwrap();
+        let rule = super::clean_rule(vec!["image".into()], false, true, true, Vec::new(), None, None, None, false).unwrap();
         assert_eq!(rule.kinds, vec!["screenshot", "image", "audio"]);
         assert_eq!(rule.audio_tags, Some(true));
         assert_eq!(rule.audio_content, Some(true));
         // Neither: recordings leave the kinds, and nothing else is left but the depth rule.
-        let off = super::clean_rule(vec!["audio".into()], true, false, false, Vec::new(), None, None, false).unwrap();
+        let off = super::clean_rule(vec!["audio".into()], true, false, false, Vec::new(), None, None, None, false).unwrap();
         assert_eq!(off.kinds, Vec::<String>::new());
         assert!(off.shallow);
         // Everything, all the way down: no rule at all, so the crawl is the ordinary one.
         let all = vec!["screenshot".into(), "image".into(), "pdf".into(), "doc".into(), "video".into()];
-        assert!(super::clean_rule(all, false, true, true, Vec::new(), None, None, false).is_none());
+        assert!(super::clean_rule(all, false, true, true, Vec::new(), None, None, None, false).is_none());
         // A folder that skips a type keeps a rule even when it takes every kind, all the way down.
         let skipping = super::clean_rule(vec!["screenshot".into(), "image".into(), "pdf".into(), "doc".into(),
                                               "video".into()], false, true, true,
-                                         vec![" .HTML, log ".into()], None, None, false).unwrap();
+                                         vec![" .HTML, log ".into()], None, None, None, false).unwrap();
         assert_eq!(skipping.skip_types, vec!["html", "log"]);
         assert!(skipping.shallow == false);
     }
@@ -3974,26 +3987,21 @@ mod tests {
         let all = vec!["screenshot".into(), "image".into(), "pdf".into(), "doc".into(), "video".into()];
         // Every kind, but the words of every picture and no look: the rule keeps the bits and no kinds (all kinds).
         let text_only = super::clean_rule(all.clone(), false, true, true, Vec::new(),
-                                          Some("all".into()), Some(false), false).unwrap();
+                                          Some("all".into()), Some(false), None, false).unwrap();
         assert_eq!(text_only.ocr_pictures.as_deref(), Some("all"));
         assert_eq!(text_only.looks_pictures, Some(false));
         assert!(text_only.kinds.is_empty());
-        // Look only: the words off, and a rule that says so.
-        let look_only = super::clean_rule(all.clone(), false, true, true, Vec::new(),
-                                          Some("off".into()), Some(true), false).unwrap();
-        assert_eq!(look_only.ocr_pictures.as_deref(), Some("off"));
-        assert_eq!(look_only.looks_pictures, None);
-        // Both, the default way: no rule at all.
+        // Images on, OCR off, every kind, all the default way: no rule at all.
         assert!(super::clean_rule(all, false, true, true, Vec::new(),
-                                  Some("screenshots".into()), Some(true), false).is_none());
+                                  Some("off".into()), Some(true), None, false).is_none());
         // Neither: the picture kinds leave, and the rule still says why.
         let none = super::clean_rule(vec!["pdf".into(), "doc".into(), "video".into()], false, false, false,
-                                     Vec::new(), Some("off".into()), Some(false), false).unwrap();
+                                     Vec::new(), Some("off".into()), Some(false), None, false).unwrap();
         assert_eq!(none.kinds, vec!["pdf", "doc", "video"]);
-        assert_eq!(none.ocr_pictures.as_deref(), Some("off"));
+        assert_eq!(none.ocr_pictures, None);
         assert_eq!(none.looks_pictures, Some(false));
         // Scans: a rule of its own, with the pictures read the default way.
-        let scans = super::clean_rule(Vec::new(), false, false, false, Vec::new(), None, None, true).unwrap();
+        let scans = super::clean_rule(Vec::new(), false, false, false, Vec::new(), None, None, None, true).unwrap();
         assert_eq!(scans.ocr_scans, Some(true));
         // The bits reach the engine's argument, and a rule that says nothing about them sends neither key.
         let mut rules = std::collections::BTreeMap::new();
@@ -4009,6 +4017,23 @@ mod tests {
     }
 
     #[test]
+    fn a_documents_look_and_text_are_bits_of_their_own() {
+        let docs = vec!["pdf".into(), "doc".into(), "video".into()];
+        // Documents off, OCR Documents on: only PDFs, for their scans' text; text documents leave.
+        let scan = super::clean_rule(docs.clone(), false, false, false, Vec::new(), Some("off".into()),
+                                     Some(false), Some(false), true).unwrap();
+        assert_eq!(scan.kinds, vec!["pdf", "video"]);
+        assert_eq!(scan.looks_documents, Some(false));
+        assert_eq!(scan.ocr_scans, Some(true));
+        // Documents on with scans: documents and their scans; the default documents bit needs no key.
+        let both = super::clean_rule(docs, false, false, false, Vec::new(), Some("off".into()),
+                                     Some(false), Some(true), true).unwrap();
+        assert_eq!(both.kinds, vec!["pdf", "doc", "video"]);
+        assert_eq!(both.looks_documents, None);
+        assert_eq!(both.ocr_scans, Some(true));
+    }
+
+    #[test]
     fn rules_at_setup_time_keep_a_subfolder_rule_and_its_ocr() {
         // The setup sends every rule it knows for a chosen folder's tree, so a subfolder's own rule (and its OCR
         // choice) survives saving the window.
@@ -4017,7 +4042,7 @@ mod tests {
         sent.insert("C:\\Photos\\Screenshoot".to_string(), RootRule {
             kinds: vec!["image".into(), "screenshot".into()], shallow: false,
             audio_tags: Some(false), audio_content: Some(false), skip_types: Vec::new(),
-            ocr_pictures: Some("all".into()), looks_pictures: None, ocr_scans: Some(true),
+            ocr_pictures: Some("all".into()), looks_pictures: None, looks_documents: None, ocr_scans: Some(true),
         });
         let rules = super::rules_for(&folders, sent);
         let rule = rules.get("C:\\Photos\\Screenshoot").expect("the subfolder's rule is kept");

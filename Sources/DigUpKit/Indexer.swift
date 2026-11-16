@@ -162,7 +162,8 @@ public final class Indexer {
                     // the picture, or not).
                     if row.size != file.size || abs(row.mtime - file.mtime) > 0.001 || row.kind != file.kind
                         || row.tagsOnly != file.tagsOnly || row.ocrPictures != file.ocrPictures
-                        || row.looksPictures != file.looksPictures || row.ocrScans != file.ocrScans {
+                        || row.looksPictures != file.looksPictures || row.asDocument != file.looksDocuments
+                        || row.ocrScans != file.ocrScans {
                         try store.requeue(row.id, as: file)
                         summary.changed += 1
                         summary.queued.append(row.id)
@@ -573,7 +574,8 @@ public final class Indexer {
                     wanted = (job.step ?? (total > options.bigPDFPages ? 0..<options.pdfStep : 0..<options.maxPages))
                         .clamped(to: 0..<min(total, options.maxPages))
                     return wanted
-                }, minText: options.minPageText, renderPixels: 1400, ocrScans: batch[0].ocrScans, to: folder)
+                }, minText: options.minPageText, renderPixels: 1400, ocrScans: batch[0].ocrScans,
+                   asDocument: batch[0].asDocument, to: folder)
                 prepared.payload = .pdf(pages: read.pages, read: wanted, total: read.total, title: read.title)
             case .doc:
                 // The chunks are cut the same way every time, so a later step goes on where the last one stopped.
@@ -774,6 +776,31 @@ public final class Indexer {
             try store.finish(file.id, state: "skipped", detail: "no pages")
             return ("skipped", "no pages")
         }
+        // A PDF a folder keeps only for its scans' text (Documents off, OCR Documents on): no text pages, no page
+        // images or vectors, only the `.ocr` text of the scanned pages, for the OCR results.
+        if !file.asDocument {
+            let ocrPages = pages.filter { $0.ocr && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            if ocrPages.isEmpty && !unread {
+                try store.finish(file.id, state: "skipped", detail: "no text on its scans")
+                return ("skipped", "no text on its scans")
+            }
+            try store.db.transaction {
+                for page in ocrPages {
+                    try store.addSegment(file: file.id, kind: .ocr, modality: .text, loc: Double(page.number),
+                                         excerpt: excerpt(page.text), text: page.text)
+                }
+                var info = later ? try store.info(of: file.id) : [:]
+                info["pages"] = "\(total)"
+                info["scanned_pages"] = "\((info["scanned_pages"].flatMap(Int.init) ?? 0) + pages.count)"
+                info["ocr_chars"] = "\((info["ocr_chars"].flatMap(Int.init) ?? 0) + ocrPages.reduce(0) { $0 + $1.text.count })"
+                info["read_to"] = unread ? "\(read.upperBound)" : nil
+                info["read_end"] = unread ? "\(end)" : nil
+                let detail = unread ? "read to page \(read.upperBound) of \(total)"
+                    : "\(pages.count) scanned pages"
+                try store.finish(file.id, state: unread ? "partial" : "done", detail: detail, info: info)
+            }
+            return (unread ? "partial" : "done", "\(pages.count) scanned pages" + (unread ? ", more to read" : ""))
+        }
         let title = title ?? URL(fileURLWithPath: file.path).deletingPathExtension().lastPathComponent
         let textPages = pages.filter { $0.imagePath == nil }
         // A page that's mostly digits (a table, a data listing) gets keyword search only.
@@ -804,9 +831,17 @@ public final class Indexer {
                                      excerpt: excerpt(page.text), text: page.text, vector: textVectors[page.number])
             }
             for (page, embedding) in zip(imagePages, imageVectors) {
+                // A scan's words are an `.ocr` segment of their own (the OCR results, and keyword search); its picture
+                // keeps the image vector without duplicating the text in the page_image segment.
+                let ocr = page.ocr ? page.text : ""
+                let pageText = ocr.isEmpty ? page.text : ""
                 try store.addSegment(file: file.id, kind: .pageImage, modality: .image, loc: Double(page.number),
-                                     excerpt: page.text.isEmpty ? nil : excerpt(page.text), text: page.text,
+                                     excerpt: pageText.isEmpty ? nil : excerpt(pageText), text: pageText,
                                      vector: embedding.vector)
+                if !ocr.isEmpty {
+                    try store.addSegment(file: file.id, kind: .ocr, modality: .text, loc: Double(page.number),
+                                         excerpt: excerpt(ocr), text: ocr)
+                }
             }
             var info = later ? try store.info(of: file.id) : [:]
             info["pages"] = "\(total)"

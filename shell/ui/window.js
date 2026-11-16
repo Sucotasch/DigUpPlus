@@ -21,13 +21,13 @@ const TIER_FALL = 0.05;        // how far under the top image the lowered visibl
 const PAGE_SIZE = 300;      // later pages: measured at ~13–18 ms of DOM each
 const MORE_MARGIN = 400;    // px from the end of the list that asks for the next page
 const FILTERS = [
-  { key: "images", title: "Images", kinds: ["image"], icon: "image" },
-  { key: "screenshots", title: "Screenshots", kinds: ["screenshot"], icon: "screenshot" },
-  { key: "documents", title: "Documents", kinds: ["pdf", "doc"], icon: "doc" },
+  { key: "images", title: "Images", kinds: ["image", "screenshot"], section: "images", icon: "image" },
+  { key: "ocr", title: "OCR", section: "ocr", icon: "screenshot" },
+  { key: "documents", title: "Documents", kinds: ["pdf", "doc"], section: "documents", icon: "doc" },
   { key: "video", title: "Video", kinds: ["video"], icon: "video" },
   { key: "audio", title: "Audio", kinds: ["audio"], icon: "audio" },
 ];
-const FILTER_OF_KIND = { screenshot: "screenshots", image: "images", pdf: "documents", doc: "documents", video: "video",
+const FILTER_OF_KIND = { screenshot: "images", image: "images", pdf: "documents", doc: "documents", video: "video",
                          audio: "audio" };
 /// What the tick boxes, Select All and Move To/Copy To/Delete work on: every result that is a file handled by hand —
 /// pictures, recordings, videos, PDFs and documents. Code search has its own index and stays out.
@@ -41,12 +41,12 @@ const COLUMNS = [
   { key: "properties", title: "Properties" },
 ];
 const EXAMPLES = [
-  ["a screenshot of an error message", "screenshots"], ["receipt", "documents"], ["whiteboard notes", "images"],
+  ["a screenshot of an error message", "ocr"], ["receipt", "documents"], ["whiteboard notes", "images"],
   ["someone laughing", "audio"], ["a dog on the beach", "video"], ["slides about the budget", "documents"],
 ];
-/// What the home counts, in this order: "136 screenshots, 104 images, 25 PDFs…"
-const KIND_ORDER = ["screenshot", "image", "pdf", "doc", "audio", "video", "code"];
-const COUNTED = { screenshot: ["screenshot", "screenshots"], image: ["image", "images"], pdf: ["PDF", "PDFs"],
+/// What the home counts, in this order: "104 pictures, 25 PDFs…"
+const KIND_ORDER = ["pictures", "pdf", "doc", "audio", "video", "code"];
+const COUNTED = { pictures: ["picture", "pictures"], pdf: ["PDF", "PDFs"],
                   doc: ["document", "documents"], audio: ["audio file", "audio files"], video: ["video", "videos"],
                   code: ["code file", "code files"] };
 const SEARCH_ICON = '<svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6.5"/><path d="M15 15 L20.5 20.5"/></svg>';
@@ -178,7 +178,11 @@ function run() {
       let shown = all;
       let tiers = null;
       if (filtered) {
-        shown = await ask({ op: "search", q: text, code, meaning: !state.like, limit: LIMIT, kinds: filter.kinds,
+        // OCR is a words search: no meaning vector, or both-on pictures would be ranked by their look here.
+        const wordsOnly = filter.section === "ocr";
+        shown = await ask({ op: "search", q: text, code, meaning: wordsOnly ? false : !state.like, limit: LIMIT,
+                            ...(filter.kinds ? { kinds: filter.kinds } : {}),
+                            ...(filter.section ? { section: filter.section } : {}),
                             ...(state.like && !code ? { like: state.like } : {}),
                             ...(layered ? tierRequest(cutoffs) : {}) });
         tiers = layered ? shown.tier_counts ?? null : null;
@@ -208,6 +212,7 @@ function run() {
       // The chips count the whole query; a helper too old to send its kind totals falls back to this first page.
       const strong = all.hits.slice(0, all.strong);
       const counts = countsOfReply(all, strong);
+      if (filtered && filter.key === "ocr") counts.ocr = shown.strong_total ?? shown.strong ?? 0;
       // A rerun of the same query (the index moved under the list) keeps the person on the file they were on; a
       // new query starts at the top.
       const sameQuery = text === state.text;
@@ -337,9 +342,10 @@ function loadMore(auto = false) {
   renderPagination();
   // The same mode the first page was ranked in: if the encoder wasn't ready then, later pages must not suddenly
   // switch to meaning and mix two different rankings.
-  ask({ op: "search", q: text, code, meaning: state.meaning, limit, offset,
+  ask({ op: "search", q: text, code, meaning: filter?.section === "ocr" ? false : state.meaning, limit, offset,
         ...(state.like && !code ? { like: state.like } : {}),
-        ...(filter && !code ? { kinds: filter.kinds } : {}),
+        ...(filter?.kinds ? { kinds: filter.kinds } : {}),
+        ...(filter?.section ? { section: filter.section } : {}),
         ...(state.tiered ? tierRequest(state.tierCutoffs) : {}) })
     .then((reply) => {
       if (generation !== state.generation) return;
@@ -551,7 +557,7 @@ function setFilter(key) {
 /// Whether this search can hold pictures at all: look-alike groups are fingerprints of pictures, and documents,
 /// recordings and videos have none, so the line and the work behind it stay out of those categories.
 function picturesPossible() {
-  return state.filter === null || state.filter === "images" || state.filter === "screenshots";
+  return state.filter === null || state.filter === "images";
 }
 
 function groupingActive() {
@@ -1271,8 +1277,11 @@ function loadHidden() {
   state.loadingHidden = true;
   state.hiddenError = null;
   renderContent();
-  ask({ op: "search", q: state.text, code: false, meaning: state.meaning, limit, offset,
-        ...(filter ? { kinds: filter.kinds } : {}), by_cosine: true, cosine_ceiling: state.tierCutoffs.weak })
+  ask({ op: "search", q: state.text, code: false, meaning: filter?.section === "ocr" ? false : state.meaning,
+        limit, offset,
+        ...(filter?.kinds ? { kinds: filter.kinds } : {}),
+        ...(filter?.section ? { section: filter.section } : {}),
+        by_cosine: true, cosine_ceiling: state.tierCutoffs.weak })
     .then((reply) => {
       if (generation !== state.generation) return;
       const seen = new Set(state.hidden.map((hit) => hit.path));
@@ -1677,10 +1686,12 @@ async function toTotalCommander(every) {
     setNote("Collecting the results…");
     const filter = pageFilter();
     try {
-      const reply = await ask({ op: "search", q: state.text, code: isCode(), meaning: state.meaning,
+      const reply = await ask({ op: "search", q: state.text, code: isCode(),
+                                meaning: filter?.section === "ocr" ? false : state.meaning,
                                 limit: 20000,
                                 ...(state.like && !isCode() ? { like: state.like } : {}),
-                                ...(filter && !isCode() ? { kinds: filter.kinds } : {}),
+                                ...(filter?.kinds ? { kinds: filter.kinds } : {}),
+                                ...(filter?.section ? { section: filter.section } : {}),
                                 // The panel shows the Images layers by cosine: the whole ranking, hidden tail too.
                                 ...(state.tiered && !isCode() ? { by_cosine: true } : {}) });
       paths = sortedHits(reply.hits || []).map((hit) => hit.path);
@@ -2279,20 +2290,24 @@ function home() {
   return box;
 }
 
-/// What's in the index ("136 screenshots, 104 images… in Pictures and Documents") and the shortcut.
+/// What's in the index ("104 pictures, 25 PDFs… in Pictures and Documents") and the shortcut.
 function about() {
   const box = element("div", "about");
-  const kinds = state.indexed && KIND_ORDER.filter((kind) => state.indexed[kind] > 0);
+  // Pictures are one count for the home: the index still has image/screenshot kinds, but the user sees Images and OCR
+  // as the two results, not kinds.
+  const indexed = state.indexed && { ...state.indexed,
+    pictures: (state.indexed.image || 0) + (state.indexed.screenshot || 0) };
+  const kinds = indexed && KIND_ORDER.filter((kind) => indexed[kind] > 0);
   if (kinds?.length) {
     const line = element("div", "line");
     const counts = element("div", "kind-counts");
     for (const kind of kinds) {
       const item = element("span");
-      item.innerHTML = ICONS[kind];
-      item.append(state.indexed[kind].toLocaleString());
+      item.innerHTML = ICONS[kind === "pictures" ? "image" : kind];
+      item.append(indexed[kind].toLocaleString());
       counts.append(item);
     }
-    counts.title = kinds.map((kind) => counted(kind, state.indexed[kind])).join(", ");
+    counts.title = kinds.map((kind) => counted(kind, indexed[kind])).join(", ");
     line.append(counts, element("span", "", `in ${folderNames()}`));
     box.append(line);
   } else if (state.app.searchable > 0) {

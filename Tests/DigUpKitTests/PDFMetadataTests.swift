@@ -16,7 +16,8 @@ import Testing
                           info: "/Title (Quarterly notes) /Bad#FF (ignored metadata)")
 
         let result = try PDFExtractor.pages(of: pdf, range: { total in 0..<total }, minText: 1, renderPixels: 1400,
-                                            ocrScans: false, to: folder.appendingPathComponent("rendered"))
+                                            ocrScans: false, asDocument: true,
+                                            to: folder.appendingPathComponent("rendered"))
 
         #expect(result.total == 1)
         #expect(result.title == "Quarterly notes")

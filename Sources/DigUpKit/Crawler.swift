@@ -16,12 +16,15 @@ public struct Candidate: Sendable {
     public let ocrPictures: PictureText
     /// Index this picture's look (`RootRule.readsPicturesByLook`): its image vector and its place in Images.
     public let looksPictures: Bool
+    /// Index this document as a document (`RootRule.readsDocumentsAsDocuments`); false for a PDF kept only for its
+    /// scanned pages' text.
+    public let looksDocuments: Bool
     /// Read the words on this PDF's scanned pages (`RootRule.ocrScans`).
     public let ocrScans: Bool
 
     public init(path: String, kind: FileKind, size: Int64, mtime: Double, inode: UInt64, device: UInt64,
                 tagsOnly: Bool = false, ocrPictures: PictureText = .screenshots, looksPictures: Bool = true,
-                ocrScans: Bool = false) {
+                looksDocuments: Bool = true, ocrScans: Bool = false) {
         self.path = path
         self.kind = kind
         self.size = size
@@ -31,6 +34,7 @@ public struct Candidate: Sendable {
         self.tagsOnly = tagsOnly
         self.ocrPictures = ocrPictures
         self.looksPictures = looksPictures
+        self.looksDocuments = looksDocuments
         self.ocrScans = ocrScans
     }
 }
@@ -269,13 +273,14 @@ public enum Crawler {
                     // words (no image vector) — a screenshots folder shown as text, not as pictures.
                     var ocrPictures = PictureText.screenshots
                     var looksPictures = true
+                    var looksDocuments = true
                     var ocrScans = false
                     if !options.code {
                         switch kind {
                         case .image, .screenshot:
                             let rule = rules[ruleOwner]
                             let looks = rule?.readsPicturesByLook ?? true
-                            let text = rule?.picturesText ?? .screenshots
+                            let text = rule?.picturesText ?? .off
                             let readsText = kind == .screenshot ? text != .off : text == .all
                             if !looks && !readsText {
                                 leftOut("pictures aren't read here", under: reportOwner)
@@ -283,7 +288,21 @@ public enum Crawler {
                             }
                             looksPictures = looks
                             ocrPictures = text
-                        case .pdf: ocrScans = rules[ruleOwner]?.readsScans ?? false
+                        case .pdf:
+                            let rule = rules[ruleOwner]
+                            looksDocuments = rule?.readsDocumentsAsDocuments ?? true
+                            ocrScans = rule?.readsScans ?? false
+                            if !looksDocuments && !ocrScans {
+                                leftOut("documents aren't read here", under: reportOwner)
+                                return
+                            }
+                        case .doc:
+                            // A text document only ever comes as a document; OCR Documents is for PDF scans.
+                            if !(rules[ruleOwner]?.readsDocumentsAsDocuments ?? true) {
+                                leftOut("documents aren't read here", under: reportOwner)
+                                return
+                            }
+                            looksDocuments = true
                         default: break
                         }
                     }
@@ -313,7 +332,8 @@ public enum Crawler {
                     foundRoot[url.path] = reportOwner
                     found.append(Candidate(path: url.path, kind: kind, size: info.size, mtime: info.mtime,
                                            inode: info.inode, device: info.device, tagsOnly: tagsOnly,
-                                           ocrPictures: ocrPictures, looksPictures: looksPictures, ocrScans: ocrScans))
+                                           ocrPictures: ocrPictures, looksPictures: looksPictures,
+                                           looksDocuments: looksDocuments, ocrScans: ocrScans))
                 }
             }
 

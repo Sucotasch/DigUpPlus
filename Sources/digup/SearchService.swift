@@ -168,6 +168,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             // Dev knobs and the window's image layers; ordinary requests use the gate Settings → Search sets.
             let zGate = (request["zgate"] as? NSNumber)?.doubleValue ?? self.zGate
             let byCosine = request["by_cosine"] as? Bool ?? false
+            let section = SearchSection(rawValue: request["section"] as? String ?? "") ?? .none
             let cosineFloor = (request["cosine_floor"] as? NSNumber)?.doubleValue
             let cosineCeiling = (request["cosine_ceiling"] as? NSNumber)?.doubleValue
             let tierThresholds = (request["tier_cutoffs"] as? [NSNumber])?.map(\.doubleValue) ?? []
@@ -213,8 +214,9 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                                              zGate: zGate, prefixLast: prefixLast)
             } else {
                 page = try searcher.page(likeFile != nil ? "" : text, queryVector: vector, kinds: kinds,
-                                         limit: limit, offset: offset, zGate: zGate, prefixLast: prefixLast,
-                                         cosineFloor: cosineFloor, cosineCeiling: cosineCeiling,
+                                         section: section, limit: limit, offset: offset, zGate: zGate,
+                                         prefixLast: prefixLast, cosineFloor: cosineFloor,
+                                         cosineCeiling: cosineCeiling,
                                          byCosine: byCosine || likeFile != nil, tierThresholds: tierThresholds)
             }
             let hits = page.hits.filter {

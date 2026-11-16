@@ -427,6 +427,7 @@ import WinSDK
         #expect(row.ocrPictures == .screenshots && !row.ocrScans)
         // A row made before the look bit was indexed as a picture, and still is.
         #expect(row.looksPictures)
+        #expect(row.asDocument)
         #expect(row.state == "done")
     }
 

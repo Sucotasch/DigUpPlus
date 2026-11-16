@@ -701,34 +701,26 @@ async function setSubfolderSkipped(path, read) {
   }
 }
 
-/// A folder's rule in words, for its line: "pictures only · recordings by tags · top level only".
+/// A folder's rule in words, for its line: "images + OCR · documents · top level only".
 function ruleText(rule) {
   const inKinds = (rule.kinds || []).length === 0 || (rule.kinds || []).includes("audio");
   const tags = rule.audioTags ?? inKinds;
   const content = rule.audioContent ?? inKinds;
   const kinds = rule.kinds || [];
-  const documents = kinds.length === 0 || kinds.includes("pdf") || kinds.includes("doc");
-  const videos = kinds.length === 0 || kinds.includes("video");
-  const pictures = pictureBits(rule);
-  const named = [];
-  if (documents) named.push("documents");
-  if (videos) named.push("videos");
-  if (pictures.looks) named.push("pictures");
+  const bits = pictureBits(rule);
+  const docs = documentBits(rule);
   const parts = [];
-  if (named.length && !(documents && videos && pictures.looks)) parts.push(`${named.join(", ")} only`);
-  if (!pictures.looks && pictures.text !== "off") {
-    parts.push(pictures.text === "all" ? "text on every picture (not in Images)"
-                                       : "text on screenshots (not in Images)");
-  } else if (pictures.looks && pictures.text === "all") {
-    parts.push("text on every picture");
-  } else if (pictures.looks && pictures.text === "off") {
-    parts.push("no text on pictures");
-  }
+  if (bits.images && bits.ocr) parts.push("images + OCR");
+  else if (bits.images) parts.push("images");
+  else if (bits.ocr) parts.push("OCR only (not in Images)");
+  if (docs.documents && docs.ocrDocuments) parts.push("documents + OCR");
+  else if (docs.documents) parts.push("documents");
+  else if (docs.ocrDocuments) parts.push("OCR documents only");
+  if (kinds.length === 0 || kinds.includes("video")) parts.push("videos");
   if (tags && content) parts.push("recordings by tags and sound");
   else if (tags) parts.push("recordings by tags only");
   else if (content) parts.push("recordings by sound");
   if ((rule.skipTypes || []).length) parts.push(`skips ${rule.skipTypes.join(", ")}`);
-  if (rule.ocrScans) parts.push("text on scans");
   if (rule.shallow) parts.push("top level only");
   return parts.join(" · ");
 }

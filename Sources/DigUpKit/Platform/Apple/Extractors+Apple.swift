@@ -152,7 +152,7 @@ extension PDFExtractor {
     /// eval (2026-10-08), a glyph-order page as picture + garbled-text vector beat the picture alone: R@1 0.75 vs 0.73,
     /// MRR 0.84 vs 0.81 (an English query for a Bengali page found it only through the text vector).
     static func pages(of url: URL, range: (Int) -> Range<Int>, minText: Int, renderPixels: Int, ocrScans: Bool,
-                      to folder: URL)
+                      asDocument: Bool, to folder: URL)
         throws -> (pages: [Page], total: Int, title: String?) {
         guard let document = PDFDocument(url: url) else { throw ExtractError.unreadable("can't open PDF") }
         if document.isLocked { throw ExtractError.locked }
@@ -168,19 +168,21 @@ extension PDFExtractor {
                     let read = OCR.text(in: image).trimmingCharacters(in: .whitespacesAndNewlines)
                     if read.count >= minText, PageTextProblem.check(read) == nil,
                        read.unicodeScalars.contains(where: { Script.arabic.contains($0.value) }) {
-                        pages.append(Page(number: index + 1, text: read, imagePath: nil, ocr: true))
+                        if asDocument { pages.append(Page(number: index + 1, text: read, imagePath: nil, ocr: true)) }
                         continue
                     }
                 }
                 if text.count >= minText {
-                    pages.append(Page(number: index + 1, text: text, imagePath: nil))
+                    if asDocument { pages.append(Page(number: index + 1, text: text, imagePath: nil)) }
                     continue
                 }
             case .glyphOrder:
+                // A page whose text layer came out in glyph order isn't a scan; a text-only PDF skips it.
+                if !asDocument { continue }
                 (text, garbled) = ("", text)
             case nil:
                 if text.count >= minText {
-                    pages.append(Page(number: index + 1, text: text, imagePath: nil))
+                    if asDocument { pages.append(Page(number: index + 1, text: text, imagePath: nil)) }
                     continue
                 }
             }

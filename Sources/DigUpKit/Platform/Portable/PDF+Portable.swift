@@ -86,9 +86,10 @@ enum PDFium {
 
 extension PDFExtractor {
     /// Reads the pages in `range(pageCount)` (0-based). Pages with real text become text; scans, slides and pages whose
-    /// text layer came out in glyph order are rendered.
+    /// text layer came out in glyph order are rendered. With `asDocument` false (a PDF kept only for its scans' text),
+    /// pages with real text are skipped: only rendered scans come back, for OCR.
     static func pages(of url: URL, range: (Int) -> Range<Int>, minText: Int, renderPixels: Int, ocrScans: Bool,
-                      to folder: URL)
+                      asDocument: Bool, to folder: URL)
         throws -> (pages: [Page], total: Int, title: String?) {
         try PDFium.withDocument(url) { document in
             let total = Int(FPDF_GetPageCount(document))
@@ -101,10 +102,12 @@ extension PDFExtractor {
                 switch PageTextProblem.check(text) {
                 case .lostLetters, nil:
                     if text.count >= minText {
-                        pages.append(Page(number: index + 1, text: text, imagePath: nil))
+                        if asDocument { pages.append(Page(number: index + 1, text: text, imagePath: nil)) }
                         continue
                     }
                 case .glyphOrder:
+                    // A page whose text layer came out in glyph order isn't a scan; a text-only PDF skips it.
+                    if !asDocument { continue }
                     (text, garbled) = ("", text)
                 }
                 guard let image = PDFium.render(page, pixels: renderPixels) else { continue }

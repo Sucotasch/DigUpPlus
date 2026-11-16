@@ -4,6 +4,12 @@ import Foundation
 ///
 /// `total` and `strong` describe the whole ranked list, not this page: a page that starts past the strong boundary
 /// must not re-anchor "strong" to its own first hit.
+/// What a search is for, when it isn't a kind: the window's Images and OCR results are modes of pictures (the look and
+/// the words), and Documents excludes PDFs a folder keeps only for their scans' text.
+public enum SearchSection: String, Sendable {
+    case none, images, ocr, documents
+}
+
 public struct SearchPage: Sendable {
     public let hits: [SearchHit]
     public let total: Int          // files in the full ranking, after kinds and the meaning gates
@@ -60,6 +66,10 @@ public final class Searcher {
     private var fileKind: [Int64: FileKind] = [:]
     /// A picture's look is indexed (`files.looks`): false for the ones a folder keeps only for their words.
     private var fileLooks: [Int64: Bool] = [:]
+    /// A PDF is a document (`files.as_document`): false for one kept only for its scans' text.
+    private var fileAsDocument: [Int64: Bool] = [:]
+    /// Files with OCR text (a picture's `.ocr`, or a scanned PDF page's): the OCR results.
+    private var fileHasOCR = Set<Int64>()
     public private(set) var vectorSource: String?
     /// False after `releaseVectors()` (or `loadVectors: false`): keyword search still works, and the next search with
     /// a query vector loads them again.
@@ -123,9 +133,19 @@ public final class Searcher {
     private func reloadFiles() throws {
         fileKind.removeAll(keepingCapacity: true)
         fileLooks.removeAll(keepingCapacity: true)
-        try store.db.query("SELECT id, kind, looks FROM files") { row in
+        fileAsDocument.removeAll(keepingCapacity: true)
+        try store.db.query("SELECT id, kind, looks, as_document FROM files") { row in
             fileKind[row.int(0)] = FileKind(rawValue: row.text(1) ?? "")
             fileLooks[row.int(0)] = row.int(2) != 0
+            fileAsDocument[row.int(0)] = row.int(3) != 0
+        }
+        fileHasOCR.removeAll(keepingCapacity: true)
+        // A page_image with text is how 0.1.16 betas stored a scan's OCR before `.ocr` segments; both count.
+        try store.db.query("""
+            SELECT DISTINCT s.file FROM segments s JOIN fts ON fts.rowid = s.id
+            WHERE s.kind = 'ocr' OR (s.kind = 'page_image' AND fts.body <> '')
+            """) { row in
+            fileHasOCR.insert(row.int(0))
         }
         vectorSource = try store.meta("vector_source")
     }
@@ -137,9 +157,10 @@ public final class Searcher {
     public static let wordWeight = 2.0
     public static let codeWordWeight = 1.0
 
-    public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil, limit: Int = 20,
+    public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil,
+                       section: SearchSection = .none, limit: Int = 20,
                        zGate: Double = 2.0, wordWeight: Double? = nil, prefixLast: Bool = false) throws -> [SearchHit] {
-        try page(text, queryVector: queryVector, kinds: kinds, limit: limit, offset: 0, zGate: zGate,
+        try page(text, queryVector: queryVector, kinds: kinds, section: section, limit: limit, offset: 0, zGate: zGate,
                  wordWeight: wordWeight, prefixLast: prefixLast).hits
     }
 
@@ -148,8 +169,8 @@ public final class Searcher {
     /// best segment's cosine within the given band, and rank by cosine itself, so every page boundary falls between
     /// the layers. `tierThresholds` (visible, weak) asks for the layer counts of the whole image ranking in the
     /// returned `tierCounts`. Ordinary searches pass none of them and keep the score order and the z gate.
-    public func page(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil, limit: Int = 20,
-                     offset: Int = 0, zGate: Double = 2.0, wordWeight: Double? = nil,
+    public func page(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil, section: SearchSection = .none,
+                     limit: Int = 20, offset: Int = 0, zGate: Double = 2.0, wordWeight: Double? = nil,
                      prefixLast: Bool = false, cosineFloor: Double? = nil, cosineCeiling: Double? = nil,
                      byCosine: Bool = false, tierThresholds: [Double] = [],
                      excluding: Int64? = nil) throws -> SearchPage {
@@ -158,12 +179,23 @@ public final class Searcher {
         if queryVector != nil, !vectorsLoaded { try reload() }
         let fileKind = self.fileKind
         let fileLooks = self.fileLooks
+        let fileAsDocument = self.fileAsDocument
+        let fileHasOCR = self.fileHasOCR
         let allowed = { (file: Int64) -> Bool in
-            guard let kind = fileKind[file], kinds == nil || kinds!.contains(kind) else { return false }
-            // A folder can keep a picture's words and not its look: that one is found in All files, never among the
-            // pictures (Images or Screenshots). All files asks for no kinds and still shows it.
-            if kinds != nil, kind == .image || kind == .screenshot { return fileLooks[file] ?? true }
-            return true
+            guard let kind = fileKind[file] else { return false }
+            switch section {
+            case .images:
+                // The look: a picture with an image vector, whatever the folder also did with its words.
+                return (kind == .image || kind == .screenshot) && (fileLooks[file] ?? true)
+            case .ocr:
+                // The words: any picture text or scanned PDF page.
+                return fileHasOCR.contains(file)
+            case .documents:
+                // A PDF kept only for its scans' text has no document result.
+                return (kind == .pdf || kind == .doc) && (fileAsDocument[file] ?? true)
+            case .none:
+                return kinds == nil || kinds!.contains(kind)
+            }
         }
 
         // Meaning: score every vector on this query's scale (`meaning`), keep each file's best segment.

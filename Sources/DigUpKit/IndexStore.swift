@@ -19,6 +19,8 @@ public struct FileRecord: Sendable {
     public let ocrPictures: PictureText
     /// A picture's look is indexed (`Candidate.looksPictures`): its image vector, and its place in Images/Screenshots.
     public let looksPictures: Bool
+    /// A document is indexed as a document (`Candidate.looksDocuments`): false for a PDF kept only for scan text.
+    public let asDocument: Bool
     /// Read the words on a PDF's scanned pages (`Candidate.ocrScans`).
     public let ocrScans: Bool
 }
@@ -31,7 +33,7 @@ public struct FileRecord: Sendable {
 public final class IndexStore {
     public let directory: URL
     public let db: Database
-    static let schemaVersion: Int64 = 9
+    static let schemaVersion: Int64 = 10
 
     /// Keyword search's tokenizer. Marks (M*) count as letters, so Bengali vowel signs and Arabic harakat stay inside
     /// their words: by default SQLite splits on them ("কলকাতায়" became "কলক", "ত", "য").
@@ -147,6 +149,7 @@ public final class IndexStore {
             if (1...6).contains(version) { try migratePhash() }
             if (1...7).contains(version) { try migrateOCRFields() }
             if (1...8).contains(version) { try migratePictureLook() }
+            if (1...9).contains(version) { try migrateDocumentResult() }
         }
         try checkPhashRecipe()
     }
@@ -170,6 +173,7 @@ public final class IndexStore {
                 ocr_pictures TEXT NOT NULL DEFAULT 'screenshots',  -- text on pictures: off, screenshots or all
                 ocr_scans INTEGER NOT NULL DEFAULT 0,     -- words on a PDF's scanned pages
                 looks INTEGER NOT NULL DEFAULT 1,         -- a picture's image vector (0: its words only)
+                as_document INTEGER NOT NULL DEFAULT 1,   -- a PDF shown as a document (0: its scanned pages' text only)
                 phash BLOB                                -- Phash256 of a picture: Find similar's groups
             );
             CREATE INDEX files_inode ON files(device, inode);
@@ -326,6 +330,17 @@ public final class IndexStore {
         }
     }
 
+    /// Schema 9 → 10: whether a PDF is shown as a document (`as_document`), or kept only for its scanned pages' text.
+    /// A row made before this was a document.
+    private func migrateDocumentResult() throws {
+        var hasColumn = false
+        try db.query("PRAGMA table_info(files)") { if $0.text(1) == "as_document" { hasColumn = true } }
+        try db.transaction {
+            if !hasColumn { try db.execute("ALTER TABLE files ADD COLUMN as_document INTEGER NOT NULL DEFAULT 1") }
+            try db.execute("PRAGMA user_version = 10")
+        }
+    }
+
     /// The fingerprint recipe changed: every stored hash was made the old way, and two recipes together would group
     /// nothing. They go, to be computed again; the pictures and their vectors are untouched.
     private func checkPhashRecipe() throws {
@@ -356,14 +371,14 @@ public final class IndexStore {
 
     // MARK: Files
 
-    static let fileColumns = "id, path, kind, size, mtime, inode, device, state, detail, tags_only, ocr_pictures, ocr_scans, looks"
+    static let fileColumns = "id, path, kind, size, mtime, inode, device, state, detail, tags_only, ocr_pictures, ocr_scans, looks, as_document"
 
     static func record(_ row: Statement) -> FileRecord {
         FileRecord(id: row.int(0), path: row.text(1) ?? "", kind: FileKind(rawValue: row.text(2) ?? "") ?? .doc,
                    size: row.int(3), mtime: row.double(4), inode: UInt64(bitPattern: row.int(5)),
                    device: UInt64(bitPattern: row.int(6)), state: row.text(7) ?? "pending", detail: row.text(8),
                    tagsOnly: row.int(9) != 0, ocrPictures: PictureText(rawValue: row.text(10) ?? "") ?? .screenshots,
-                   looksPictures: row.int(12) != 0, ocrScans: row.int(11) != 0)
+                   looksPictures: row.int(12) != 0, asDocument: row.int(13) != 0, ocrScans: row.int(11) != 0)
     }
 
     /// Every file under one of `roots`.
@@ -435,13 +450,13 @@ public final class IndexStore {
     public func insert(_ file: Candidate) throws -> Int64 {
         try db.transaction {   // the row and its name entry together
             try db.run("""
-                INSERT INTO files(path, kind, size, mtime, inode, device, tags_only, ocr_pictures, ocr_scans, looks)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO files(path, kind, size, mtime, inode, device, tags_only, ocr_pictures, ocr_scans, looks, as_document)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                        [.text(file.path), .text(file.kind.rawValue), .int(file.size), .double(file.mtime),
                         .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device)),
                         .int(file.tagsOnly ? 1 : 0), .text(file.ocrPictures.rawValue), .int(file.ocrScans ? 1 : 0),
-                        .int(file.looksPictures ? 1 : 0)])
+                        .int(file.looksPictures ? 1 : 0), .int(file.looksDocuments ? 1 : 0)])
             let id = db.lastInsertID
             try addNameRow(file: id, path: file.path)
             return id
@@ -454,12 +469,12 @@ public final class IndexStore {
             try deleteSegments(of: id, keepingName: true)
             try db.run("""
                 UPDATE files SET kind = ?, size = ?, mtime = ?, inode = ?, device = ?, tags_only = ?,
-                    ocr_pictures = ?, ocr_scans = ?, looks = ?, state = 'pending',
+                    ocr_pictures = ?, ocr_scans = ?, looks = ?, as_document = ?, state = 'pending',
                     detail = NULL, info = NULL, indexed_at = NULL WHERE id = ?
                 """, [.text(file.kind.rawValue), .int(file.size), .double(file.mtime),
                       .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device)),
                       .int(file.tagsOnly ? 1 : 0), .text(file.ocrPictures.rawValue), .int(file.ocrScans ? 1 : 0),
-                      .int(file.looksPictures ? 1 : 0), .int(id)])
+                      .int(file.looksPictures ? 1 : 0), .int(file.looksDocuments ? 1 : 0), .int(id)])
         }
     }
 

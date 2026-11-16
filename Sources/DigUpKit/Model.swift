@@ -62,6 +62,11 @@ public struct IndexOptions: Sendable {
     public var maxChunks = 5_000           // ~8 million characters
     public var minPageText = 200           // fewer characters than this: embed the rendered page instead
     public var photoBudget = 140           // vision soft tokens: 70 / 140 / 280 / 560 / 1120
+    // TODO(screenshot case): after the Images/OCR split, OCR reads the words on any picture, so the separate
+    // screenshot budget (and the 1536 px PNG preparation, and the old Screenshots section) is effectively dead. Keep it
+    // until that variant is verified, then decide: one budget/preparation for every picture, or 280/1536 for the visual
+    // detail of dense UI screenshots. Changing a budget changes the index fingerprint: a reindex, new layer thresholds
+    // (0.648/0.600) and `digup eval` before and after are required. Do not remove it silently.
     public var screenshotBudget = 280
     public var pageBudget = 280
     public var frameBudget = 70
@@ -117,6 +122,9 @@ public struct RootRule: Codable, Sendable, Equatable {
     /// Index a picture's look (its image vector, the Images and Screenshots filters). nil for a rule saved before this
     /// was a setting: then the rule's kinds say it (a rule that left pictures out didn't look at them).
     public var looksPictures: Bool?
+    /// Index documents as documents (the Documents results). nil for a rule saved before this was a setting: then the
+    /// rule's kinds say it. A PDF is still read for its scanned pages' text when `ocrScans` is on and this is off.
+    public var looksDocuments: Bool?
     /// Read the words on a PDF's scanned pages (a render and an OCR a page, so off unless the folder asks). nil for a
     /// rule saved before this was a setting.
     public var ocrScans: Bool?
@@ -133,13 +141,17 @@ public struct RootRule: Codable, Sendable, Equatable {
         let kinds = self.kinds ?? []
         return kinds.isEmpty || kinds.contains(.image) || kinds.contains(.screenshot)
     }
-    /// Text on pictures, with the "not stored yet" default: a rule that looked at pictures read screenshots' words; one
-    /// that left them out read none.
+    /// Text on pictures: off unless the folder asks (the new default; earlier Windows had no OCR, and the Mac's
+    /// screenshots-only rule is the `screenshots` value of the 0.1.16 betas).
     public var picturesText: PictureText {
         if let text = ocrPictures { return text }
-        if looksPictures != nil { return .screenshots }
+        return .off
+    }
+    /// Index documents as documents. A rule saved before the bit existed had them when its kinds included pdf/doc.
+    public var readsDocumentsAsDocuments: Bool {
+        if let looks = looksDocuments { return looks }
         let kinds = self.kinds ?? []
-        return kinds.isEmpty || kinds.contains(.image) || kinds.contains(.screenshot) ? .screenshots : .off
+        return kinds.isEmpty || kinds.contains(.pdf) || kinds.contains(.doc)
     }
     /// Scanned pages are read by default? No.
     public var readsScans: Bool { ocrScans ?? false }
@@ -155,7 +167,7 @@ public struct RootRule: Codable, Sendable, Equatable {
 
     public init(root: String, kinds: Set<FileKind>? = nil, shallow: Bool = false, audioTags: Bool? = nil,
                 audioContent: Bool? = nil, skipTypes: [String]? = nil, ocrPictures: PictureText? = nil,
-                looksPictures: Bool? = nil, ocrScans: Bool? = nil) {
+                looksPictures: Bool? = nil, looksDocuments: Bool? = nil, ocrScans: Bool? = nil) {
         self.root = root
         self.kinds = kinds
         self.shallow = shallow
@@ -164,6 +176,7 @@ public struct RootRule: Codable, Sendable, Equatable {
         self.skipTypes = skipTypes
         self.ocrPictures = ocrPictures
         self.looksPictures = looksPictures
+        self.looksDocuments = looksDocuments
         self.ocrScans = ocrScans
     }
 }

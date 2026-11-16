@@ -52,12 +52,19 @@ import Testing
                                                 inode: 2, device: 1, looksPictures: true))
         try store.addSegment(file: looked, kind: .ocr, modality: .text, text: "zorblat too")
         try store.finish(looked, state: "done")
+        // A PDF a folder keeps only for its scans' text: an OCR result, not a document.
+        let scan = try store.insert(Candidate(path: "/books/scan.pdf", kind: .pdf, size: 1, mtime: 1,
+                                              inode: 3, device: 1, looksDocuments: false, ocrScans: true))
+        try store.addSegment(file: scan, kind: .ocr, modality: .text, loc: 2, text: "zorblat on page two")
+        try store.finish(scan, state: "done")
         let searcher = try Searcher(store: store, loadVectors: false)
-        // The words-only screenshot is not an Images or Screenshots result; All files still finds it.
-        #expect(try searcher.search("zorblat", queryVector: nil, kinds: [.screenshot]).isEmpty)
-        #expect(try searcher.search("zorblat", queryVector: nil, kinds: [.image]).map(\.path) == ["/photos/dog.png"])
+        // Images is the look only; OCR is any text (the picture with both, and the scan); All files sees everything.
+        #expect(try searcher.search("zorblat", queryVector: nil, section: .images).map(\.path) == ["/photos/dog.png"])
+        #expect(try searcher.search("zorblat", queryVector: nil, section: .ocr).map(\.path).sorted()
+                == ["/books/scan.pdf", "/photos/dog.png", "/shots/error.png"])
+        #expect(try searcher.search("zorblat", queryVector: nil, section: .documents).isEmpty)
         #expect(try searcher.search("zorblat", queryVector: nil).map(\.path).sorted()
-                == ["/photos/dog.png", "/shots/error.png"])
+                == ["/books/scan.pdf", "/photos/dog.png", "/shots/error.png"])
     }
 
     @Test func bengaliAndArabicWordsStayWhole() throws {

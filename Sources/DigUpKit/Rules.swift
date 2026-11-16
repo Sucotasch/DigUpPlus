@@ -134,6 +134,11 @@ public enum Rules {
 
     /// macOS marks screenshots with an extended attribute that survives moves and copies (`hasScreenshotMarker`); names
     /// are the fallback, and all there is elsewhere.
+    /// TODO(screenshot case): this is a name/folder check, not a look at the picture. After the Images/OCR split it only
+    /// picks the vision budget and the 1536 px PNG preparation (the Screenshots section and the screenshot-only OCR
+    /// default go away). Once that variant works, either unify every picture's budget/preparation and delete this, or
+    /// keep it as a deliberate visual-quality optimisation; the first needs a reindex and an eval, so it is a separate
+    /// change. A misspelling such as "Screenshoot" already falls through to `.image` today.
     public static func isScreenshot(_ url: URL) -> Bool {
         if hasScreenshotMarker(url) { return true }
         let name = url.lastPathComponent

@@ -1,23 +1,32 @@
-// The fields of a folder's rule, shared by Settings and the setup's folders page. Pictures are two choices that work
-// together, as a recording's tags and sound do: index the look (the Pictures box) and read the words (Text on pictures).
-// Either one keeps the folder's pictures in the rule; Pictures off with Text on keeps only their words, never an Images
-// result. Documents is one box for PDFs and text documents (one section in the window). Both pages used to build these
-// on their own, and the setup's copy didn't know the OCR fields, so saving it wiped them.
+// The fields of a folder's rule, shared by Settings and the setup's folders page. Kinds and their OCR reading are two
+// independent results, as a recording's tags and sound are: Images (the look) and OCR (the words) for pictures;
+// Documents (the document) and OCR Documents (scanned PDF pages) for documents. Either bit keeps the kind in the rule;
+// neither leaves it out. Both pages build these here, so they can't drift.
 "use strict";
 
-// A rule's picture bits, with "not stored yet" read from its kinds: a rule saved before the bits existed looked at
-// the pictures its kinds included, and read screenshots' words. A rule with an explicit look bit and no text choice
-// reads screenshots' words (the text default).
+/// A rule's picture bits. A rule saved before them looked at the pictures its kinds included; OCR was off before it
+/// existed (the screenshots-only value of the 0.1.16 betas means OCR on, now for every picture).
 function pictureBits(rule) {
   const kinds = rule.kinds || [];
   const included = kinds.length === 0 || kinds.includes("image") || kinds.includes("screenshot");
-  const looks = rule.looksPictures ?? (rule.ocrPictures != null ? true : included);
-  const text = rule.ocrPictures ?? (rule.looksPictures != null ? "screenshots" : included ? "screenshots" : "off");
-  return { looks, text };
+  return {
+    images: rule.looksPictures ?? included,
+    ocr: rule.ocrPictures != null && rule.ocrPictures !== "off",
+  };
+}
+
+/// A rule's document bits. A rule saved before them had documents exactly when its kinds included pdf/doc.
+function documentBits(rule) {
+  const kinds = rule.kinds || [];
+  const included = kinds.length === 0 || kinds.includes("pdf") || kinds.includes("doc");
+  return {
+    documents: rule.looksDocuments ?? included,
+    ocrDocuments: rule.ocrScans === true,
+  };
 }
 
 /// Appends a rule's fields to `box` and returns what the page needs to save or react to them. The caller keeps the
-/// hint's text (it knows which kinds list or audio types are missing); `values()` is exactly what both UIs save.
+/// hint's text (it knows which audio types are missing); `values()` is exactly what both UIs save.
 function ruleControls(rule, box) {
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -36,54 +45,30 @@ function ruleControls(rule, box) {
     return input;
   };
   const bits = pictureBits(rule);
-  const pictures = choice("Pictures", bits.looks);
-  // Its words, for keyword search: screenshots alone (the default), every picture, or none. With Pictures off these
-  // are the only thing kept of a picture, so it is found by its words and never among the pictures.
-  const textLabel = make("label", "option");
-  textLabel.append(make("span", "text", "Text on pictures"));
-  const text = document.createElement("select");
-  text.className = "field";
-  text.title = "Reading words is the slow part of indexing a picture";
-  for (const [value, label] of [["off", "Don't read it"], ["screenshots", "Screenshots only"],
-                                ["all", "Every picture"]]) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = label;
-    option.selected = bits.text === value;
-    text.append(option);
-  }
-  textLabel.append(text);
-  box.append(textLabel);
-  const wordsOnly = make("p", "note");
-  const refreshNote = () => {
-    const kept = !pictures.checked && text.value !== "off";
-    wordsOnly.hidden = !kept;
-    if (kept) {
-      wordsOnly.textContent = text.value === "screenshots"
-        ? "Only screenshots are kept, for their words: not shown among Images or Screenshots."
-        : "Pictures are kept for their words only: not shown among Images or Screenshots.";
-    }
-  };
+  const images = choice("Images", bits.images);
+  const ocr = choice("OCR", bits.ocr);
+  const wordsOnly = make("p", "note", "Pictures are kept as OCR results only: not shown in Images.");
+  const refreshNote = () => { wordsOnly.hidden = images.checked || !ocr.checked; };
   refreshNote();
   box.append(wordsOnly);
-  pictures.addEventListener("change", refreshNote);
-  text.addEventListener("change", refreshNote);
-  // No kinds in the rule: everything. Documents covers PDFs and text documents (one section in the window).
-  const documents = choice("Documents", (rule.kinds || []).length === 0
-    || rule.kinds.includes("pdf") || rule.kinds.includes("doc"), "documents");
+  images.addEventListener("change", refreshNote);
+  ocr.addEventListener("change", refreshNote);
+  const docs = documentBits(rule);
+  const documents = choice("Documents", docs.documents);
+  const ocrDocuments = choice("OCR Documents", docs.ocrDocuments);
+  const scansOnly = make("p", "note",
+    "Only the text on scanned PDF pages is kept: no document results (text documents are not read).");
+  const refreshScans = () => { scansOnly.hidden = documents.checked || !ocrDocuments.checked; };
+  refreshScans();
+  box.append(scansOnly);
+  documents.addEventListener("change", refreshScans);
+  ocrDocuments.addEventListener("change", refreshScans);
   const videos = choice("Videos", (rule.kinds || []).length === 0 || rule.kinds.includes("video"), "video");
   const audioChoice = (label, checked) => choice(label, checked);
   const inKinds = (rule.kinds || []).length === 0 || (rule.kinds || []).includes("audio");
   // A rule saved before the bits existed read recordings exactly when its kinds included them.
   const tags = audioChoice("Recordings by their tags", rule.audioTags ?? inKinds);
   const content = audioChoice("Recordings by their sound", rule.audioContent ?? inKinds);
-  const scansChoice = make("label", "choice");
-  const scans = document.createElement("input");
-  scans.type = "checkbox";
-  scans.checked = rule.ocrScans === true;
-  scans.title = "A scanned page costs a render and an OCR each";
-  scansChoice.append(scans, "Read text on scanned PDF pages");
-  box.append(scansChoice);
   const hint = make("p", "note");
   hint.hidden = true;
   box.append(hint);
@@ -107,15 +92,17 @@ function ruleControls(rule, box) {
 
   const values = () => {
     const all = [];
-    // Documents is one box for the two kinds the window shows together.
-    if (documents.checked) all.push("pdf", "doc");
+    // Either picture result keeps the pictures in the rule (each is read as asked); neither leaves them out.
+    if (images.checked || ocr.checked) all.push("image", "screenshot");
+    // A PDF is read for a document result, for its scanned pages' text, or both; a text document only as a document.
+    if (documents.checked || ocrDocuments.checked) all.push("pdf");
+    if (documents.checked) all.push("doc");
     if (videos.checked) all.push("video");
-    // Either picture choice keeps the pictures in the rule (each read as asked); neither leaves them out.
-    if (pictures.checked || text.value !== "off") all.push("image", "screenshot");
     if (tags.checked || content.checked) all.push("audio");
     return { kinds: all, audioTags: tags.checked, audioContent: content.checked, shallow: !depth.checked,
              skipTypes: skip.value.split(",").map((type) => type.trim()).filter(Boolean),
-             looksPictures: pictures.checked, ocrPictures: text.value, ocrScans: scans.checked };
+             looksPictures: images.checked, ocrPictures: ocr.checked ? "all" : "off",
+             looksDocuments: documents.checked, ocrScans: ocrDocuments.checked };
   };
-  return { values, hint, pictures, text, documents, videos, tags, content, skip, depth, scans };
+  return { values, hint, images, ocr, documents, ocrDocuments, videos, tags, content, skip, depth };
 }

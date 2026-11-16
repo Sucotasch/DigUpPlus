@@ -265,12 +265,15 @@ import Testing
         #expect(candidate("photo.jpg")?.ocrScans == false)
     }
 
-    @Test func noRuleReadsScreenshotsAloneAndNoScans() throws {
+    @Test func noRuleReadsPicturesForTheirLookAndNoText() throws {
         try write("photo.jpg")
         try write("Screenshots/shot.png")
         try write("book.pdf")
         let report = Crawler.crawl([folder], options: options([]))
-        #expect(report.candidates.allSatisfy { $0.ocrPictures == .screenshots && !$0.ocrScans })
+        // OCR is opt-in: the default reads pictures' look only, and no scans.
+        let pictures = report.candidates.filter { $0.kind == .image || $0.kind == .screenshot }
+        #expect(pictures.count == 2 && pictures.allSatisfy { $0.looksPictures && $0.ocrPictures == .off })
+        #expect(report.candidates.first { $0.kind == .pdf }?.ocrScans == false)
     }
 
     @Test func aFolderCanReadPicturesOnlyForTheirWords() throws {
@@ -319,6 +322,31 @@ import Testing
         let back = try sync([])
         #expect(back.changed == 2 && back.added == 0 && back.removed == 0)
         #expect(try store.file(at: photo.path)?.looksPictures == true)
+    }
+
+    @Test func documentsOffKeepsOnlyScannedPDFText() throws {
+        try write("book.pdf")
+        try write("notes.txt")
+        try write("film.mp4")
+        // Documents off, OCR Documents on: the PDF is kept for its scans' text; text documents and videos aren't in
+        // this rule's kinds.
+        let report = Crawler.crawl([folder], options: options([
+            RootRule(root: folder.path, kinds: [.pdf], looksDocuments: false, ocrScans: true),
+        ]))
+        #expect(names(report) == ["book.pdf"])
+        let pdf = try #require(report.candidates.first)
+        #expect(pdf.looksDocuments == false && pdf.ocrScans)
+    }
+
+    @Test func documentsOffWithoutScanTextReadsNoDocuments() throws {
+        try write("book.pdf")
+        try write("notes.txt")
+        // Both document bits off, whatever the kinds say: neither a PDF nor its scans are opened.
+        let report = Crawler.crawl([folder], options: options([
+            RootRule(root: folder.path, looksDocuments: false, ocrScans: false),
+        ]))
+        #expect(report.candidates.isEmpty)
+        #expect(report.leftOut[folder.path]?["documents aren't read here"] == 2)
     }
 
     @Test func aTextRuleRequeuesOnlyWhatItChanges() throws {
