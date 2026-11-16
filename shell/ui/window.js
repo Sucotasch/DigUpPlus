@@ -3224,26 +3224,34 @@ document.addEventListener("keydown", (event) => {
       return;
     }
     case "ArrowDown":
-    case "ArrowUp":
+    case "ArrowUp": {
       // Shift takes the range from where choosing started to here (in the media list, a row at a time).
+      const wasTyping = document.activeElement === $query;
       if (event.shiftKey) {
         if (event.altKey || event.ctrlKey || event.metaKey || !isWindows || !rows().length) return;
         event.preventDefault();
         // A row at a time in the grid, one result in the table (columns() is 1 there).
         extendSelection(event.key === "ArrowDown" ? columns() : -columns());
+        if (wasTyping) focusActiveRow();   // the keyboard leaves the field with the selection
         return;
       }
       if (!plain || !rows().length) return;
       event.preventDefault();
       move(event.key === "ArrowDown" ? columns() : -columns());
+      // Down or Up is how one leaves the field for the results: a letter typed next must not rewrite the query and
+      // throw the ranking away. Tab (from a result) or a click on the field brings the caret back.
+      if (wasTyping) focusActiveRow();
       return;
+    }
     case "Insert": {
       // Add the one under the cursor to what's chosen (or take it away) and move on.
+      const wasTyping = document.activeElement === $query;
       const hit = state.hasResults && state.query.trim() ? selectedHit() : null;
       if (!hit || !isWindows || !MEDIA.has(hit.kind)) return;
       event.preventDefault();
       toggleSelected(hit.path);
       move(1);
+      if (wasTyping) focusActiveRow();
       return;
     }
     case "Delete":

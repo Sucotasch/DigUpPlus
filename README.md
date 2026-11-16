@@ -142,7 +142,7 @@ the full package.
 | Key or gesture | What it does |
 |---|---|
 | Ctrl+Shift+Space | Opens the search panel from any app (you can change it) |
-| ↓ ↑ | Moves through the results |
+| ↓ ↑ | Moves through the results, and takes the keyboard out of the search field with it (Tab or a click on the field brings the caret back) |
 | Enter | Opens the result: PDFs at the page, recordings and videos at the moment, code in your editor at the line |
 | Space | A big preview, at the page or moment (once you've moved to a result) |
 | Hovering a picture | A larger look at it — up to the window's size, without changing the selection or taking a click |
