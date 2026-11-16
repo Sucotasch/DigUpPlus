@@ -79,8 +79,14 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     /// Renders for previews: two at a time, beside the request loop, each made once per file version.
     private let previews: URL
     private var rendered: [String: String] = [:]
+    /// The keys in the order they were last asked for: the folder is capped, oldest first (see `previewLimit`).
+    private var renderedOrder: [String] = []
     private let renderLock = NSLock()
     private let renderSlots = DispatchSemaphore(value: 2)
+    /// The most previews kept on disk. A page is ~100 KB, so this is ~50 MB: a 5,000-page book flipped through at the
+    /// wheel must not leave half a gigabyte behind until the helper restarts. An evicted picture is rendered again when
+    /// it is asked for, which costs what it cost the first time.
+    private static let previewLimit = 512
 
     init(index: URL, roots: [String], skipped: [String], types: Set<String>, codeRoots: [String],
          codeSkipped: [String], idleSeconds: Double) throws {
@@ -486,11 +492,28 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             .timeIntervalSince1970 ?? 0
         let key = "\(path)|\(modified)|\(kind)|\(loc ?? -1)|\(pixels)"
         if let done = renderLock.withLock({ rendered[key] }), FileManager.default.fileExists(atPath: done) {
+            // Asked for again: the newest key is the last to go when the folder is capped.
+            renderLock.withLock {
+                if let at = renderedOrder.firstIndex(of: key) {
+                    renderedOrder.remove(at: at)
+                    renderedOrder.append(key)
+                }
+            }
             return ["image": done]
         }
         let image = try PreviewImages.make(PreviewImages.Kind(rawValue: kind) ?? .image, of: path, at: loc,
                                            pixels: pixels, in: previews)
-        renderLock.withLock { rendered[key] = image }
+        renderLock.withLock {
+            rendered[key] = image
+            renderedOrder.removeAll { $0 == key }
+            renderedOrder.append(key)
+            while renderedOrder.count > Self.previewLimit, let oldest = renderedOrder.first {
+                renderedOrder.removeFirst()
+                if let path = rendered.removeValue(forKey: oldest) {
+                    try? FileManager.default.removeItem(atPath: path)
+                }
+            }
+        }
         return ["image": image]
     }
 
