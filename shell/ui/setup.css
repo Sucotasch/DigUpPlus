@@ -96,8 +96,13 @@ h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: 
 .rule p { font-size: 12px; margin: 0 0 4px; }
 .rule .choice { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px; }
 .rule .choice input { margin: 0; accent-color: var(--moss); }
+.rule .option { display: flex; gap: 10px; align-items: center; margin-top: 6px; }
+.rule .option .text { font-size: 12px; color: var(--secondary); flex: none; }
+.rule input.field, .rule select.field { width: 100%; font: inherit; font-size: 12px; color: var(--text);
+  background: var(--card); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; }
 .rule .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
 .rule .actions button { padding: 3px 10px; }
+.rule .actions .danger { background: #c4441c; color: white; border-color: transparent; }
 .rule .subfolders { padding: 4px 0 0; border-top: 0; }
 .rule .subfolder { padding-left: 26px; }
 .rule .more { padding-left: 26px; }

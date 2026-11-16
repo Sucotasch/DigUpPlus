@@ -767,6 +767,28 @@ fn repick_apply(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, ta
               "missing": counts["missing"]}))
 }
 
+/// The folders right inside `folder`, skipped or not: Settings' subfolder list. The estimate omits skipped folders, so
+/// a folder left out could never be read again from a list built from it.
+#[tauri::command]
+fn list_subfolders(shell: State<'_, Arc<Shell>>, folder: String) -> Result<Vec<String>, String> {
+    let folders = shell.folders();
+    let searched = folders.iter()
+        .any(|root| models::same_path(Path::new(root), Path::new(&folder)) || inside(&folder, root));
+    if !searched {
+        return Err("That folder isn't inside a searched folder any more.".into());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&folder).map_err(|error| format!("can't look inside it: {error}"))?.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Hidden folders aren't searched anyway.
+        if name.starts_with('.') || !path.is_dir() { continue; }
+        out.push(path.display().to_string());
+    }
+    out.sort_by_key(|path| path.to_lowercase());
+    Ok(out)
+}
+
 /// Settings → Folders, for a folder that is there but empty: its rows are the files that were deleted, and they leave the
 /// index while the folder stays searched.
 #[tauri::command]
@@ -1353,7 +1375,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, set_confirm_move_copy,
             set_confirm_delete, set_include_datasets, hide_window, debug_query, debug_report, window_info, destination_conflicts, operation_confirmations,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
-            remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, set_search_settings, rescan_folder, reread_folder, repick_preview, repick_apply, forget_folder, set_index_hours, mcp_config, code_setup_info, set_code_folders, choose_code_folders,
+            remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, list_subfolders, set_search_settings, rescan_folder, reread_folder, repick_preview, repick_apply, forget_folder, set_index_hours, mcp_config, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases, pick_totalcmd, set_totalcmd_new_tab, open_in_totalcmd,
             set_lookalike,
@@ -3947,6 +3969,23 @@ mod tests {
         plain.insert("C:/Pics".to_string(), RootRule { kinds: vec!["image".into()], ..RootRule::default() });
         let payload: serde_json::Value = serde_json::from_str(&super::rules_to_arguments(&plain)[1]).unwrap();
         assert!(payload.get("ocrPictures").is_none() && payload.get("ocrScans").is_none());
+    }
+
+    #[test]
+    fn rules_at_setup_time_keep_a_subfolder_rule_and_its_ocr() {
+        // The setup sends every rule it knows for a chosen folder's tree, so a subfolder's own rule (and its OCR
+        // choice) survives saving the window.
+        let folders = vec!["C:\\Photos".to_string()];
+        let mut sent = std::collections::BTreeMap::new();
+        sent.insert("C:\\Photos\\Screenshoot".to_string(), RootRule {
+            kinds: vec!["image".into(), "screenshot".into()], shallow: false,
+            audio_tags: Some(false), audio_content: Some(false), skip_types: Vec::new(),
+            ocr_pictures: Some("all".into()), ocr_scans: Some(true),
+        });
+        let rules = super::rules_for(&folders, sent);
+        let rule = rules.get("C:\\Photos\\Screenshoot").expect("the subfolder's rule is kept");
+        assert_eq!(rule.ocr_pictures.as_deref(), Some("all"));
+        assert_eq!(rule.ocr_scans, Some(true));
     }
 
     #[test]

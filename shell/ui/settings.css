@@ -59,6 +59,16 @@ main.settings h3:first-child { margin-top: 14px; }
 .confirm.rules { background: var(--card); }
 .confirm .choice { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px; }
 .confirm .choice input { margin: 0; accent-color: var(--moss); }
+/* A folder's subfolders, inside its rule panel: read or not, and each one's own rule. */
+.confirm .subfolders { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 4px; }
+.confirm .subfolder { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; }
+.confirm .subfolder input[type="checkbox"] { margin: 0; accent-color: var(--moss); flex: none; }
+.confirm .subfolder .name { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.confirm .subfolder .counts { flex: 1; min-width: 0; color: var(--secondary); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.confirm .subfolder.off .name, .confirm .subfolder.off .counts { opacity: 0.6; }
+.confirm .more { font: inherit; font-size: 11px; color: var(--ember); background: none; border: 0; padding: 3px 0;
+  text-align: left; }
 
 input.field {
   width: 100%; font: inherit; font-size: 13px; color: var(--text); background: var(--card);

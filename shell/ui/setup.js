@@ -182,8 +182,10 @@ function renderFolders() {
 // The settings' root rules, chosen here so the first pass already leaves out what the person doesn't want: the kinds a
 // folder holds (Pictures is pictures and screenshots), how its recordings are read, and "scan subfolders". Kept per
 // canonical folder, sent on Save. Recordings are not a kind box: their two bits decide whether `audio` is in the kinds.
-const RULE_KINDS = [["image", "Pictures"], ["pdf", "PDFs"], ["doc", "Documents"], ["video", "Videos"]];
-const folderRules = new Map();   // canonical folder → { kinds: [...], shallow: bool, audioTags, audioContent }
+// RULE_KINDS comes from rules.js, with the rule fields shared with Settings.
+
+const folderRules = new Map();   // canonical folder → { kinds: [...], shallow, audioTags, audioContent, skipTypes, ocrPictures, ocrScans }
+const rulePaths = new Map();     // canonical folder → the folder as it was spelled (subfolder rules keep their case)
 let ruling = null;               // the folder whose rule is being edited, or null
 
 function ruleOf(folder) { return folderRules.get(key(folder)) || null; }
@@ -201,8 +203,9 @@ function ruleText(rule) {
   const { tags, content } = audioBits(rule);
   const kinds = (rule.kinds || []).filter((kind) => kind !== "screenshot" && kind !== "audio")
     .map((kind) => names[kind] || kind);
+  const allKinds = RULE_KINDS.every(([kind]) => (rule.kinds || []).includes(kind));
   const parts = [];
-  if (kinds.length) parts.push(`${kinds.join(", ")} only`);
+  if (kinds.length && !allKinds) parts.push(`${kinds.join(", ")} only`);
   if (tags && content) parts.push("recordings by tags and sound");
   else if (tags) parts.push("recordings by tags only");
   else if (content) parts.push("recordings by sound");
@@ -211,132 +214,133 @@ function ruleText(rule) {
   return parts.join(" · ");
 }
 
-/// What goes with the folders on Save: the rules of the chosen ones, unchanged in form from the settings'. A rule that
-/// keeps every kind, both audio bits and every subfolder is no rule at all.
+/// What goes with the folders on Save: every rule saved for a folder inside a chosen one, unchanged in form from the
+/// settings' — including a subfolder's own rule, which this page doesn't list but must not drop. A rule that keeps
+/// every kind, both audio bits, every subfolder and the default OCR is no rule at all.
 function rulesObject() {
+  const roots = selection.folders();
   const out = {};
-  for (const folder of selection.folders()) {
-    const rule = ruleOf(folder);
-    if (!rule) continue;
+  for (const [folder, rule] of folderRules) {
+    // A rule under a folder that isn't searched any more goes with it.
+    if (!roots.some((root) => same(root, folder) || inside(folder, root))) continue;
     const { tags, content } = audioBits(rule);
     const everyKind = RULE_KINDS.every(([kind]) => rule.kinds.includes(kind));
-    if (everyKind && tags && content && !rule.shallow && !(rule.skipTypes || []).length) continue;
-    const kinds = [...rule.kinds];
-    const outRule = { kinds, shallow: rule.shallow, audioTags: tags, audioContent: content };
+    const ocrPictures = rule.ocrPictures === "off" || rule.ocrPictures === "all" ? rule.ocrPictures : null;
+    const ocrScans = rule.ocrScans === true;
+    if (everyKind && tags && content && !rule.shallow && !(rule.skipTypes || []).length
+        && !ocrPictures && !ocrScans) continue;
+    const outRule = { kinds: [...rule.kinds], shallow: rule.shallow, audioTags: tags, audioContent: content };
     if ((rule.skipTypes || []).length) outRule.skipTypes = rule.skipTypes;
-    out[native(folder)] = outRule;
+    if (ocrPictures) outRule.ocrPictures = ocrPictures;
+    if (ocrScans) outRule.ocrScans = true;
+    // The chosen root's stored spelling, or the subfolder's own path.
+    const root = roots.filter((one) => same(one, folder) || inside(folder, one))
+      .sort((a, b) => b.length - a.length)[0];
+    out[native(same(root, folder) ? root : (rulePaths.get(folder) || folder))] = outRule;
   }
   return out;
 }
 
-/// The editor under a row: the kinds it holds, how its recordings are read, and how deep it's read. Every change is
-/// kept as it is made: nothing is sent until Save/Start indexing.
+/// The editor under a row: the kinds, how its recordings are read, the types it skips, how deep it's read, and the
+/// text on its pictures and scans. Every change is kept as it is made: nothing is sent until Save/Start indexing.
 ///
-/// "Scan subfolders" is the one depth control: on, the subfolders are listed and each is read or left out by its
-/// checkbox; off, nothing below the folder is read (the engine's shallow rule) — and a subfolder checked before stops
-/// being a chosen folder of its own, so no hidden exception survives from the two mechanisms.
-function rulePanel(row) {
-  const rule = ruleOf(row) || { kinds: [], shallow: false };
-  const bits = audioBits(rule);
+/// "Scan subfolders" lists the folder's own subfolders, each read or left out, and each one's Rules… opens this same
+/// editor for it with a way back. Turning it off keeps their choices and rules for when it's turned on again.
+function rulePanel(folder) {
+  const rule = ruleOf(folder) || { kinds: [], shallow: false };
   const panel = element("div", "rule");
-  panel.append(element("p", "", `What “${nameOf(row)}” holds:`));
-  const boxes = RULE_KINDS.map(([kind, label]) => {
-    const choice = element("label", "choice");
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = rule.kinds.length === 0 || rule.kinds.includes(kind);
-    input.dataset.kind = kind;
-    input.onchange = () => store();
-    choice.append(input, label);
-    panel.append(choice);
-    return input;
-  });
-  const audioChoice = (label, checked) => {
-    const choice = element("label", "choice");
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = checked;
-    input.onchange = () => store();
-    choice.append(input, label);
-    panel.append(choice);
-    return input;
-  };
-  const tagsBox = audioChoice("Recordings by their tags", bits.tags);
-  const contentBox = audioChoice("Recordings by their sound", bits.content);
-  const hint = element("p", "note", "");
-  panel.append(hint);
-  // Types this folder leaves out on top of the ones skipped everywhere: "html, log".
-  const skip = document.createElement("input");
-  skip.type = "text";
-  skip.className = "field";
-  skip.placeholder = "html, log";
-  skip.value = (rule.skipTypes || []).join(", ");
-  skip.oninput = () => store();
-  const skipLabel = element("label", "option");
-  skipLabel.append(element("span", "text", "Skip types"), skip);
-  panel.append(skipLabel);
-  const scan = element("label", "choice");
-  const scanBox = document.createElement("input");
-  scanBox.type = "checkbox";
-  scanBox.checked = !rule.shallow;
-  scan.append(scanBox, "Scan subfolders");
-  panel.append(scan);
-  if (!rule.shallow) panel.append(subfolderList(row));
-  scanBox.onchange = () => {
-    if (!scanBox.checked) {
-      // Off: nothing below this folder is read, so a subfolder that was chosen as a folder of its own goes back to
-      // being left out with the rest.
-      for (const chosen of [...selection.chosen]) if (inside(chosen, row)) selection.setSubfolder(chosen, false);
+  // A subfolder's rule is edited under its chosen root: one level up goes back to the folder it is in.
+  const parent = parentOf(folder);
+  if (!selection.folders().some((root) => same(root, folder)) && parent && !same(parent, folder)) {
+    const back = element("button", "link", `← ${nameOf(parent)}`);
+    back.onclick = () => { ruling = parent; renderFolders(); };
+    panel.append(back);
+  }
+  panel.append(element("p", "", `What “${nameOf(folder)}” holds:`));
+  const controls = ruleControls(rule, panel);
+  const hint = controls.hint;
+  const onAudio = () => {
+    const missing = controls.tags.checked && !(info.tagTypes || []).length;
+    hint.hidden = !missing;
+    if (missing) {
+      hint.textContent = "No types are set in Settings → Folders → “Audio types read by tags”: recordings will be skipped.";
     }
-    store();
   };
+  onAudio();
+  for (const input of [...controls.kinds, controls.tags, controls.content]) {
+    input.onchange = () => { onAudio(); store(); };
+  }
+  controls.skip.oninput = () => store();
+  controls.pictures.onchange = controls.scans.onchange = () => store();
+  // Its subfolders, while it reads them at all (the rules and choices stay when it doesn't).
+  const listSlot = element("div", "subfolders");
+  panel.append(listSlot);
+  listSlot.hidden = rule.shallow;
+  if (!rule.shallow) listSlot.append(subfolderList(folder));
+  controls.depth.onchange = () => { listSlot.hidden = !controls.depth.checked; store(); };
   function store() {
-    const chosen = boxes.filter((input) => input.checked).map((input) => input.dataset.kind);
-    // Pictures mean pictures and screenshots; recordings join the kinds when either of their bits is on.
-    let kinds = chosen.includes("image") ? [...chosen, "screenshot"] : chosen;
-    const tags = tagsBox.checked, content = contentBox.checked;
-    if (tags || content) kinds = [...kinds, "audio"];
-    if (!kinds.length) {
+    const values = controls.values();
+    if (!values.kinds.length) {
       hint.hidden = false;
       hint.textContent = "Choose at least one kind of file to search in this folder.";
       return;
     }
-    if (tags && !(info.tagTypes || []).length) {
-      hint.hidden = false;
-      hint.textContent = "No types are set in Settings → Folders → “Audio types read by tags”: recordings will be skipped.";
-    } else {
-      hint.hidden = true;
-    }
-    const shallow = !scanBox.checked;
-    const skipTypes = skip.value.split(",").map((type) => type.trim()).filter(Boolean);
-    folderRules.set(key(row), { kinds, shallow, audioTags: tags, audioContent: content, skipTypes });
+    onAudio();
+    folderRules.set(key(folder), values);
+    rulePaths.set(key(folder), folder);
     renderFolders();
   }
   const done = element("button", "link", "Done");
   done.onclick = () => { ruling = null; renderFolders(); };
   const actions = element("div", "actions");
+  if (ruleOf(folder)) {
+    const remove = element("button", "danger", "Remove rule");
+    remove.title = "Read this folder by the folder's defaults again";
+    remove.onclick = () => {
+      folderRules.delete(key(folder));
+      rulePaths.delete(key(folder));
+      renderFolders();
+    };
+    actions.append(remove);
+  }
   actions.append(done);
   panel.append(actions);
   return panel;
 }
 
+// A folder's immediate subfolders, read from the folder itself (the estimate leaves out skipped ones; a folder left out
+// must stay in the list so it can be read again), with the estimate's counts where they exist.
+const subfolderPaths = new Map();   // key(folder) → [child paths]
+const subfolderLooking = new Set();
+
 /// A folder's subfolders, each read (checked) or left out, inside the rule panel.
 function subfolderList(row) {
-  const answer = estimates.get(key(row));
-  const subfolders = answer?.subfolders || [];
   const list = element("div", "subfolders");
-  if (!answer) {
+  const paths = subfolderPaths.get(key(row));
+  if (paths === undefined) {
     list.append(element("p", "note", "Looking inside it…"));
+    if (!subfolderLooking.has(key(row))) {
+      subfolderLooking.add(key(row));
+      invoke("list_subfolders", { folder: row }).then((found) => {
+        subfolderPaths.set(key(row), found || []);
+      }).catch(() => subfolderPaths.set(key(row), [])).finally(() => {
+        subfolderLooking.delete(key(row));
+        renderFolders();
+      });
+    }
     return list;
   }
-  if (!subfolders.length) {
+  if (!paths.length) {
     list.append(element("p", "note", "No subfolders to choose here."));
     return list;
   }
+  const counts = new Map((estimates.get(key(row))?.subfolders || []).map((sub) => [key(sub.folder), sub]));
   const all = showAll.has(key(row));
-  for (const subfolder of all ? subfolders : subfolders.slice(0, SHORT_LIST)) list.append(subfolderRow(subfolder));
-  if (!all && subfolders.length > SHORT_LIST) {
-    const more = element("button", "more", `Show ${subfolders.length - SHORT_LIST} more`);
+  for (const path of all ? paths : paths.slice(0, SHORT_LIST)) {
+    list.append(subfolderRow({ folder: path, ...(counts.get(key(path)) || {}) }));
+  }
+  if (!all && paths.length > SHORT_LIST) {
+    const more = element("button", "more", `Show ${paths.length - SHORT_LIST} more`);
     more.onclick = () => { showAll.add(key(row)); renderFolders(); };
     list.append(more);
   }
@@ -371,7 +375,7 @@ function folderBox(row) {
     rules.title = "What this folder holds, and how deep to look";
     rules.onclick = (event) => {
       event.stopPropagation();
-      ruling = ruling === key(row) ? null : key(row);
+      ruling = ruling && same(ruling, row) ? null : row;
       renderFolders();
     };
     header.append(rules);
@@ -384,7 +388,8 @@ function folderBox(row) {
     renderFolders();
   };
   box.append(header);
-  if (!codeMode && chosenHere && ruling === key(row)) box.append(rulePanel(row));
+  // A rule opens under the chosen folder it belongs to, one level at a time (a subfolder's Rules… goes there).
+  if (!codeMode && chosenHere && ruling && (same(ruling, row) || inside(ruling, row))) box.append(rulePanel(ruling));
   return box;
 }
 
@@ -400,11 +405,28 @@ function subfolderRow(subfolder) {
     selection.setSubfolder(subfolder.folder, !on);
     renderFolders();
   };
-  const counts = countsText(subfolder.files || {}) + (codeMode && subfolder.bytes ? ` · ${roughBytes(subfolder.bytes)}` : "");
-  item.append(checkbox(on ? "on" : "off", toggle), element("span", "name", nameOf(subfolder.folder)),
-              element("span", "counts", counts));
-  if (calibrated) item.append(timeOf({ seconds: subfolder.seconds, later: subfolder.later_seconds }, !on, true));
-  item.onclick = (event) => { if (!event.target.closest("input")) toggle(); };
+  const files = subfolder.files || {};
+  const counts = Object.values(files).some((count) => count > 0)
+    ? countsText(files) + (codeMode && subfolder.bytes ? ` · ${roughBytes(subfolder.bytes)}` : "") : "";
+  item.append(checkbox(on ? "on" : "off", toggle), element("span", "name", nameOf(subfolder.folder)));
+  if (counts) item.append(element("span", "counts", counts));
+  // Its own rule, if it has one, and the way to open it (read or not: a left-out folder keeps its rule for later).
+  const rule = codeMode ? null : ruleOf(subfolder.folder);
+  if (rule) item.append(element("span", "counts", ruleText(rule)));
+  if (calibrated && subfolder.seconds != null) {
+    item.append(timeOf({ seconds: subfolder.seconds, later: subfolder.later_seconds }, !on, true));
+  }
+  if (!codeMode) {
+    const rules = element("button", "link", rule ? "Rules ✓" : "Rules…");
+    rules.title = "This subfolder's own rule";
+    rules.onclick = (event) => {
+      event.stopPropagation();
+      ruling = subfolder.folder;
+      renderFolders();
+    };
+    item.append(rules);
+  }
+  item.onclick = (event) => { if (!event.target.closest("input, button")) toggle(); };
   return item;
 }
 
@@ -1060,7 +1082,9 @@ async function start() {
   for (const [path, rule] of Object.entries(info.rootRules || {})) {
     folderRules.set(key(path), { kinds: rule.kinds || [], shallow: Boolean(rule.shallow),
                                  audioTags: rule.audioTags, audioContent: rule.audioContent,
-                                 skipTypes: rule.skipTypes || [] });
+                                 skipTypes: rule.skipTypes || [], ocrPictures: rule.ocrPictures,
+                                 ocrScans: rule.ocrScans });
+    rulePaths.set(key(path), path);
   }
   // Folders picked before this page loaded (Add Folders… opens the picker first).
   if (info.pending?.length) addPicked(info.pending);
