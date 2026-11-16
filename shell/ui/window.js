@@ -547,8 +547,14 @@ function setFilter(key) {
 /// Whether the window groups its results now. Find similar has its own switch (on unless turned off); a normal search
 /// groups only when Settings → Search asks for it, so the main list stays as it was. The view doesn't matter: the table
 /// folds the same way (a swipe through the views must not lose the groups).
+/// Whether this search can hold pictures at all: look-alike groups are fingerprints of pictures, and documents,
+/// recordings and videos have none, so the line and the work behind it stay out of those categories.
+function picturesPossible() {
+  return state.filter === null || state.filter === "images" || state.filter === "screenshots";
+}
+
 function groupingActive() {
-  if (isCode()) return false;
+  if (isCode() || !picturesPossible()) return false;
   return state.like ? state.grouping : state.groupingEverywhere;
 }
 
@@ -765,9 +771,11 @@ function saveLookalike() {
 /// difference. It is the only new control in the window, and a normal search never sees it.
 function renderGroups() {
   const line = $("groups");
-  // Find similar always shows its line (that is where the switch lives); a normal search shows it only while it groups.
+  // Find similar always shows its line (that is where the switch lives); a normal search shows it only while it groups,
+  // and only where pictures can be: a documents or recordings search has nothing to fold.
   const on = state.like ? state.grouping : state.groupingEverywhere;
-  const active = !isCode() && state.hasResults && (Boolean(state.like) || state.groupingEverywhere);
+  const active = !isCode() && picturesPossible() && state.hasResults
+    && (Boolean(state.like) || state.groupingEverywhere);
   line.hidden = !active;
   if (!active) return;
   const groups = state.groups || [];
