@@ -5,13 +5,15 @@ use std::path::{Path, PathBuf};
 fn main() {
     // The pages are embedded at compile time. Rerunning this script is not enough: cargo reuses the app crate's
     // compilation unless one of its inputs changes, so a change to a page alone shipped a build with the old pages
-    // (checked in the binary). The stamp is an input of that compilation and changes with the pages.
+    // (checked in the binary). The stamp is an input of that compilation and changes with the pages. Each page is
+    // watched by name: watching the folder does not notice a file edited inside it (the folder's own mtime stays).
     println!("cargo:rerun-if-changed=../ui");
     let mut files = Vec::new();
     collect(Path::new("../ui"), &mut files);
     files.sort();
     let mut hasher = DefaultHasher::new();
     for path in files {
+        println!("cargo:rerun-if-changed={}", path.display());
         path.hash(&mut hasher);
         if let Ok(meta) = std::fs::metadata(&path) {
             meta.len().hash(&mut hasher);
