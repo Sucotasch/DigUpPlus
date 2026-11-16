@@ -29,8 +29,9 @@ const FILTERS = [
 ];
 const FILTER_OF_KIND = { screenshot: "screenshots", image: "images", pdf: "documents", doc: "documents", video: "video",
                          audio: "audio" };
-/// What Move To, Copy To and Delete work on in the first step: media, not documents or code.
-const MEDIA = new Set(["screenshot", "image", "video", "audio"]);
+/// What the tick boxes, Select All and Move To/Copy To/Delete work on: every result that is a file handled by hand —
+/// pictures, recordings, videos, PDFs and documents. Code search has its own index and stays out.
+const MEDIA = new Set(["screenshot", "image", "video", "audio", "pdf", "doc"]);
 /// The table's columns, in order; Properties is what the other columns don't say (a picture's size, a PDF's pages…).
 const COLUMNS = [
   { key: "name", title: "Name" },
@@ -78,7 +79,7 @@ const state = {
   pageError: null,      // the last page's error, beside the button; the loaded results stay
   codePhase: null,      // "hint": "code:" alone; "off": no code folders
   selection: null,      // a result's path
-  selected: new Set(),  // the files chosen for Move To, Copy To or Delete (their paths; media only)
+  selected: new Set(),  // the files chosen for Move To, Copy To or Delete (their paths; every file kind but code)
   anchor: null,         // where a Shift-click or Shift-arrow range starts
   busy: null,           // the file operation under way: {id, kind, done, total, bytes, size, path}
   sheet: false,         // a sheet is up: a confirmation, or an operation's progress
@@ -1448,8 +1449,8 @@ function move(step) {
 
 // MARK: Choosing files
 
-/// The media results on show, once each: what Select All and the ranges go through (the whole list, not the part on
-/// screen). Documents and code aren't among them.
+/// The file results on show, once each: what Select All and the ranges go through (the whole list, not the part on
+/// screen). Code results aren't among them.
 function operable() {
   const seen = new Set();
   return rows().filter((hit) => {
@@ -1742,8 +1743,8 @@ let noteTimer = null;
 /// The bar between the results and the status bar: how much is chosen and what can be done with it.
 function renderBatch() {
   const items = operable();
-  // The bar is also Total Commander's when the results hold no media at all: a code or document search can go there
-  // just as well, and that's the only place its actions are.
+  // The bar is also Total Commander's when the results hold no files at all (a code search): its actions are the only
+  // ones there.
   const tc = Boolean(state.tc) && rows().length > 0;
   $batch.hidden = !items.length && !tc;
   if ($batch.hidden) return;
