@@ -52,6 +52,12 @@ python=python3
 python3 -c '' 2> /dev/null || python=python
 CUDA_RUNTIME_DIR="$cuda" "$python" scripts/notices.py windows shell/src-tauri/THIRD-PARTY-NOTICES.txt
 
+# Git Bash puts its /usr/bin/link.exe (a coreutils hardlink tool) before MSVC's linker, so Cargo's link step would run
+# the wrong program. The developer environment names the compiler's folder; put it first.
+link_dir="$(cygpath -u "${VCToolsInstallDir:?run inside a Visual Studio developer environment}")/bin/Hostx64/x64"
+[[ -x "$link_dir/link.exe" ]] || { echo "no MSVC link.exe under $link_dir" >&2; exit 1; }
+export PATH="$link_dir:$PATH"
+
 # The shell alone: no installer, no bundle. Its helper folder is a sibling in the folder, not a bundle resource.
 (cd shell/src-tauri && npx --yes "@tauri-apps/cli@$TAURI_CLI" build --no-bundle)
 
