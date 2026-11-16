@@ -74,6 +74,10 @@ input.field {
   width: 100%; font: inherit; font-size: 13px; color: var(--text); background: var(--card);
   border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px;
 }
+select.field {
+  flex: 1; min-width: 0; font: inherit; font-size: 13px; color: var(--text); background: var(--card);
+  border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px;
+}
 /* Settings → Search: the threshold, a number beside its explanation. */
 .option input[type="number"] {
   width: 76px; flex: none; font: inherit; font-size: 13px; color: var(--text); background: var(--card);
