@@ -2504,10 +2504,37 @@ function previewPicture(hit) {
 
 // MARK: The big preview (Space, as Quick Look on the Mac)
 
+/// How many pages a PDF has, or passages a document, as the index counted them; 0 when it isn't that kind of file.
+function partsOf(hit) {
+  const total = Number(hit.kind === "pdf" ? hit.info?.pages : hit.kind === "doc" ? hit.info?.chunks : 0);
+  return Number.isFinite(total) && total > 0 ? Math.trunc(total) : 0;
+}
+
+/// The page or passage a result points at, from 1.
+function partOf(hit) {
+  return Math.max(1, Math.trunc(hit.loc ?? 1));
+}
+
+function clampPart(part, total) {
+  return total > 0 ? Math.min(total, Math.max(1, part)) : Math.max(1, part);
+}
+
+/// "Page 3 of 321", "Part 35 of 576": the one place the preview says where it is.
+function partLabel(hit, part, total) {
+  if (total < 1) return "";
+  const what = hit.kind === "pdf" ? "Page" : "Part";
+  return total > 1 ? `${what} ${part} of ${total}` : `${what} ${part}`;
+}
+
 const $big = element("div", "big");
 $big.hidden = true;
 $big.onclick = (event) => { if (event.target === $big) closeBig(); };
 document.body.append($big);
+
+let bigHit = null;    // the result the sheet shows
+let bigAt = 0;        // its page or passage on screen
+let bigTotal = 0;     // how many it has
+let bigWheel = 0;     // wheel travel kept, so a touchpad's trickle is one turn
 
 /// Space shows the selected result over the window, big; Space, Esc or a click beside it puts it away. The arrows move
 /// through the results under it, and ↩ opens the one shown.
@@ -2521,16 +2548,25 @@ function toggleBig() {
 function closeBig() {
   $big.hidden = true;
   $big.replaceChildren();   // its video or sound stops with it
+  bigHit = null;
+  bigAt = 0;
+  bigTotal = 0;
+  bigWheel = 0;
 }
 
 function renderBig() {
   const hit = state.hasResults && state.query.trim() ? selectedHit() : null;
   if (!hit) return closeBig();
+  bigHit = hit;
+  // A page or passage is what the wheel turns through; other kinds have nothing to turn.
+  bigTotal = hit.kind === "pdf" || hit.segment === "chunk" ? partsOf(hit) : 0;
+  bigAt = clampPart(partOf(hit), bigTotal);
+  bigWheel = 0;
   const sheet = element("div", "sheet");
   const head = element("div", "head");
   const title = element("div", "title");
   title.append(element("span", "name", nameOf(hit.path)));
-  const place = placeOf(hit);
+  const place = bigLabel();
   if (place) title.append(element("span", "place", place));
   const opening = element("button", "primary", "Open");
   opening.onclick = () => { closeBig(); open(hit); };
@@ -2541,6 +2577,54 @@ function renderBig() {
   sheet.append(head, bigView(hit));
   $big.replaceChildren(sheet);
 }
+
+function bigLabel() {
+  if (!bigHit) return null;
+  if (bigTotal > 0 && (bigHit.kind === "pdf" || bigHit.segment === "chunk")) {
+    return partLabel(bigHit, bigAt, bigTotal);
+  }
+  return placeOf(bigHit);
+}
+
+/// One wheel notch over the big preview: the next page of a PDF or passage of a document. The arrows still move
+/// through the results: they are the window's, not the sheet's.
+function bigFlip(step) {
+  if ($big.hidden || !bigHit || bigTotal < 2) return;
+  const next = Math.min(bigTotal, Math.max(1, bigAt + step));
+  if (next === bigAt) return;
+  bigAt = next;
+  const view = $big.querySelector(".view");
+  const place = $big.querySelector(".head .place");
+  if (place) place.textContent = bigLabel();
+  if (bigHit.kind === "pdf") {
+    const image = view?.querySelector("img");
+    if (!image) return;
+    const pixels = Math.round(Math.max(innerWidth, innerHeight) * (window.devicePixelRatio || 1));
+    rendered(bigHit.path, "pdf", bigAt, pixels).then((file) => { image.src = fileURL(file); }).catch(() => {});
+    // The next notch should be a cache hit: 90 ms of raster otherwise.
+    for (const page of [bigAt + 1, bigAt - 1]) {
+      if (page >= 1 && page <= bigTotal) rendered(bigHit.path, "pdf", page, pixels).catch(() => {});
+    }
+  } else if (bigHit.segment === "chunk") {
+    const box = view?.querySelector(".passage");
+    if (!box) return;
+    ask({ op: "text", path: bigHit.path, loc: bigAt, code: false })
+      .then((reply) => { if (reply.text) fillPassage(box, reply.text); })
+      .catch(() => {});
+  }
+}
+
+$big.addEventListener("wheel", (event) => {
+  if (!event.deltaY || !bigHit || bigTotal < 2) return;
+  if (bigHit.kind !== "pdf" && bigHit.segment !== "chunk") return;   // a recording keeps its own wheel
+  event.preventDefault();
+  event.stopPropagation();
+  if (Math.sign(bigWheel) !== Math.sign(event.deltaY)) bigWheel = 0;
+  bigWheel += event.deltaY;
+  if (Math.abs(bigWheel) < 60) return;
+  bigWheel = 0;
+  bigFlip(event.deltaY > 0 ? 1 : -1);
+}, { passive: false });
 
 /// The result as big as the window allows: the picture or the page, the video or the recording from the moment, the
 /// passage or the lines of code.
@@ -2573,7 +2657,8 @@ function bigView(hit) {
     image.src = fileURL(hit.path);
   } else {
     const pixels = Math.round(Math.max(innerWidth, innerHeight) * (window.devicePixelRatio || 1));
-    rendered(hit.path, what[0], what[1], pixels).then((file) => { image.src = fileURL(file); }).catch(() => {});
+    rendered(hit.path, what[0], what[0] === "pdf" ? bigAt : what[1], pixels)
+      .then((file) => { image.src = fileURL(file); }).catch(() => {});
   }
   image.ondblclick = () => { closeBig(); open(hit); };
   view.append(image);
@@ -2598,13 +2683,15 @@ $peek.hidden = true;
 const $peekPicture = element("img");
 $peekPicture.alt = "";
 // The strip along the top: the pointer rests at the picture's bottom-right corner, so the top is the one part of it the
-// pointer never covers.
+// pointer never covers. A document's text sits under it, so the strip is in the flow there (see .peek.text).
 const $peekCaption = element("div", "peek-caption");
 const $peekName = element("div", "peek-name");
 const $peekFacts = element("div", "peek-facts");
 const $peekPlace = element("div", "peek-place");
 $peekCaption.append($peekName, $peekFacts, $peekPlace);
-$peek.append($peekPicture, $peekCaption);
+const $peekText = element("div", "peek-text");
+$peekText.hidden = true;
+$peek.append($peekCaption, $peekPicture, $peekText);
 document.body.append($peek);
 
 let peekHit = null;                     // the result the pointer rests on
@@ -2617,6 +2704,9 @@ let peekShown = null;                   // the path asked for last, so a late an
 let peekShowing = null;                 // the result on screen: the caption is its
 let peekWant = null;                    // the render asked for, for forgetting a preview the helper has since deleted
 let peekWheel = 0;                      // wheel travel kept, so a touchpad's trickle is one picture per notch
+let peekAt = 0;                         // a document's page or passage on screen
+let peekTotal = 0;                      // how many it has (0 for a picture)
+let peekTurn = 0;                       // the page or passage asked for last, so a late answer is dropped
 
 /// The result a group's path names, from everything the window has loaded (folded copies aren't in `rows()`).
 function hitForPath(path) {
@@ -2628,7 +2718,7 @@ function hitForPath(path) {
 }
 
 function peekOnHover(cell, hit) {
-  if (hit.kind !== "image" && hit.kind !== "screenshot") return;
+  if (!["image", "screenshot", "pdf", "doc"].includes(hit.kind)) return;
   cell.addEventListener("pointermove", (event) => {
     if (event.buttons) return hidePeek();               // a drag: nobody is looking at the picture
     if (peekHit === hit && !$peek.hidden) { peekCell = cell; return; }   // up already, still on this one
@@ -2643,8 +2733,8 @@ function peekOnHover(cell, hit) {
   cell.addEventListener("pointerleave", () => { if (peekHit === hit) hidePeek(); });
 }
 
-/// Shows the picture under the pointer, and the group it belongs to behind it: the wheel turns through the group like
-/// an album, without opening it.
+/// Shows what the pointer rests on: a picture (and the group behind it), a PDF's page, or a book's passage. The wheel
+/// turns through the album, the PDF's pages or the book's passages, without opening anything.
 function showPeek(hit) {
   if (peekHit !== hit) return;
   const group = groupingActive() ? groupOf(hit.path) : null;
@@ -2655,10 +2745,15 @@ function showPeek(hit) {
   if (!peekHits.length) return;
   peekIndex = Math.max(0, peekHits.findIndex((one) => one.path === hit.path));
   peekWheel = 0;
+  peekTotal = partsOf(hit);
+  peekAt = clampPart(partOf(hit), peekTotal);
+  peekTurn = 0;
   renderPeek(peekHits[peekIndex]);
 }
 
 function renderPeek(hit) {
+  if (hit.kind === "pdf") return renderPeekPage(hit);
+  if (hit.kind === "doc") return renderPeekPart(hit);
   const what = renderOf(hit);
   if (!what) return hidePeek();
   // The size Space asks for: one render serves both, and hovering warms what Space will show.
@@ -2674,6 +2769,58 @@ function renderPeek(hit) {
   }).catch(hidePeek);
 }
 
+/// The page is rendered at 900 px: readable in the popup and about 90 ms of rasterizing, half the window's size. The
+/// next and previous pages are asked for while this one shows, so a wheel notch finds them made.
+function peekPixels() {
+  return Math.round(900 * (window.devicePixelRatio || 1));
+}
+
+function renderPeekPage(hit) {
+  const turn = ++peekTurn;
+  peekShowing = hit;
+  peekShown = hit.path;
+  peekWant = { path: hit.path, kind: "pdf", loc: peekAt, pixels: peekPixels() };
+  $peekText.hidden = true;
+  $peekPicture.hidden = false;
+  updatePeekCaption();
+  rendered(hit.path, "pdf", peekAt, peekPixels()).then((file) => {
+    if (turn !== peekTurn) return;
+    $peekPicture.onload = placePeek;
+    $peekPicture.src = fileURL(file);
+    if ($peekPicture.complete) placePeek();
+  }).catch(hidePeek);
+  for (const page of [peekAt + 1, peekAt - 1]) {
+    if (page >= 1 && (!peekTotal || page <= peekTotal)) rendered(hit.path, "pdf", page, peekPixels()).catch(() => {});
+  }
+}
+
+function renderPeekPart(hit) {
+  const turn = ++peekTurn;
+  peekShowing = hit;
+  peekShown = hit.path;
+  peekWant = null;
+  $peekPicture.hidden = true;
+  $peekText.hidden = false;
+  updatePeekCaption();
+  ask({ op: "text", path: hit.path, loc: peekAt, code: false }).then((reply) => {
+    if (turn !== peekTurn) return;
+    const text = reply?.text ?? "";
+    if (!text) $peekText.textContent = "No text in this part.";
+    else fillPassage($peekText, text, peekAt === partOf(hit) ? foundWords(hit.excerpt) : []);
+    placePeek();
+  }).catch(hidePeek);
+}
+
+/// One wheel notch: the next page of a PDF or passage of a book, to the end and no further.
+function turnPeek(step) {
+  if (!peekShowing || peekTotal < 2) return;
+  const next = clampPart(peekAt + step, peekTotal);
+  if (next === peekAt) return;
+  peekAt = next;
+  if (peekShowing.kind === "pdf") renderPeekPage(peekShowing);
+  else renderPeekPart(peekShowing);
+}
+
 /// One wheel notch: the next picture of the group, round the end.
 function cyclePeek(step) {
   if (peekHits.length < 2) return;
@@ -2681,26 +2828,41 @@ function cyclePeek(step) {
   renderPeek(peekHits[peekIndex]);
 }
 
-/// The picture's bottom-right corner at the pointer, then inside the window; never larger than the picture itself.
+/// The popup's bottom-right corner at the pointer, then inside the window; a picture is never larger than itself, and a
+/// document takes the width its text reads at.
 function placePeek() {
-  const naturalWidth = $peekPicture.naturalWidth, naturalHeight = $peekPicture.naturalHeight;
-  if (!naturalWidth || !naturalHeight || !peekHit || !peekShowing) return hidePeek();
-  const roomWidth = Math.max(320, innerWidth - PEEK_GAP * 2);
-  const roomHeight = Math.max(240, innerHeight - PEEK_GAP * 2);
-  const scale = Math.min(1, roomWidth / naturalWidth, roomHeight / naturalHeight);
-  const width = Math.round(naturalWidth * scale), height = Math.round(naturalHeight * scale);
-  $peekPicture.style.width = `${width}px`;
-  $peekPicture.style.height = `${height}px`;
+  if (!peekHit || !peekShowing) return hidePeek();
+  const picture = peekShowing.kind !== "doc";
+  if (picture) {
+    const naturalWidth = $peekPicture.naturalWidth, naturalHeight = $peekPicture.naturalHeight;
+    if (!naturalWidth || !naturalHeight) return hidePeek();
+    const roomWidth = Math.max(320, innerWidth - PEEK_GAP * 2);
+    const roomHeight = Math.max(240, innerHeight - PEEK_GAP * 2);
+    const scale = Math.min(1, roomWidth / naturalWidth, roomHeight / naturalHeight);
+    const width = Math.round(naturalWidth * scale), height = Math.round(naturalHeight * scale);
+    $peekPicture.style.width = `${width}px`;
+    $peekPicture.style.height = `${height}px`;
+  }
+  $peek.classList.toggle("text", !picture);
+  $peek.hidden = false;
+  const box = $peek.getBoundingClientRect();
+  const width = Math.round(box.width) || 320, height = Math.round(box.height) || 240;
   $peek.style.left = `${Math.max(PEEK_GAP, Math.min(innerWidth - PEEK_GAP - width, peekPoint.x - width))}px`;
   $peek.style.top = `${Math.max(PEEK_GAP, Math.min(innerHeight - PEEK_GAP - height, peekPoint.y - height))}px`;
+  updatePeekCaption();
   // What the file is: the side pane's line, so the two can't drift apart; a narrow picture drops the folder to keep
-  // the strip from covering it. In a group, where this one sits in the album.
-  const at = peekHits.findIndex((one) => one.path === peekShowing.path) + 1;
-  $peekName.textContent = nameOf(peekShowing.path);
-  $peekFacts.textContent = (peekHits.length > 1 ? `${at} of ${peekHits.length} · ` : "") + details(peekShowing);
-  $peekPlace.textContent = folderOf(peekShowing);
+  // the strip from covering it.
   $peek.classList.toggle("small", width < 260);
-  $peek.hidden = false;
+}
+
+/// The name, where the preview is (a page, a passage, a place in an album) and the file's facts.
+function updatePeekCaption() {
+  if (!peekShowing) return;
+  const album = peekHits.length > 1 ? `${peekIndex + 1} of ${peekHits.length}` : "";
+  const place = peekTotal > 0 ? partLabel(peekShowing, peekAt, peekTotal) : "";
+  $peekName.textContent = nameOf(peekShowing.path);
+  $peekFacts.textContent = (place || album ? `${place || album} · ` : "") + details(peekShowing);
+  $peekPlace.textContent = folderOf(peekShowing);
 }
 
 function hidePeek() {
@@ -2713,6 +2875,12 @@ function hidePeek() {
   peekShowing = null;
   peekWant = null;
   peekWheel = 0;
+  peekAt = 0;
+  peekTotal = 0;
+  peekTurn += 1;
+  $peekText.hidden = true;
+  $peekText.replaceChildren();
+  $peek.classList.remove("text");
   $peek.hidden = true;
 }
 
@@ -2728,14 +2896,19 @@ $peekPicture.onerror = () => {
 $content.addEventListener("scroll", hidePeek, { passive: true });
 document.addEventListener("pointerdown", hidePeek, true);
 
-/// The wheel over the peek turns through its group (and doesn't scroll the list under it); anywhere else it puts the
-/// peek away, as it always did. A mouse notch is ~100, a touchpad's trickle a few pixels at a time, so the travel is
-/// added up: one picture per notch, however it arrives.
+/// The wheel over the peek turns through a PDF's pages or a book's passages, or through the group like an album (and
+/// doesn't scroll the list under it); anywhere else it puts the peek away, as it always did. A mouse notch is ~100, a
+/// touchpad's trickle a few pixels at a time, so the travel is added up: one turn per notch, however it arrives.
 document.addEventListener("wheel", (event) => {
   if ($peek.hidden) return;
   const under = document.elementFromPoint(event.clientX, event.clientY);
   const overIt = under instanceof Element && peekCell && under.closest(".cell") === peekCell;
-  if (!overIt || peekHits.length < 2 || !event.deltaY) {
+  if (!overIt || !event.deltaY) {
+    hidePeek();
+    return;
+  }
+  const turns = peekTotal > 1;
+  if (!turns && peekHits.length < 2) {
     hidePeek();
     return;
   }
@@ -2745,7 +2918,8 @@ document.addEventListener("wheel", (event) => {
   peekWheel += event.deltaY;
   if (Math.abs(peekWheel) < 60) return;
   peekWheel = 0;
-  cyclePeek(event.deltaY > 0 ? 1 : -1);
+  if (turns) turnPeek(event.deltaY > 0 ? 1 : -1);
+  else cyclePeek(event.deltaY > 0 ? 1 : -1);
 }, { passive: false, capture: true });
 document.addEventListener("keydown", hidePeek, true);
 document.addEventListener("contextmenu", hidePeek, true);
@@ -2844,14 +3018,17 @@ function stopPlaying() {
   playing = null;
 }
 
+/// A passage's text, centred just before the query's first word and with its words marked.
+function fillPassage(box, text, found = []) {
+  box.dir = isRightToLeft(text) ? "rtl" : "ltr";
+  box.innerHTML = highlighted(passageAround(text, [...found, ...queryWords(state.text)]), state.text, found);
+}
+
 /// The part of a document that matched, on a page, the words marked.
 function passage(hit) {
   const page = element("div", "passage");
   const found = foundWords(hit.excerpt);
-  const show = (text) => {
-    page.dir = isRightToLeft(text) ? "rtl" : "ltr";
-    page.innerHTML = highlighted(passageAround(text, [...found, ...queryWords(state.text)]), state.text, found);
-  };
+  const show = (text) => fillPassage(page, text, found);
   show((hit.excerpt ?? "").replace(/[«»]/g, ""));
   ask({ op: "text", segment: hit.segment_id, code: false })
     .then((reply) => { if (reply.text) show(reply.text); })

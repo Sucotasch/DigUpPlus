@@ -11,6 +11,19 @@ import Testing
 
     deinit { try? FileManager.default.removeItem(at: folder) }
 
+    /// The preview turns a book's pages by the passage's number, not by the segment a search matched.
+    @Test func aPassageIsFoundByPathAndNumber() throws {
+        let store = try IndexStore(directory: folder)
+        let id = try store.insert(Candidate(path: "/paging/book.fb2", kind: .doc, size: 1, mtime: 1, inode: 1, device: 1))
+        for part in 1...3 {
+            try store.addSegment(file: id, kind: .chunk, modality: .text, loc: Double(part), text: "part \(part)")
+        }
+        let searcher = try Searcher(store: store, loadVectors: false)
+        #expect(try searcher.text(ofFile: "/paging/book.fb2", part: 2) == "part 2")
+        #expect(try searcher.text(ofFile: "/paging/book.fb2", part: 4) == nil)
+        #expect(try searcher.text(ofFile: "/paging/other.fb2", part: 2) == nil)
+    }
+
     private func index(count: Int) throws -> Searcher {
         let store = try IndexStore(directory: folder)
         for number in 0..<count {

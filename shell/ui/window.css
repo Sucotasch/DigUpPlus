@@ -1068,3 +1068,23 @@ svg { display: block; }
 .peek-facts { opacity: 0.85; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .peek-place { opacity: 0.72; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .peek.small .peek-place { display: none; }
+/* A document's peek is a page of text: the strip is in the flow above it (not over a picture) and the width is a
+   reading width. */
+.peek.text { width: min(640px, 70vw); }
+.peek.text .peek-caption {
+  position: static;
+  padding: 10px 14px 4px;
+  background: none;
+  color: var(--text);
+  text-shadow: none;
+}
+.peek-text {
+  padding: 0 14px 14px;
+  max-height: 55vh;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.peek-text mark { background: var(--mark); color: var(--text); border-radius: 2px; }

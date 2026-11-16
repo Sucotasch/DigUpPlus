@@ -490,6 +490,17 @@ public final class Searcher {
         return text
     }
 
+    /// The text of a file's passage `part` (chunks are numbered from 1): what the preview shows when the wheel turns
+    /// through a book, where no search result points at the passage asked for.
+    public func text(ofFile path: String, part: Int) throws -> String? {
+        var id: Int64?
+        try store.db.query("""
+            SELECT s.id FROM segments s JOIN files f ON f.id = s.file
+            WHERE f.path = ? AND s.kind = 'chunk' AND s.loc = ?
+            """, [.text(path), .double(Double(part))]) { id = $0.int(0) }
+        return try id.flatMap { try text(ofSegment: $0) }
+    }
+
     /// (The Windows and Linux app's previews keep the same list in shell/ui/results.js.)
     static let stopwords: Set<String> = [
         "a", "an", "the", "of", "in", "on", "at", "to", "for", "with", "and", "or", "my", "me", "that", "this",

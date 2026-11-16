@@ -61,7 +61,9 @@ here. What this fork changes is what surrounds the engine:
   the window, with the file's name, kind, date, size and folder along the top, without changing the selection or taking a
   click; the pointer alone decides, and moving on puts it away. On a **folded** look-alike group the wheel over that
   picture turns through the group's copies (`3 of 17`) without opening it; once the group is open, each copy is its own
-  card and the wheel is the list's. Space still shows the selected result over the whole window.
+  card and the wheel is the list's. A PDF comes up as its page and a book as its passage, and the wheel turns through
+  them (`Page 3 of 321`, `Part 35 of 576`); Space still shows the selected result over the whole window and turns the
+  same pages there.
 - **The index and the model live where you point them.** Settings → Storage: use an index you already have in place
   (nothing is copied, and it is checked to open before it is chosen), move one to another disk, or point at model
   files you already downloaded.
@@ -145,7 +147,7 @@ the full package.
 | ↓ ↑ | Moves through the results, and takes the keyboard out of the search field with it (Tab or a click on the field brings the caret back) |
 | Enter | Opens the result: PDFs at the page, recordings and videos at the moment, code in your editor at the line |
 | Space | A big preview, at the page or moment (once you've moved to a result) |
-| Hovering a picture | A larger look at it — up to the window's size, without changing the selection or taking a click |
+| Hovering a picture | A larger look at it — up to the window's size, without changing the selection or taking a click; on a PDF or a book the wheel turns pages or passages |
 | Ctrl+Enter | Shows it in Explorer or your file manager |
 | Ctrl+C (⌘C on a Mac) | Copies the file, to paste anywhere |
 | Ctrl+O (⌘O on a Mac) | The same search in a bigger window, with a picture grid and filters |

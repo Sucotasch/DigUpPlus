@@ -24,6 +24,7 @@ import Foundation
 ///   {"op":"embed_ahead","q":…,"code":bool}   → {"ok":true}: embeds and caches the text (the panel sends what's typed so
 ///                                               far on every keystroke, so the pause's vector is usually ready)
 ///   {"op":"text","segment":id,"code":bool}    → {"text":…}: the part of a file a hit points at, for the preview
+///   {"op":"text","path":…,"loc":part}         → {"text":…}: a document's passage by its number (the preview's pages)
 ///   {"op":"render","path":…,"kind":"pdf|video|image","loc":n,"pixels":n} → {"image":path}: a JPEG for a preview or a
 ///                                               thumbnail (a PDF's page `loc`, a video's frame at `loc` seconds, or a
 ///                                               picture a web view can't show, such as HEIC), made beside the requests
@@ -238,8 +239,13 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             _ = vector(for: request["q"] as? String ?? "", code: request["code"] as? Bool ?? false)
             return ["ok": true]
         case "text":
-            guard let segment = (request["segment"] as? NSNumber)?.int64Value else { throw CLIError("which segment?") }
             let code = request["code"] as? Bool ?? false
+            // A book's passage by its number, for turning pages where no search result points at it.
+            if let path = request["path"] as? String, let part = (request["loc"] as? NSNumber)?.intValue {
+                guard !code else { throw CLIError("a passage by number is for the main index") }
+                return ["text": try searcher.text(ofFile: path, part: part) ?? NSNull()]
+            }
+            guard let segment = (request["segment"] as? NSNumber)?.int64Value else { throw CLIError("which segment?") }
             return ["text": try (code ? codeSearcher : searcher)?.text(ofSegment: segment) ?? NSNull()]
         case "reload":
             try reload()
