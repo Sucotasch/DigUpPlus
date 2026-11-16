@@ -2505,9 +2505,18 @@ function previewPicture(hit) {
 // MARK: The big preview (Space, as Quick Look on the Mac)
 
 /// How many pages a PDF has, or passages a document, as the index counted them; 0 when it isn't that kind of file.
+/// A document still being read offers only the passages that are in the index (`read_to`), not the whole plan:
+/// the wheel must not turn to a passage nobody has read yet.
 function partsOf(hit) {
-  const total = Number(hit.kind === "pdf" ? hit.info?.pages : hit.kind === "doc" ? hit.info?.chunks : 0);
-  return Number.isFinite(total) && total > 0 ? Math.trunc(total) : 0;
+  const count = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? Math.trunc(number) : 0;
+  };
+  if (hit.kind === "pdf") return count(hit.info?.pages);
+  if (hit.kind !== "doc") return 0;
+  const chunks = count(hit.info?.chunks);
+  const read = count(hit.info?.read_to);
+  return read > 0 ? Math.min(chunks || read, read) : chunks;
 }
 
 /// The page or passage a result points at, from 1.
@@ -2756,6 +2765,10 @@ function renderPeek(hit) {
   if (hit.kind === "doc") return renderPeekPart(hit);
   const what = renderOf(hit);
   if (!what) return hidePeek();
+  // A document's peek hid the picture and showed its text: the picture comes back for a picture (a PDF did this for
+  // itself, so an image after a book stayed blank until a PDF was looked at).
+  $peekPicture.hidden = false;
+  $peekText.hidden = true;
   // The size Space asks for: one render serves both, and hovering warms what Space will show.
   const pixels = Math.round(Math.max(innerWidth, innerHeight) * (window.devicePixelRatio || 1));
   peekShown = hit.path;

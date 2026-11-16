@@ -64,7 +64,8 @@ if [[ "$built" != "$exe" ]]; then
   rm -f "$exe"
   cp "$built" "$exe"
 fi
-rm -f "$release/digup-shell.exe" "$release/DigUp Plus.exe" "$release/DigUp.exe"
+rm -f "$release/digup-shell.exe" "$release/digup_shell.pdb" "$release/digup-shell.d" \
+      "$release/DigUp Plus.exe" "$release/DigUp.exe"
 rm -rf "$release/helper"
 cp -r "$helper" "$release/helper"
 cp shell/src-tauri/THIRD-PARTY-NOTICES.txt "$release/"
