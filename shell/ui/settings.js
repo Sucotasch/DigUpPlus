@@ -703,21 +703,31 @@ async function setSubfolderSkipped(path, read) {
 
 /// A folder's rule in words, for its line: "pictures only · recordings by tags · top level only".
 function ruleText(rule) {
-  const names = { image: "pictures", pdf: "PDFs", doc: "documents", video: "videos" };
-  const inKinds = (rule.kinds || []).includes("audio");
+  const inKinds = (rule.kinds || []).length === 0 || (rule.kinds || []).includes("audio");
   const tags = rule.audioTags ?? inKinds;
   const content = rule.audioContent ?? inKinds;
-  const kinds = (rule.kinds || []).filter((kind) => kind !== "screenshot" && kind !== "audio")
-    .map((kind) => names[kind] || kind);
-  const allKinds = RULE_KINDS.every(([kind]) => (rule.kinds || []).includes(kind));
+  const kinds = rule.kinds || [];
+  const documents = kinds.length === 0 || kinds.includes("pdf") || kinds.includes("doc");
+  const videos = kinds.length === 0 || kinds.includes("video");
+  const pictures = pictureBits(rule);
+  const named = [];
+  if (documents) named.push("documents");
+  if (videos) named.push("videos");
+  if (pictures.looks) named.push("pictures");
   const parts = [];
-  if (kinds.length && !allKinds) parts.push(`${kinds.join(", ")} only`);
+  if (named.length && !(documents && videos && pictures.looks)) parts.push(`${named.join(", ")} only`);
+  if (!pictures.looks && pictures.text !== "off") {
+    parts.push(pictures.text === "all" ? "text on every picture (not in Images)"
+                                       : "text on screenshots (not in Images)");
+  } else if (pictures.looks && pictures.text === "all") {
+    parts.push("text on every picture");
+  } else if (pictures.looks && pictures.text === "off") {
+    parts.push("no text on pictures");
+  }
   if (tags && content) parts.push("recordings by tags and sound");
   else if (tags) parts.push("recordings by tags only");
   else if (content) parts.push("recordings by sound");
   if ((rule.skipTypes || []).length) parts.push(`skips ${rule.skipTypes.join(", ")}`);
-  if (rule.ocrPictures === "all") parts.push("text on every picture");
-  else if (rule.ocrPictures === "off") parts.push("no text on pictures");
   if (rule.ocrScans) parts.push("text on scans");
   if (rule.shallow) parts.push("top level only");
   return parts.join(" · ");

@@ -273,6 +273,54 @@ import Testing
         #expect(report.candidates.allSatisfy { $0.ocrPictures == .screenshots && !$0.ocrScans })
     }
 
+    @Test func aFolderCanReadPicturesOnlyForTheirWords() throws {
+        try write("photo.jpg")
+        try write("Screenshots/shot.png")
+        let report = Crawler.crawl([folder], options: options([
+            RootRule(root: folder.path, ocrPictures: .all, looksPictures: false),
+        ]))
+        #expect(names(report) == ["Screenshots/shot.png", "photo.jpg"])
+        #expect(report.candidates.allSatisfy { !$0.looksPictures && $0.ocrPictures == .all })
+    }
+
+    @Test func screenshotsOnlyWordsWithoutTheLookLeaveImagesOut() throws {
+        try write("photo.jpg")
+        try write("Screenshots/shot.png")
+        // A photo with neither bit reads nothing; a screenshot with the words bit is read for its words.
+        let report = Crawler.crawl([folder], options: options([
+            RootRule(root: folder.path, ocrPictures: .screenshots, looksPictures: false),
+        ]))
+        #expect(names(report) == ["Screenshots/shot.png"])
+        #expect(report.leftOut[folder.path]?["pictures aren't read here"] == 1)
+    }
+
+    @Test func aLookChangeRequeuesOnlyThePictures() throws {
+        let photo = try write("photo.jpg")
+        try write("Screenshots/shot.png")
+        let doc = try write("notes.txt")
+        let store = try IndexStore(directory: folder.appendingPathComponent("index-look"))
+        func sync(_ rules: [RootRule]) throws -> Indexer.SyncSummary {
+            let indexer = try Indexer(store: store, options: options(rules),
+                                      makeEmbedder: { throw WorkerError.notFound("sync doesn't need a model") })
+            return try indexer.sync([folder])
+        }
+        func finishAll() throws {
+            for file in try store.files(under: [folder.path]) { try store.finish(file.id, state: "done") }
+        }
+        #expect(try sync([]).added == 3)
+        try finishAll()
+        // Words only: the two pictures move (to no look), the document stays.
+        let words = try sync([RootRule(root: folder.path, ocrPictures: .all, looksPictures: false)])
+        #expect(words.changed == 2 && words.added == 0 && words.removed == 0)
+        #expect(try store.file(at: photo.path)?.looksPictures == false)
+        #expect(try store.file(at: doc.path)?.state == "done")
+        try finishAll()
+        // Back to looking: the same two.
+        let back = try sync([])
+        #expect(back.changed == 2 && back.added == 0 && back.removed == 0)
+        #expect(try store.file(at: photo.path)?.looksPictures == true)
+    }
+
     @Test func aTextRuleRequeuesOnlyWhatItChanges() throws {
         let photo = try write("photo.jpg")
         let shot = try write("Screenshots/shot.png")

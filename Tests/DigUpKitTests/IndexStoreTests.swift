@@ -425,6 +425,8 @@ import WinSDK
         let reopened = try IndexStore(directory: index)
         let row = try #require(try reopened.file(at: picture.path))
         #expect(row.ocrPictures == .screenshots && !row.ocrScans)
+        // A row made before the look bit was indexed as a picture, and still is.
+        #expect(row.looksPictures)
         #expect(row.state == "done")
     }
 

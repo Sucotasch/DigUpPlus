@@ -111,9 +111,12 @@ public struct RootRule: Codable, Sendable, Equatable {
     /// File types this folder skips on top of the ones skipped everywhere (Settings → Folders → Skip these types), as
     /// extensions ("html"). nil for a rule saved before this was a setting.
     public var skipTypes: [String]?
-    /// Text on pictures: screenshots alone unless the folder says otherwise. nil for a rule saved before this was a
-    /// setting, which read screenshots alone.
+    /// Text on pictures: screenshots alone (the default), every picture, or none. nil for a rule saved before this was
+    /// a setting, which read screenshots alone.
     public var ocrPictures: PictureText?
+    /// Index a picture's look (its image vector, the Images and Screenshots filters). nil for a rule saved before this
+    /// was a setting: then the rule's kinds say it (a rule that left pictures out didn't look at them).
+    public var looksPictures: Bool?
     /// Read the words on a PDF's scanned pages (a render and an OCR a page, so off unless the folder asks). nil for a
     /// rule saved before this was a setting.
     public var ocrScans: Bool?
@@ -121,8 +124,23 @@ public struct RootRule: Codable, Sendable, Equatable {
     /// The two bits, with the "not stored yet" default of yes.
     public var readsAudioByTags: Bool { audioTags ?? true }
     public var readsAudioByContent: Bool { audioContent ?? true }
-    /// Text on pictures, with the "not stored yet" default of screenshots alone.
-    public var picturesText: PictureText { ocrPictures ?? .screenshots }
+    /// A rule with an explicit look bit, or any picture text choice, is from the version that separates the two; an
+    /// older rule's kinds say whether it looked at pictures.
+    /// Index the pictures' look. A rule saved before the bit existed looked at the pictures its kinds included.
+    public var readsPicturesByLook: Bool {
+        if let looks = looksPictures { return looks }
+        if ocrPictures != nil { return true }
+        let kinds = self.kinds ?? []
+        return kinds.isEmpty || kinds.contains(.image) || kinds.contains(.screenshot)
+    }
+    /// Text on pictures, with the "not stored yet" default: a rule that looked at pictures read screenshots' words; one
+    /// that left them out read none.
+    public var picturesText: PictureText {
+        if let text = ocrPictures { return text }
+        if looksPictures != nil { return .screenshots }
+        let kinds = self.kinds ?? []
+        return kinds.isEmpty || kinds.contains(.image) || kinds.contains(.screenshot) ? .screenshots : .off
+    }
     /// Scanned pages are read by default? No.
     public var readsScans: Bool { ocrScans ?? false }
 
@@ -137,7 +155,7 @@ public struct RootRule: Codable, Sendable, Equatable {
 
     public init(root: String, kinds: Set<FileKind>? = nil, shallow: Bool = false, audioTags: Bool? = nil,
                 audioContent: Bool? = nil, skipTypes: [String]? = nil, ocrPictures: PictureText? = nil,
-                ocrScans: Bool? = nil) {
+                looksPictures: Bool? = nil, ocrScans: Bool? = nil) {
         self.root = root
         self.kinds = kinds
         self.shallow = shallow
@@ -145,6 +163,7 @@ public struct RootRule: Codable, Sendable, Equatable {
         self.audioContent = audioContent
         self.skipTypes = skipTypes
         self.ocrPictures = ocrPictures
+        self.looksPictures = looksPictures
         self.ocrScans = ocrScans
     }
 }

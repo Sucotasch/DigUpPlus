@@ -41,6 +41,25 @@ import Testing
         #expect(Searcher.kindHints("صورة حمار وحشي") == [.image])
     }
 
+    @Test func aPictureKeptOnlyForItsWordsIsNotAmongThePictures() throws {
+        let index = folder.appendingPathComponent("look-filter")
+        let store = try IndexStore(directory: index)
+        let words = try store.insert(Candidate(path: "/shots/error.png", kind: .screenshot, size: 1, mtime: 1,
+                                               inode: 1, device: 1, looksPictures: false))
+        try store.addSegment(file: words, kind: .ocr, modality: .text, text: "zorblat in the log")
+        try store.finish(words, state: "done")
+        let looked = try store.insert(Candidate(path: "/photos/dog.png", kind: .image, size: 1, mtime: 1,
+                                                inode: 2, device: 1, looksPictures: true))
+        try store.addSegment(file: looked, kind: .ocr, modality: .text, text: "zorblat too")
+        try store.finish(looked, state: "done")
+        let searcher = try Searcher(store: store, loadVectors: false)
+        // The words-only screenshot is not an Images or Screenshots result; All files still finds it.
+        #expect(try searcher.search("zorblat", queryVector: nil, kinds: [.screenshot]).isEmpty)
+        #expect(try searcher.search("zorblat", queryVector: nil, kinds: [.image]).map(\.path) == ["/photos/dog.png"])
+        #expect(try searcher.search("zorblat", queryVector: nil).map(\.path).sorted()
+                == ["/photos/dog.png", "/shots/error.png"])
+    }
+
     @Test func bengaliAndArabicWordsStayWhole() throws {
         let store = try IndexStore(directory: folder)
         let id = try store.insert(Candidate(path: "/notes/trip.txt", kind: .doc, size: 1, mtime: 1, inode: 1, device: 1))

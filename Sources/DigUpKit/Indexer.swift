@@ -162,7 +162,7 @@ public final class Indexer {
                     // the picture, or not).
                     if row.size != file.size || abs(row.mtime - file.mtime) > 0.001 || row.kind != file.kind
                         || row.tagsOnly != file.tagsOnly || row.ocrPictures != file.ocrPictures
-                        || row.ocrScans != file.ocrScans {
+                        || row.looksPictures != file.looksPictures || row.ocrScans != file.ocrScans {
                         try store.requeue(row.id, as: file)
                         summary.changed += 1
                         summary.queued.append(row.id)
@@ -339,6 +339,10 @@ public final class Indexer {
         switch prepared.payload {
         case .images(let screenshot, let ready):
             measured.add(screenshot ? "screenshot" : "image", units: Double(ready.count), seconds: seconds)
+        case .pictureText(let texts):
+            // The look isn't read; the words are (the OCR cost the estimate already charges a picture).
+            measured.add(prepared.batch.first?.kind == .screenshot ? "screenshot" : "image",
+                         units: Double(texts.filter { !$0.isEmpty }.count), seconds: seconds)
         case .pdf(let pages, _, _, _): measured.add("pdfPage", units: Double(pages.count), seconds: seconds)
         case .doc(let chunks, _, _, _):
             // Chunks with a vector: a data dump's go to keyword search only and take next to nothing, which isn't
@@ -368,8 +372,11 @@ public final class Indexer {
         while index < queue.count {
             var batch = [queue[index]]
             if batch[0].kind == .image || batch[0].kind == .screenshot {
+                // A folder's pictures are looked at or read for their words: the two take different paths, so a batch
+                // never mixes them.
                 while index + batch.count < queue.count, batch.count < 8,
-                      queue[index + batch.count].kind == batch[0].kind {
+                      queue[index + batch.count].kind == batch[0].kind,
+                      queue[index + batch.count].looksPictures == batch[0].looksPictures {
                     batch.append(queue[index + batch.count])
                 }
             }
@@ -430,6 +437,8 @@ public final class Indexer {
     enum Payload: Sendable {
         case nothing
         case images(screenshot: Bool, ready: [ReadyImage])
+        /// A picture whose folder reads its words without its look: the text for each file of the batch.
+        case pictureText([String])
         /// `read`: the pages read (from 0) of the PDF's `total`.
         case pdf(pages: [PDFExtractor.Page], read: Range<Int>, total: Int, title: String?)
         /// `chunks`: the ones in `read` (from 0) of the document's `total` (counted up to `IndexOptions.maxChunks` + 1).
@@ -515,33 +524,48 @@ public final class Indexer {
             switch batch[0].kind {
             case .image, .screenshot:
                 let screenshot = batch[0].kind == .screenshot
-                var ready: [ReadyImage] = []
-                for (slot, file) in batch.enumerated() {
-                    let url = URL(fileURLWithPath: file.path)
-                    finishReading(reading)
-                    reading = startReading(file.path)
-                    do {
-                        let image = try ImageExtractor.prepare(url, maxPixel: screenshot ? 1536 : 1024,
-                                                               minSide: options.minImageSide, to: folder,
-                                                               png: screenshot)
-                        // Text on the picture, as the folder asks: screenshots alone (the default), every picture, or
-                        // none. Two readings come back where the platform has two engines (Windows: the profile's
-                        // language and English); both go into keyword search, since one engine mangles the other's.
+                if !batch[0].looksPictures {
+                    // A folder that keeps the words and not the look: no scaled copy, no vector, no fingerprint — just
+                    // the text, straight from the file (the OCR engine decodes it itself).
+                    var texts: [String] = []
+                    for file in batch {
+                        finishReading(reading)
+                        reading = startReading(file.path)
                         let reads = screenshot ? file.ocrPictures != .off : file.ocrPictures == .all
-                        let ocr = reads ? OCR.readings(ofImageAt: url).joined(separator: "\n\n") : ""
-                        // Its look-alike fingerprint was taken with the pixels `prepare` already had: no second read,
-                        // no second decode (a picture whose reader keeps no bitmap simply has none).
-                        let phash = image.fingerprint
-                        ready.append(ReadyImage(slot: slot, image: image, ocr: ocr, phash: phash))
-                    } catch let error as ExtractError {
-                        if case .tooSmall = error {
-                            prepared.outcomes[slot] = Outcome(state: "skipped", detail: "\(error)")
-                        } else {
-                            prepared.outcomes[slot] = Outcome(state: "failed", detail: "\(error)")
+                        texts.append(reads ? OCR.readings(ofImageAt: URL(fileURLWithPath: file.path))
+                            .joined(separator: "\n\n") : "")
+                    }
+                    prepared.payload = .pictureText(texts)
+                } else {
+                    var ready: [ReadyImage] = []
+                    for (slot, file) in batch.enumerated() {
+                        let url = URL(fileURLWithPath: file.path)
+                        finishReading(reading)
+                        reading = startReading(file.path)
+                        do {
+                            let image = try ImageExtractor.prepare(url, maxPixel: screenshot ? 1536 : 1024,
+                                                                   minSide: options.minImageSide, to: folder,
+                                                                   png: screenshot)
+                            // Text on the picture, as the folder asks: screenshots alone (the default), every picture,
+                            // or none. Two readings come back where the platform has two engines (Windows: the
+                            // profile's language and English); both go into keyword search, since one engine mangles
+                            // the other's.
+                            let reads = screenshot ? file.ocrPictures != .off : file.ocrPictures == .all
+                            let ocr = reads ? OCR.readings(ofImageAt: url).joined(separator: "\n\n") : ""
+                            // Its look-alike fingerprint was taken with the pixels `prepare` already had: no second
+                            // read, no second decode (a picture whose reader keeps no bitmap simply has none).
+                            let phash = image.fingerprint
+                            ready.append(ReadyImage(slot: slot, image: image, ocr: ocr, phash: phash))
+                        } catch let error as ExtractError {
+                            if case .tooSmall = error {
+                                prepared.outcomes[slot] = Outcome(state: "skipped", detail: "\(error)")
+                            } else {
+                                prepared.outcomes[slot] = Outcome(state: "failed", detail: "\(error)")
+                            }
                         }
                     }
+                    prepared.payload = .images(screenshot: screenshot, ready: ready)
                 }
-                prepared.payload = .images(screenshot: screenshot, ready: ready)
             case .pdf:
                 // Long PDFs (books) get their first pages now and the rest after everything else.
                 var wanted = 0..<0
@@ -635,6 +659,8 @@ public final class Indexer {
                 break
             case .images(let screenshot, let ready):
                 try images(batch, screenshot: screenshot, ready: ready.filter { current[$0.slot] }, results: &results)
+            case .pictureText(let texts):
+                try pictureText(batch, texts: texts, results: &results)
             case .pdf(let pages, let read, let total, let title):
                 guard current[0] else { break }
                 results[0] = try pdf(batch[0], pages: pages, read: read, total: total, title: title, later: later)
@@ -686,6 +712,25 @@ public final class Indexer {
         let unit = file.kind == .pdf ? "page" : "chunk"
         try store.finish(file.id, state: "done", detail: "read to \(unit) \(place), not after: \(problem)", info: info)
         return ("done", "stopped before \(unit) \(place + 1): \(problem)")
+    }
+
+    /// Pictures whose folder keeps their words and not their look: the `.ocr` segment only, no image vector and no
+    /// look-alike fingerprint. A picture with no words at all is skipped (its name is still searchable).
+    private func pictureText(_ batch: [FileRecord], texts: [String],
+                             results: inout [(String, String?)]) throws {
+        try store.db.transaction {
+            for (slot, file) in batch.enumerated() {
+                let text = texts[slot]
+                guard !text.isEmpty else {
+                    try store.finish(file.id, state: "skipped", detail: "no text on it")
+                    results[slot] = ("skipped", "no text on it")
+                    continue
+                }
+                try store.addSegment(file: file.id, kind: .ocr, modality: .text, excerpt: excerpt(text), text: text)
+                try store.finish(file.id, state: "done", info: ["ocr_chars": "\(text.count)"])
+                results[slot] = ("done", "ocr \(text.count) chars")
+            }
+        }
     }
 
     private func images(_ batch: [FileRecord], screenshot: Bool, ready: [ReadyImage],

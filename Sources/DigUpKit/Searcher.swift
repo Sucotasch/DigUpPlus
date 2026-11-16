@@ -58,6 +58,8 @@ public final class Searcher {
     /// False for the vectors the later pass adds (`Indexer.finishLongFiles`): scored, but they don't set the scale.
     private var rowSetsScale: [Bool] = []
     private var fileKind: [Int64: FileKind] = [:]
+    /// A picture's look is indexed (`files.looks`): false for the ones a folder keeps only for their words.
+    private var fileLooks: [Int64: Bool] = [:]
     public private(set) var vectorSource: String?
     /// False after `releaseVectors()` (or `loadVectors: false`): keyword search still works, and the next search with
     /// a query vector loads them again.
@@ -120,8 +122,10 @@ public final class Searcher {
 
     private func reloadFiles() throws {
         fileKind.removeAll(keepingCapacity: true)
-        try store.db.query("SELECT id, kind FROM files") { row in
+        fileLooks.removeAll(keepingCapacity: true)
+        try store.db.query("SELECT id, kind, looks FROM files") { row in
             fileKind[row.int(0)] = FileKind(rawValue: row.text(1) ?? "")
+            fileLooks[row.int(0)] = row.int(2) != 0
         }
         vectorSource = try store.meta("vector_source")
     }
@@ -153,7 +157,14 @@ public final class Searcher {
         let wordWeight = wordWeight ?? (isCode ? Self.codeWordWeight : Self.wordWeight)
         if queryVector != nil, !vectorsLoaded { try reload() }
         let fileKind = self.fileKind
-        let allowed = { (file: Int64) -> Bool in kinds == nil || fileKind[file].map { kinds!.contains($0) } ?? false }
+        let fileLooks = self.fileLooks
+        let allowed = { (file: Int64) -> Bool in
+            guard let kind = fileKind[file], kinds == nil || kinds!.contains(kind) else { return false }
+            // A folder can keep a picture's words and not its look: that one is found in All files, never among the
+            // pictures (Images or Screenshots). All files asks for no kinds and still shows it.
+            if kinds != nil, kind == .image || kind == .screenshot { return fileLooks[file] ?? true }
+            return true
+        }
 
         // Meaning: score every vector on this query's scale (`meaning`), keep each file's best segment.
         var best: [Int64: (z: Double, cosine: Double, row: Int)] = [:]
@@ -270,6 +281,8 @@ public final class Searcher {
         let strongKeys = byCosine ? Set(ordered.filter { topScore > 0 && $0.value >= topScore * 0.5 }.map(\.key)) : []
         for (index, entry) in ordered.enumerated() {
             guard let kind = fileKind[entry.key] else { continue }
+            // The pictures' chips count pictures a folder looks at; a words-only picture has no place there.
+            if kind == .image || kind == .screenshot, fileLooks[entry.key] == false { continue }
             kindTotals[kind, default: 0] += 1
             if byCosine ? strongKeys.contains(entry.key) : index < strong { kindCounts[kind, default: 0] += 1 }
         }

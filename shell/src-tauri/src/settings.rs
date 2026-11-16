@@ -105,6 +105,10 @@ pub struct RootRule {
     /// Text on pictures: "off", "screenshots" (the default) or "all".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ocr_pictures: Option<String>,
+    /// Index the pictures' look (their image vector, and Images/Screenshots). None for a rule saved before the bit:
+    /// its kinds said it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub looks_pictures: Option<bool>,
     /// Read the words on a PDF's scanned pages.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ocr_scans: Option<bool>,
@@ -113,13 +117,13 @@ pub struct RootRule {
 impl Default for RootRule {
     fn default() -> Self {
         RootRule { kinds: Vec::new(), shallow: false, audio_tags: None, audio_content: None, skip_types: Vec::new(),
-                   ocr_pictures: None, ocr_scans: None }
+                   ocr_pictures: None, looks_pictures: None, ocr_scans: None }
     }
 }
 
 impl RootRule {
-    /// Recordings are in this rule's kinds at all.
-    fn reads_audio(&self) -> bool { self.kinds.iter().any(|kind| kind == "audio") }
+    /// Recordings are in this rule's kinds at all. An empty kind list (every kind) includes them.
+    fn reads_audio(&self) -> bool { self.kinds.is_empty() || self.kinds.iter().any(|kind| kind == "audio") }
 
     /// The bits as they act, with a 0.1.6 file's rule reading recordings exactly when it included them.
     pub fn tags_bit(&self) -> bool { self.audio_tags.unwrap_or_else(|| self.reads_audio()) }

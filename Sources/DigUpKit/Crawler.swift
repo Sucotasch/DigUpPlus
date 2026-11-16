@@ -14,11 +14,14 @@ public struct Candidate: Sendable {
     public let tagsOnly: Bool
     /// Text on this picture (`RootRule.picturesText`): screenshots alone, every picture, or none.
     public let ocrPictures: PictureText
+    /// Index this picture's look (`RootRule.readsPicturesByLook`): its image vector and its place in Images.
+    public let looksPictures: Bool
     /// Read the words on this PDF's scanned pages (`RootRule.ocrScans`).
     public let ocrScans: Bool
 
     public init(path: String, kind: FileKind, size: Int64, mtime: Double, inode: UInt64, device: UInt64,
-                tagsOnly: Bool = false, ocrPictures: PictureText = .screenshots, ocrScans: Bool = false) {
+                tagsOnly: Bool = false, ocrPictures: PictureText = .screenshots, looksPictures: Bool = true,
+                ocrScans: Bool = false) {
         self.path = path
         self.kind = kind
         self.size = size
@@ -27,6 +30,7 @@ public struct Candidate: Sendable {
         self.device = device
         self.tagsOnly = tagsOnly
         self.ocrPictures = ocrPictures
+        self.looksPictures = looksPictures
         self.ocrScans = ocrScans
     }
 }
@@ -259,15 +263,26 @@ public enum Crawler {
                             return
                         }
                     }
-                    // The folder's rule also says whether words on the picture (and, for a PDF, on its scanned pages)
-                    // are read: a setting like the audio bits, carried with the row so a rule change re-reads exactly
-                    // the pictures whose reading changed. Each flag stays at its default for the kinds it doesn't
-                    // concern, so a folder's picture choice doesn't requeue its documents.
+                    // The folder's rule also says whether a picture is looked at (its vector, and its place in Images)
+                    // and whether its words are read: two bits like a recording's tags and sound, carried with the row
+                    // so a rule change re-reads exactly the pictures whose reading changed. A folder can read only the
+                    // words (no image vector) — a screenshots folder shown as text, not as pictures.
                     var ocrPictures = PictureText.screenshots
+                    var looksPictures = true
                     var ocrScans = false
                     if !options.code {
                         switch kind {
-                        case .image, .screenshot: ocrPictures = rules[ruleOwner]?.picturesText ?? .screenshots
+                        case .image, .screenshot:
+                            let rule = rules[ruleOwner]
+                            let looks = rule?.readsPicturesByLook ?? true
+                            let text = rule?.picturesText ?? .screenshots
+                            let readsText = kind == .screenshot ? text != .off : text == .all
+                            if !looks && !readsText {
+                                leftOut("pictures aren't read here", under: reportOwner)
+                                return
+                            }
+                            looksPictures = looks
+                            ocrPictures = text
                         case .pdf: ocrScans = rules[ruleOwner]?.readsScans ?? false
                         default: break
                         }
@@ -298,7 +313,7 @@ public enum Crawler {
                     foundRoot[url.path] = reportOwner
                     found.append(Candidate(path: url.path, kind: kind, size: info.size, mtime: info.mtime,
                                            inode: info.inode, device: info.device, tagsOnly: tagsOnly,
-                                           ocrPictures: ocrPictures, ocrScans: ocrScans))
+                                           ocrPictures: ocrPictures, looksPictures: looksPictures, ocrScans: ocrScans))
                 }
             }
 

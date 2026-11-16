@@ -182,7 +182,7 @@ function renderFolders() {
 // The settings' root rules, chosen here so the first pass already leaves out what the person doesn't want: the kinds a
 // folder holds (Pictures is pictures and screenshots), how its recordings are read, and "scan subfolders". Kept per
 // canonical folder, sent on Save. Recordings are not a kind box: their two bits decide whether `audio` is in the kinds.
-// RULE_KINDS comes from rules.js, with the rule fields shared with Settings.
+// The rule fields (and the picture bits) come from rules.js, shared with Settings.
 
 const folderRules = new Map();   // canonical folder → { kinds: [...], shallow, audioTags, audioContent, skipTypes, ocrPictures, ocrScans }
 const rulePaths = new Map();     // canonical folder → the folder as it was spelled (subfolder rules keep their case)
@@ -193,23 +193,38 @@ function ruleOf(folder) { return folderRules.get(key(folder)) || null; }
 /// The two audio bits of a rule, with a rule from before they existed reading recordings exactly when it included
 /// them.
 function audioBits(rule) {
-  const inKinds = (rule.kinds || []).includes("audio");
+  const inKinds = (rule.kinds || []).length === 0 || (rule.kinds || []).includes("audio");
   return { tags: rule.audioTags ?? inKinds, content: rule.audioContent ?? inKinds };
 }
 
 /// A folder's rule in words, for its line: "pictures only · recordings by tags · top level only".
 function ruleText(rule) {
-  const names = { image: "pictures", pdf: "PDFs", doc: "documents", video: "videos" };
-  const { tags, content } = audioBits(rule);
-  const kinds = (rule.kinds || []).filter((kind) => kind !== "screenshot" && kind !== "audio")
-    .map((kind) => names[kind] || kind);
-  const allKinds = RULE_KINDS.every(([kind]) => (rule.kinds || []).includes(kind));
+  const inKinds = (rule.kinds || []).length === 0 || (rule.kinds || []).includes("audio");
+  const tags = rule.audioTags ?? inKinds;
+  const content = rule.audioContent ?? inKinds;
+  const kinds = rule.kinds || [];
+  const documents = kinds.length === 0 || kinds.includes("pdf") || kinds.includes("doc");
+  const videos = kinds.length === 0 || kinds.includes("video");
+  const pictures = pictureBits(rule);
+  const named = [];
+  if (documents) named.push("documents");
+  if (videos) named.push("videos");
+  if (pictures.looks) named.push("pictures");
   const parts = [];
-  if (kinds.length && !allKinds) parts.push(`${kinds.join(", ")} only`);
+  if (named.length && !(documents && videos && pictures.looks)) parts.push(`${named.join(", ")} only`);
+  if (!pictures.looks && pictures.text !== "off") {
+    parts.push(pictures.text === "all" ? "text on every picture (not in Images)"
+                                       : "text on screenshots (not in Images)");
+  } else if (pictures.looks && pictures.text === "all") {
+    parts.push("text on every picture");
+  } else if (pictures.looks && pictures.text === "off") {
+    parts.push("no text on pictures");
+  }
   if (tags && content) parts.push("recordings by tags and sound");
   else if (tags) parts.push("recordings by tags only");
   else if (content) parts.push("recordings by sound");
   if ((rule.skipTypes || []).length) parts.push(`skips ${rule.skipTypes.join(", ")}`);
+  if (rule.ocrScans) parts.push("text on scans");
   if (rule.shallow) parts.push("top level only");
   return parts.join(" · ");
 }
@@ -224,15 +239,15 @@ function rulesObject() {
     // A rule under a folder that isn't searched any more goes with it.
     if (!roots.some((root) => same(root, folder) || inside(folder, root))) continue;
     const { tags, content } = audioBits(rule);
-    const everyKind = RULE_KINDS.every(([kind]) => rule.kinds.includes(kind));
-    const ocrPictures = rule.ocrPictures === "off" || rule.ocrPictures === "all" ? rule.ocrPictures : null;
-    const ocrScans = rule.ocrScans === true;
-    if (everyKind && tags && content && !rule.shallow && !(rule.skipTypes || []).length
-        && !ocrPictures && !ocrScans) continue;
-    const outRule = { kinds: [...rule.kinds], shallow: rule.shallow, audioTags: tags, audioContent: content };
+    const bits = pictureBits(rule);
+    // Every rule is sent, bits and all: the engine's clean_rule decides what is no rule (all defaults). An old rule
+    // loaded above carries the picture bits its kinds imply, so saving this window can't turn its pictures back on.
+    // No kinds in the rule means everything: say so with the list, so the bits sent beside it don't narrow it.
+    const kinds = rule.kinds.length ? [...rule.kinds] : ["screenshot", "image", "pdf", "doc", "audio", "video"];
+    const outRule = { kinds, shallow: rule.shallow, audioTags: tags, audioContent: content,
+                      looksPictures: bits.looks, ocrPictures: bits.text };
     if ((rule.skipTypes || []).length) outRule.skipTypes = rule.skipTypes;
-    if (ocrPictures) outRule.ocrPictures = ocrPictures;
-    if (ocrScans) outRule.ocrScans = true;
+    if (rule.ocrScans === true) outRule.ocrScans = true;
     // The chosen root's stored spelling, or the subfolder's own path.
     const root = roots.filter((one) => same(one, folder) || inside(folder, one))
       .sort((a, b) => b.length - a.length)[0];
@@ -267,11 +282,11 @@ function rulePanel(folder) {
     }
   };
   onAudio();
-  for (const input of [...controls.kinds, controls.tags, controls.content]) {
+  for (const input of [controls.pictures, controls.documents, controls.videos, controls.tags, controls.content]) {
     input.onchange = () => { onAudio(); store(); };
   }
   controls.skip.oninput = () => store();
-  controls.pictures.onchange = controls.scans.onchange = () => store();
+  controls.text.onchange = controls.scans.onchange = () => store();
   // Its subfolders, while it reads them at all (the rules and choices stay when it doesn't).
   const listSlot = element("div", "subfolders");
   panel.append(listSlot);
@@ -1080,10 +1095,12 @@ async function start() {
   selection.skipped = (info.skipped || []).map(canon);
   // The rules the folders already have (Settings → Folders): shown here, and kept when this window saves.
   for (const [path, rule] of Object.entries(info.rootRules || {})) {
+    // The picture bits a rule saved before them implies: its kinds said whether pictures were read, and how.
+    const bits = pictureBits(rule);
     folderRules.set(key(path), { kinds: rule.kinds || [], shallow: Boolean(rule.shallow),
                                  audioTags: rule.audioTags, audioContent: rule.audioContent,
-                                 skipTypes: rule.skipTypes || [], ocrPictures: rule.ocrPictures,
-                                 ocrScans: rule.ocrScans });
+                                 skipTypes: rule.skipTypes || [], looksPictures: bits.looks,
+                                 ocrPictures: bits.text, ocrScans: rule.ocrScans });
     rulePaths.set(key(path), path);
   }
   // Folders picked before this page loaded (Add Folders… opens the picker first).
