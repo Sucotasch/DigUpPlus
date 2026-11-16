@@ -51,13 +51,17 @@ enum PDFExtractor {
 
 enum DocExtractor {
     /// Plain text from txt/md directly, HTML by stripping tags, rtf/docx/doc/odt through `richText` (the Cocoa text
-    /// system on macOS, the files' own XML elsewhere), and spreadsheets and presentations from their XML everywhere
-    /// (`OfficeText`).
+    /// system on macOS, the files' own XML or piece table elsewhere), books (FB2, EPUB, zip, CHM) through their own
+    /// readers, and spreadsheets and presentations from their XML everywhere (`OfficeText`).
     static func text(of url: URL) throws -> String {
         let ext = url.pathExtension.lowercased()
         switch ext {
         case "docx", "doc", "odt", "rtf": return try richText(of: url, type: ext)
         case "xlsx", "pptx", "ods", "odp": return try OfficeText.text(of: url, type: ext)
+        case "fb2": return try FB2.text(of: url)
+        case "epub": return try EPUB.text(of: url)
+        case "zip": return try ZipBook.text(of: url)
+        case "chm", "djvu": return try ConvertedBook.text(of: url, type: ext)
         case "html", "htm": return plainText(fromHTML: try readText(url))
         default: return try readText(url)
         }

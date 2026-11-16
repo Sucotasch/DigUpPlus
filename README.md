@@ -237,6 +237,8 @@ Only the folders you choose:
   else is in (up to 5,000 pages a file)
 - documents: txt, md, typ, rtf, docx, odt, html, and on a Mac doc, long ones the same way. Text that's mostly numbers,
   like a data export, is matched by its exact text only
+- books: fb2 (UTF-8 or Windows-1251) and epub; a zip archive is one result holding the text of every readable file
+  inside it
 - spreadsheets and presentations: xlsx, ods, pptx and odp, read for their text: each sheet's name and rows, each
   slide's text and speaker notes
 - audio of any length: the model listens to 30 seconds at a time, so DigUp takes overlapping 30-second windows and a

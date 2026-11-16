@@ -1,5 +1,5 @@
 // Word-processor files without the Cocoa text system (Linux, Windows): docx and odt from the XML inside their zip
-// (miniz, Vendor/miniz), rtf stripped of its control words. Legacy .doc isn't read here.
+// (miniz, Vendor/miniz), rtf stripped of its control words, legacy .doc through its own piece table (WordDoc.swift).
 #if !canImport(AppKit)
 import CMiniz
 import Foundation
@@ -15,8 +15,10 @@ extension DocExtractor {
                                               breaks: ["text:line-break"], spaces: ["text:tab", "text:s"]))
         case "rtf":
             return RTF.text(try readText(url))
+        case "doc":
+            return try WordDoc.text(of: url)
         default:
-            throw ExtractError.unreadable("legacy Word (.doc) files aren't read on this system")
+            throw ExtractError.unreadable(".\(ext) files aren't read here")
         }
     }
 
@@ -69,6 +71,15 @@ final class ZipArchive {
         if open { mz_zip_reader_end(zip) }   // miniz reads through `reader` until here
         zip.deinitialize(count: 1)
         zip.deallocate()
+    }
+
+    /// The entry names in the order the zip stores them, for the books that read every readable entry.
+    func names() -> [String] {
+        var buffer = [CChar](repeating: 0, count: 1024)
+        return (0..<Int(mz_zip_reader_get_num_files(zip))).compactMap { index in
+            guard mz_zip_reader_get_filename(zip, mz_uint(index), &buffer, mz_uint(buffer.count)) > 0 else { return nil }
+            return String(cString: buffer)
+        }
     }
 
     /// The entry's bytes, or nil when the zip has no such entry. Its declared size is checked first, before anything is

@@ -15,6 +15,8 @@ final class ZipArchive {
 
     private let file: Data
     private var entries: [String: Entry] = [:]
+    /// The names in the zip's own order (the dictionary above has none), for the books read entry by entry.
+    private var order: [String] = []
 
     init(_ url: URL) throws {
         file = try Data(contentsOf: url, options: .alwaysMapped)
@@ -34,10 +36,14 @@ final class ZipArchive {
             if try number(offset + 8, 2) & 1 == 0 {   // encrypted entries are left out
                 entries[name] = Entry(method: try number(offset + 10, 2), compressedSize: try number(offset + 20, 4),
                                       size: try number(offset + 24, 4), headerOffset: try number(offset + 42, 4))
+                order.append(name)
             }
             offset += 46 + nameLength + skip
         }
     }
+
+    /// The entry names in the order the zip stores them.
+    func names() -> [String] { order }
 
     /// The entry's bytes, or nil when the zip has no such entry.
     func data(_ name: String) throws -> [UInt8]? {
