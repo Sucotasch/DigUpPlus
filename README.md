@@ -69,6 +69,19 @@ here. What this fork changes is what surrounds the engine:
   files you already downloaded.
 - **A first run opens Settings, not a wizard.** Nothing has to be chosen before DigUp is usable, and nothing
   downloads by itself — the model asks first.
+- **Exact phrases in quotes.** `"greenhouse hush"` finds the two words only where they stand next to each other in
+  that order, not a page apart or swapped; punctuation and line breaks between them don't matter, case and accents are
+  ignored as everywhere, several quoted spans must all appear, and the words outside the quotes search as they always
+  did. The meaning vector reads the text without the quote marks, so nothing else about the search changes.
+- **The words on pictures and scanned pages** (Windows, off until a folder's rule asks for it). Windows OCR reads
+  them with the system language and with English, so a Russian screenshot with English code is found either way. A
+  folder keeps two separate answers for pictures — **Images** (how they look) and **OCR** (their words) — and two for
+  documents — **Documents** and **OCR Documents** (scanned PDF pages' text), so a picture read only for its words has no
+  place in Images and a PDF kept only for its scans is an OCR result, not a document. The recognized text shows in the
+  preview beside the file, selectable, with **Copy all**.
+- **Each filter chip counts its own list.** Documents 174, Images 66, OCR 1, Video 16: one number per filter for the
+  whole query, the same whichever view you are in, and equal to what that view lists — Images counts the two upper
+  cosine layers, OCR the words search. A click no longer recomputes them, and OCR's number is there before you open it.
 - **Paged results, no cap.** The window opens on the best 120 and appends the rest 300 at a time as you scroll or
   click **Show 300 more**, and there is no limit on how far it goes: the whole ranking of what is indexed stays
   reachable. A failed page turns the button into **Retry** without losing what's already loaded.
@@ -96,9 +109,12 @@ here. What this fork changes is what surrounds the engine:
 - a search in English can find a note written in Bengali, Arabic or any of the model's 100+ languages, and the other
   way around
 - "code: retry a failed call with backoff" finds the function in your projects, if you turn on code search
+- `"greenhouse hush"` in quotes finds only those two words, next to each other, in that order
 
 Exact words count too. Invoice numbers, error codes and names are matched as written, in file names and document text,
-so a search gets both the meaning and the exact string. On a Mac that includes the text inside screenshots.
+so a search gets both the meaning and the exact string. On a Mac that includes the text inside screenshots; on Windows
+the words on any picture or scanned PDF page can be read too, once a folder's rule asks for it, and then they are
+searched as the same exact text.
 
 ## Private
 
@@ -159,14 +175,16 @@ the full package.
 | Del | Deletes the file under the cursor, or the ticked ones; Enter confirms the Recycle Bin sheet |
 | Right click → Find similar | Searches by that file's own picture: the closest matches in the collection, with the picture itself first |
 | G / Shift+G | Opens or folds the look-alike group under the cursor, or every group (Find similar) |
-| Ctrl+1…6 | The big window's views: Images, Screenshots, Documents, Video, Audio, All files |
+| Ctrl+1…6 | The big window's views: Images, OCR, Documents, Video, Audio, All files |
 | F5 / F6 / F8 | Copy To… / Move To… / Delete the selected files (Windows) |
 
 DigUp Plus lives in the tray, where you can see how indexing is going,
 pause it, or open Settings. Opening it from the Start menu or your app list shows the search window, which opens on
 the **Images** view — the fork's home ground: the whole picture ranking in cosine layers, paged as deep as it goes.
 The **All files** view (the last chip, Ctrl+6) ranks everything by the mixed score and is where a query that mixes
-kinds — a receipt, a lease page, a photo — shows its best across all of them.
+kinds — a receipt, a lease page, a photo — shows its best across all of them. Every chip carries its own number for the
+whole query and keeps it whichever view you are in; in the **OCR** view the words a picture or a scanned page had are
+shown beside the result — selectable, right-click to copy, or **Copy all**.
 
 Closing the window with its **X quits DigUp Plus outright** (indexing pauses and resumes on the next start).
 **Esc** and **Ctrl+W** put the window away into the tray instead — the app keeps running and indexing.
@@ -233,10 +251,11 @@ A few things differ by system:
 
 Only the folders you choose:
 
-- pictures and screenshots (JPEG, PNG, HEIC, WebP and more), by what they show, and on a Mac screenshots by their text
-  too
+- pictures and screenshots (JPEG, PNG, HEIC, WebP and more), by what they show — and, with OCR on for the folder
+  (Windows), by their text too; a Mac reads screenshots' text by default
 - PDFs, page by page, scans included. A long one gets its first 30 pages right away and the rest once everything
-  else is in (up to 5,000 pages a file)
+  else is in (up to 5,000 pages a file), while the computer is idle; scanned pages' text is read too when a folder's
+  **OCR Documents** asks for it
 - documents: txt, md, typ, rtf, docx, odt, html, and on a Mac doc, long ones the same way. Text that's mostly numbers,
   like a data export, is matched by its exact text only
 - books: fb2 (UTF-8 or Windows-1251) and epub; a zip archive is one result holding the text of every readable file
@@ -259,7 +278,9 @@ The first pass happens once. On a Mac it takes a few minutes for a few hundred f
 Downloads folder. On Windows and Linux, DigUp runs the model on the graphics card where that's faster and on the
 processor otherwise; on a processor alone a picture takes a few seconds (about five on a 2017 laptop's Core i5), so a
 large photo library can take hours, which is why setup shows the time first. After that, a new file is searchable a
-few seconds after it lands.
+few seconds after it lands. The last pages of long books and PDFs are read in the background **only while the computer
+is idle** — five minutes without keyboard or mouse input — and stop as soon as you're back, so they never compete with
+your work; the status line says how many are left.
 
 ## Code
 

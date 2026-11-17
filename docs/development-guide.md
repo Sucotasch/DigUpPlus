@@ -135,7 +135,7 @@ PATH="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/bin/x64:$PATH" \
 
 ```sh
 cd shell/src-tauri
-cargo test --locked      # 58 тестов
+cargo test --locked      # 79 тестов
 cargo build --locked
 ```
 
@@ -397,9 +397,15 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
   глубина, аудио, пропуск типов, OCR), на уровень за раз; исключённая подпапка остаётся в списке и хранит правило, а
   выключение «Scan its subfolders» сохраняет и правила, и выбор; поля правила общие для Settings и окна Choose Folders
   (`shell/ui/rules.js`), и его сохранение больше не теряет правила подпапок и OCR; shim собирается
-  `scripts/build-ocr.sh`; helper изменился, нужен полный zip;
-- на 2026-11-17: `python .build/swift_test.py` — 220 тестов, 219 прошли (тот же symlink-тест), `cargo test --locked`
-  — 78, все прошли;
+  `scripts/build-ocr.sh`; в 0.1.16 также: точные фразы в кавычках (слова подряд и в том же порядке, несколько
+  кавычек — все обязательны, вектор без кавычек; `SearchText.quoted`); распознанный текст в превью (в OCR открыт, в
+  Images — строкой, выделение и Copy all); одно ранжирование на клик фильтра и `section_totals` — числа на плашках;
+  протокол helper 2; энкодер держится тёплым 15 минут (`--encoder-idle 900`), строка «Preparing the model…»; проверка
+  скорости не запускается, когда замер уже есть, и строка «Checking this computer's speed…» — только при реальном
+  замере; остаток длинных книг читается только в простое (`--rest-when-idle 300`, пауза 2× шага после каждого);
+  helper изменился, нужен полный zip;
+- на 2026-11-17: `python .build/swift_test.py` — 226 тестов, 225 прошли (тот же symlink-тест), `cargo test --locked`
+  — 79, все прошли;
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
   (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` удалён. Default branch —
   `file-operations`; сборки только вручную (`scripts/package-portable.sh`).
