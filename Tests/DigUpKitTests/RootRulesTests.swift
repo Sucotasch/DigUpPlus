@@ -261,7 +261,7 @@ import Testing
         #expect(candidate("book.pdf")?.ocrScans == true)
         // Each choice stays with the kind it concerns: a document's picture bit, or a picture's scan bit, never changes
         // with the rule, so one folder setting doesn't requeue the rest of its files.
-        #expect(candidate("book.pdf")?.ocrPictures == .screenshots)
+        #expect(candidate("book.pdf")?.ocrPictures == .off)
         #expect(candidate("photo.jpg")?.ocrScans == false)
     }
 
@@ -286,15 +286,17 @@ import Testing
         #expect(report.candidates.allSatisfy { !$0.looksPictures && $0.ocrPictures == .all })
     }
 
-    @Test func screenshotsOnlyWordsWithoutTheLookLeaveImagesOut() throws {
+    @Test func theBetasScreenshotChoiceKeepsEveryPictureForItsWords() throws {
         try write("photo.jpg")
         try write("Screenshots/shot.png")
-        // A photo with neither bit reads nothing; a screenshot with the words bit is read for its words.
+        // The betas' screenshots-only value now means every picture, so a photo with no look and that choice still
+        // keeps its words — the old behaviour left it out entirely.
         let report = Crawler.crawl([folder], options: options([
             RootRule(root: folder.path, ocrPictures: .screenshots, looksPictures: false),
         ]))
-        #expect(names(report) == ["Screenshots/shot.png"])
-        #expect(report.leftOut[folder.path]?["pictures aren't read here"] == 1)
+        #expect(names(report) == ["Screenshots/shot.png", "photo.jpg"])
+        #expect(report.candidates.allSatisfy { !$0.looksPictures && $0.ocrPictures == .all })
+        #expect(report.leftOut[folder.path]?["pictures aren't read here"] == nil)
     }
 
     @Test func aLookChangeRequeuesOnlyThePictures() throws {
@@ -376,5 +378,47 @@ import Testing
         #expect(scans.changed == 1 && scans.added == 0 && scans.removed == 0)
         #expect(try store.pending(limit: nil).map(\.path) == [pdf.path])
         #expect(try store.file(at: photo.path)?.state == "done")
+    }
+
+    /// The 0.1.16 betas wrote `screenshots` for "read the screenshots' words". After the Images/OCR split that choice
+    /// means the words on every picture, which is what the UI has shown ever since.
+    @Test func theBetasScreenshotChoiceReadsEveryPicture() throws {
+        try write("photo.jpg")
+        try write("Screenshots/shot.png")
+        let report = Crawler.crawl([folder], options: options([RootRule(root: folder.path, ocrPictures: .screenshots)]))
+        #expect(report.candidates.count == 2)
+        #expect(report.candidates.allSatisfy { $0.ocrPictures == .all })
+    }
+
+    /// A picture's text choice is compared by what it reads, not by how it is written: a rule change re-reads only what
+    /// really reads differently, and a choice that stops reading needs a re-read only when text is stored.
+    @Test func aPictureRuleChangeReReadsOnlyWhatItChanges() throws {
+        let photo = try write("photo.jpg")
+        try write("notes.txt")
+        let store = try IndexStore(directory: folder.appendingPathComponent("index-words"))
+        func sync(_ rules: [RootRule]) throws -> Indexer.SyncSummary {
+            let indexer = try Indexer(store: store, options: options(rules),
+                                      makeEmbedder: { throw WorkerError.notFound("sync doesn't need a model") })
+            return try indexer.sync([folder])
+        }
+        func finishAll() throws {
+            for file in try store.files(under: [folder.path]) { try store.finish(file.id, state: "done") }
+        }
+        #expect(try sync([]).added == 2)
+        try finishAll()
+        // No words → every picture: read again.
+        #expect(try sync([RootRule(root: folder.path, ocrPictures: .all)]).changed == 1)
+        try finishAll()
+        // The betas' value reads the same as `all`: no re-read, and the row is written as what was read.
+        let picture = try #require(try store.file(at: photo.path))
+        try store.setPictureText(picture.id, .screenshots)
+        #expect(try sync([RootRule(root: folder.path, ocrPictures: .all)]).changed == 0)
+        #expect(try store.file(at: photo.path)?.ocrPictures == .all)
+        // Every picture → no words, nothing stored: nothing to remove, no re-read.
+        #expect(try sync([]).changed == 0)
+        // The same with words stored: read again to drop them.
+        try store.setPictureText(picture.id, .all)
+        try store.addSegment(file: picture.id, kind: .ocr, modality: .text, text: "words on the picture")
+        #expect(try sync([]).changed == 1)
     }
 }

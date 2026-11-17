@@ -96,9 +96,20 @@ public struct IndexOptions: Sendable {
     }
 }
 
-/// Text on pictures, as a folder asks for it: none, on screenshots alone (the default), or on every picture.
+/// Text on pictures, as a folder asks for it: none, on screenshots alone (the value the 0.1.16 betas wrote), or on every
+/// picture.
 public enum PictureText: String, Codable, Sendable {
     case off, screenshots, all
+
+    /// The value the engine acts on. The betas' screenshots-only choice was written when a screenshot was a kind of its
+    /// own; the split into Images and OCR made it "the words on the pictures", which is what every UI has shown since.
+    public var effective: PictureText { self == .screenshots ? .all : self }
+
+    /// Whether a picture of this kind has its words read: screenshots alone for the old choice on a screenshot, every
+    /// picture for `all`, none for `off`.
+    public func readsWords(for kind: FileKind) -> Bool {
+        kind == .screenshot ? effective != .off : effective == .all
+    }
 }
 
 /// What a chosen folder holds: the kinds to index (nil: every kind), whether its subfolders are walked, and how its
@@ -141,11 +152,10 @@ public struct RootRule: Codable, Sendable, Equatable {
         let kinds = self.kinds ?? []
         return kinds.isEmpty || kinds.contains(.image) || kinds.contains(.screenshot)
     }
-    /// Text on pictures: off unless the folder asks (the new default; earlier Windows had no OCR, and the Mac's
-    /// screenshots-only rule is the `screenshots` value of the 0.1.16 betas).
+    /// Text on pictures: off unless the folder asks. A folder's screenshots-only value from the 0.1.16 betas means the
+    /// words on its pictures now, as `PictureText.effective` says everywhere else.
     public var picturesText: PictureText {
-        if let text = ocrPictures { return text }
-        return .off
+        ocrPictures?.effective ?? .off
     }
     /// Index documents as documents. A rule saved before the bit existed had them when its kinds included pdf/doc.
     public var readsDocumentsAsDocuments: Bool {
@@ -183,12 +193,18 @@ public struct RootRule: Codable, Sendable, Equatable {
 
 /// EmbeddingGemma 2's task prompts (model card). Media inputs take no prompt.
 public enum Prompts {
-    public static func query(_ text: String) -> String { "task: search result | query: \(text)" }
+    /// The quotes of an exact-phrase search (`SearchText.quoted`) are search syntax, not meaning: the phrase's own
+    /// words are what the model reads. The query cache keys on the text as typed, so both spellings share one vector.
+    public static func query(_ text: String) -> String {
+        "task: search result | query: \(SearchText.withoutQuotes(text))"
+    }
 
     /// A search of the code index (`CodeQuery`): the model card's prompt for finding code by what it does. Code is
     /// embedded as any document is (`document`, its path in its repo as the title). Measured against the search prompt
     /// on the real-code eval (2026-10-09, 27 queries): 24 vs 22 in the top 5, MRR 0.79 vs 0.75.
-    public static func codeQuery(_ text: String) -> String { "task: code retrieval | query: \(text)" }
+    public static func codeQuery(_ text: String) -> String {
+        "task: code retrieval | query: \(SearchText.withoutQuotes(text))"
+    }
 
     public static func document(title: String?, text: String) -> String {
         "title: \((title?.isEmpty ?? true) ? "none" : title!) | text: \(text)"

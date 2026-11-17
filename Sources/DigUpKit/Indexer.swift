@@ -157,17 +157,28 @@ public final class Indexer {
         try store.db.transaction {
             for file in crawl.candidates {
                 if let row = byPath[file.path] {
-                    // tagsOnly, ocrPictures and ocrScans are part of the row's identity: a folder's bits or the tag
-                    // list changed, so this file must be read the other way (sound instead of tags, or back; words on
-                    // the picture, or not).
+                    // What a folder's bits decide is part of the row's identity: a recording's tags vs sound, a
+                    // picture's look, a document's place, a scan's words. The pictures' text choice is compared by what
+                    // it reads, not by the value it is written as: the betas' `screenshots` and today's `all` read the
+                    // same, and a choice that stops reading needs a re-read only when there is text to remove.
+                    let picture = file.kind == .image || file.kind == .screenshot
+                    let wordsChange = picture
+                        && row.ocrPictures.readsWords(for: row.kind) != file.ocrPictures.readsWords(for: file.kind)
+                    let readsWords = file.ocrPictures.readsWords(for: file.kind)
+                    var wordsNeedReading = wordsChange && readsWords
+                    if wordsChange, !readsWords, try store.hasPictureText(row.id) { wordsNeedReading = true }
                     if row.size != file.size || abs(row.mtime - file.mtime) > 0.001 || row.kind != file.kind
-                        || row.tagsOnly != file.tagsOnly || row.ocrPictures != file.ocrPictures
-                        || row.looksPictures != file.looksPictures || row.asDocument != file.looksDocuments
-                        || row.ocrScans != file.ocrScans {
+                        || row.tagsOnly != file.tagsOnly || row.looksPictures != file.looksPictures
+                        || row.asDocument != file.looksDocuments || row.ocrScans != file.ocrScans
+                        || wordsNeedReading {
                         try store.requeue(row.id, as: file)
                         summary.changed += 1
                         summary.queued.append(row.id)
                     } else {
+                        if picture, row.ocrPictures != file.ocrPictures {
+                            // Same reading, spelled differently: the row keeps saying what was read.
+                            try store.setPictureText(row.id, file.ocrPictures)
+                        }
                         summary.unchanged += 1
                     }
                 } else if let row = byInode["\(file.device):\(file.inode)"], !seen.contains(row.path),
@@ -532,7 +543,7 @@ public final class Indexer {
                     for file in batch {
                         finishReading(reading)
                         reading = startReading(file.path)
-                        let reads = screenshot ? file.ocrPictures != .off : file.ocrPictures == .all
+                        let reads = file.ocrPictures.readsWords(for: file.kind)
                         texts.append(reads ? OCR.readings(ofImageAt: URL(fileURLWithPath: file.path))
                             .joined(separator: "\n\n") : "")
                     }
@@ -551,7 +562,7 @@ public final class Indexer {
                             // or none. Two readings come back where the platform has two engines (Windows: the
                             // profile's language and English); both go into keyword search, since one engine mangles
                             // the other's.
-                            let reads = screenshot ? file.ocrPictures != .off : file.ocrPictures == .all
+                            let reads = file.ocrPictures.readsWords(for: file.kind)
                             let ocr = reads ? OCR.readings(ofImageAt: url).joined(separator: "\n\n") : ""
                             // Its look-alike fingerprint was taken with the pixels `prepare` already had: no second
                             // read, no second decode (a picture whose reader keeps no bitmap simply has none).
@@ -767,50 +778,34 @@ public final class Indexer {
     }
 
     /// Pages `read` of a PDF (all of a short one, a step of a long one). A long one stays `partial` with `read_to` and
-    /// `read_end` (pages, from 0) in its info until its last step.
+    /// `read_end` (pages, from 0) in its info until its last step. One storage path serves both kinds of folder: a PDF
+    /// kept as a document stores its text pages and its rendered pages; one kept only for its scans' text stores neither
+    /// a text page nor a page picture, only the `.ocr` text of the pages OCR read.
     private func pdf(_ file: FileRecord, pages: [PDFExtractor.Page], read: Range<Int>, total: Int, title: String?,
                      later: Bool) throws -> (String, String?) {
         let end = min(total, options.maxPages)
         let unread = read.upperBound < end
-        guard !pages.isEmpty || later || unread else {
-            try store.finish(file.id, state: "skipped", detail: "no pages")
-            return ("skipped", "no pages")
-        }
-        // A PDF a folder keeps only for its scans' text (Documents off, OCR Documents on): no text pages, no page
-        // images or vectors, only the `.ocr` text of the scanned pages, for the OCR results.
-        if !file.asDocument {
-            let ocrPages = pages.filter { $0.ocr && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            if ocrPages.isEmpty && !unread {
-                try store.finish(file.id, state: "skipped", detail: "no text on its scans")
-                return ("skipped", "no text on its scans")
-            }
-            try store.db.transaction {
-                for page in ocrPages {
-                    try store.addSegment(file: file.id, kind: .ocr, modality: .text, loc: Double(page.number),
-                                         excerpt: excerpt(page.text), text: page.text)
-                }
-                var info = later ? try store.info(of: file.id) : [:]
-                info["pages"] = "\(total)"
-                info["scanned_pages"] = "\((info["scanned_pages"].flatMap(Int.init) ?? 0) + pages.count)"
-                info["ocr_chars"] = "\((info["ocr_chars"].flatMap(Int.init) ?? 0) + ocrPages.reduce(0) { $0 + $1.text.count })"
-                info["read_to"] = unread ? "\(read.upperBound)" : nil
-                info["read_end"] = unread ? "\(end)" : nil
-                let detail = unread ? "read to page \(read.upperBound) of \(total)"
-                    : "\(pages.count) scanned pages"
-                try store.finish(file.id, state: unread ? "partial" : "done", detail: detail, info: info)
-            }
-            return (unread ? "partial" : "done", "\(pages.count) scanned pages" + (unread ? ", more to read" : ""))
-        }
-        let title = title ?? URL(fileURLWithPath: file.path).deletingPathExtension().lastPathComponent
-        let textPages = pages.filter { $0.imagePath == nil }
+        let storesDocument = file.asDocument
+        let textPages = storesDocument ? pages.filter { $0.imagePath == nil } : []
         // A page that's mostly digits (a table, a data listing) gets keyword search only.
         let wordPages = textPages.filter { SearchText.hasProse($0.text) }
         let imagePages = pages.filter { $0.imagePath != nil }
-        let garbledPages = pages.filter { $0.garbled != nil }   // rendered too: among `imagePages`
+        let ocrPages = imagePages.filter { $0.ocr && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let garbledPages = storesDocument ? pages.filter { $0.garbled != nil } : []   // rendered too: among `imagePages`
+        guard !pages.isEmpty || later || unread else {
+            let why = storesDocument ? "no pages" : "no text on its scans"
+            try store.finish(file.id, state: "skipped", detail: why)
+            return ("skipped", why)
+        }
+        if !storesDocument, ocrPages.isEmpty, !unread {
+            try store.finish(file.id, state: "skipped", detail: "no text on its scans")
+            return ("skipped", "no text on its scans")
+        }
+        let title = title ?? URL(fileURLWithPath: file.path).deletingPathExtension().lastPathComponent
         var textVectors: [Int: [Float]] = [:]   // by page number
         var imageVectors: [Embedding] = []
         var garbledVectors: [[Float]] = []
-        if !wordPages.isEmpty || !imagePages.isEmpty {
+        if storesDocument, !wordPages.isEmpty || !imagePages.isEmpty {
             let worker = try fullWorker()
             let vectors = try worker.embedTexts(wordPages.map {
                 Prompts.document(title: title, text: String($0.text.prefix(4000)))
@@ -822,39 +817,56 @@ public final class Indexer {
             })
         }
         try store.db.transaction {
-            // Meaning only: the garbled words are never shown or matched against what you type.
-            for (page, vector) in zip(garbledPages, garbledVectors) {
-                try store.addSegment(file: file.id, kind: .page, modality: .text, loc: Double(page.number), vector: vector)
-            }
-            for page in textPages {
-                try store.addSegment(file: file.id, kind: .page, modality: .text, loc: Double(page.number),
-                                     excerpt: excerpt(page.text), text: page.text, vector: textVectors[page.number])
-            }
-            for (page, embedding) in zip(imagePages, imageVectors) {
-                // A scan's words are an `.ocr` segment of their own (the OCR results, and keyword search); its picture
-                // keeps the image vector without duplicating the text in the page_image segment.
-                let ocr = page.ocr ? page.text : ""
-                let pageText = ocr.isEmpty ? page.text : ""
-                try store.addSegment(file: file.id, kind: .pageImage, modality: .image, loc: Double(page.number),
-                                     excerpt: pageText.isEmpty ? nil : excerpt(pageText), text: pageText,
-                                     vector: embedding.vector)
-                if !ocr.isEmpty {
-                    try store.addSegment(file: file.id, kind: .ocr, modality: .text, loc: Double(page.number),
-                                         excerpt: excerpt(ocr), text: ocr)
+            if storesDocument {
+                // Meaning only: the garbled words are never shown or matched against what you type.
+                for (page, vector) in zip(garbledPages, garbledVectors) {
+                    try store.addSegment(file: file.id, kind: .page, modality: .text, loc: Double(page.number),
+                                         vector: vector)
                 }
+                for page in textPages {
+                    try store.addSegment(file: file.id, kind: .page, modality: .text, loc: Double(page.number),
+                                         excerpt: excerpt(page.text), text: page.text, vector: textVectors[page.number])
+                }
+                for (page, embedding) in zip(imagePages, imageVectors) {
+                    // A scan's words are an `.ocr` segment of their own (the OCR results, and keyword search); its
+                    // picture keeps the image vector without duplicating the text in the page_image segment.
+                    let pageText = page.ocr ? "" : page.text
+                    try store.addSegment(file: file.id, kind: .pageImage, modality: .image, loc: Double(page.number),
+                                         excerpt: pageText.isEmpty ? nil : excerpt(pageText), text: pageText,
+                                         vector: embedding.vector)
+                }
+            }
+            for page in ocrPages {
+                try store.addSegment(file: file.id, kind: .ocr, modality: .text, loc: Double(page.number),
+                                     excerpt: excerpt(page.text), text: page.text)
             }
             var info = later ? try store.info(of: file.id) : [:]
             info["pages"] = "\(total)"
-            info["scanned_pages"] = "\((info["scanned_pages"].flatMap(Int.init) ?? 0) + imagePages.count)"
+            info["scanned_pages"] = "(\(info["scanned_pages"].flatMap(Int.init) ?? 0) + imagePages.count)"
+            if !storesDocument {
+                info["ocr_chars"] = "(\(info["ocr_chars"].flatMap(Int.init) ?? 0) + ocrPages.reduce(0) { $0 + $1.text.count })"
+            }
             info["read_to"] = unread ? "\(read.upperBound)" : nil
             info["read_end"] = unread ? "\(end)" : nil
-            let detail = unread ? "read to page \(read.upperBound) of \(total)"
-                : end < total ? "the first \(end) of \(total) pages" : nil
+            let detail: String?
+            if unread {
+                detail = "read to page \(read.upperBound) of \(total)"
+            } else if !storesDocument {
+                detail = "\(imagePages.count) scanned pages"
+            } else if end < total {
+                detail = "the first \(end) of \(total) pages"
+            } else {
+                detail = nil
+            }
             try store.finish(file.id, state: unread ? "partial" : "done", detail: detail, info: info)
+        }
+        if !storesDocument {
+            return (unread ? "partial" : "done", "\(pages.count) scanned pages" + (unread ? ", more to read" : ""))
         }
         let ocr = pages.filter(\.ocr).count
         let span = later ? "pages \(read.lowerBound + 1)–\(read.upperBound) of \(total)" : "\(pages.count)/\(total) pages"
-        return (unread ? "partial" : "done", "\(span), \(imagePages.count) as images" + (ocr > 0 ? ", \(ocr) read by OCR" : ""))
+        return (unread ? "partial" : "done",
+                "\(span), \(imagePages.count) as images" + (ocr > 0 ? ", \(ocr) read by OCR" : ""))
     }
 
     /// Chunks `read` of a document (all of a short one, a step of a long one), the way `pdf` reads pages.

@@ -406,8 +406,8 @@ import WinSDK
         #expect(try reopened.phashes(for: [picture.path]) == [picture.path: Phash256(w0: 9)])
     }
 
-    /// A schema 7 index gets the text-on-pictures columns with what every folder did before them: screenshots alone,
-    /// and no scans.
+    /// A schema 7 index gets the text-on-pictures columns with what 0.1.15 actually did: no words on any picture, no
+    /// scans. (Writing "screenshots" there would re-read every picture of every rule-less folder for nothing.)
     @Test func anIndexFromSchemaSevenGetsTheTextColumns() throws {
         let index = folder.appendingPathComponent("index-ocr-columns")
         let picture = folder.appendingPathComponent("shot.png")
@@ -424,11 +424,14 @@ import WinSDK
         }
         let reopened = try IndexStore(directory: index)
         let row = try #require(try reopened.file(at: picture.path))
-        #expect(row.ocrPictures == .screenshots && !row.ocrScans)
+        #expect(row.ocrPictures == .off && !row.ocrScans)
         // A row made before the look bit was indexed as a picture, and still is.
         #expect(row.looksPictures)
         #expect(row.asDocument)
         #expect(row.state == "done")
+        // The betas' screenshots pass is gone: nothing is requeued for having no text, and no such key is written.
+        _ = try reopened.readAgainOnce()
+        #expect(try reopened.meta("screenshots_ocr") == nil)
     }
 
     /// A changed fingerprint recipe drops the stored ones (a mix of two would group nothing); the pictures and their

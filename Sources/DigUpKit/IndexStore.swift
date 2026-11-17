@@ -299,9 +299,9 @@ public final class IndexStore {
     }
 
     /// Schema 7 → 8: whether a folder reads the words on its pictures (`ocr_pictures`: off, screenshots, all) and on
-    /// its PDFs' scanned pages (`ocr_scans`). The defaults are what every folder did before: screenshots alone, and no
-    /// scans (the Mac app read scans by itself, the Windows helper had no OCR at all). Nothing is read here; a rule
-    /// that changes either bit requeues exactly the files it changes (the crawler, then `Indexer.sync`).
+    /// its PDFs' scanned pages (`ocr_scans`). The default is `off`: 0.1.15 read no words at all, so that is what its rows
+    /// meant, and a rule that changes either bit requeues exactly the files it changes (`Indexer.sync`). Writing
+    /// `'screenshots'` here instead would have every picture of every rule-less folder re-read once for nothing.
     private func migrateOCRFields() throws {
         var columns = Set<String>()
         try db.query("PRAGMA table_info(files)") { row in
@@ -309,7 +309,7 @@ public final class IndexStore {
         }
         try db.transaction {
             if !columns.contains("ocr_pictures") {
-                try db.execute("ALTER TABLE files ADD COLUMN ocr_pictures TEXT NOT NULL DEFAULT 'screenshots'")
+                try db.execute("ALTER TABLE files ADD COLUMN ocr_pictures TEXT NOT NULL DEFAULT 'off'")
             }
             if !columns.contains("ocr_scans") {
                 try db.execute("ALTER TABLE files ADD COLUMN ocr_scans INTEGER NOT NULL DEFAULT 0")
@@ -461,6 +461,20 @@ public final class IndexStore {
             try addNameRow(file: id, path: file.path)
             return id
         }
+    }
+
+    /// Whether a picture's words are stored (an `.ocr` segment): a folder that stops reading them needs a re-read only
+    /// when there is something to remove.
+    public func hasPictureText(_ id: Int64) throws -> Bool {
+        var found = false
+        try db.query("SELECT 1 FROM segments WHERE file = ? AND kind = 'ocr' LIMIT 1", [.int(id)]) { _ in found = true }
+        return found
+    }
+
+    /// The text choice a row records when it changed without a re-read (the old and new values read the same): the
+    /// column keeps saying what was actually read.
+    public func setPictureText(_ id: Int64, _ text: PictureText) throws {
+        try db.run("UPDATE files SET ocr_pictures = ? WHERE id = ?", [.text(text.rawValue), .int(id)])
     }
 
     /// The file changed on disk: drop what was extracted from it and queue it again.
@@ -708,23 +722,15 @@ public final class IndexStore {
     }
 
     /// Files read once more because DigUp reads them better now, each kind once per index (no schema change of its own,
-    /// so an older DigUp still opens the index): screenshots without stored text, on a machine whose OCR reads pictures
-    /// now (`meta` "screenshots_ocr"), pictures that couldn't be read at all, like SVGs, which AppKit draws now
+    /// so an older DigUp still opens the index): pictures that couldn't be read at all, like SVGs, which AppKit draws now
     /// ("pictures_drawn"), and pictures embedded by 0.1.12's Windows decoder, which read WIC's four-byte row padding
     /// as packed pixels and so vectorized a torn copy ("pictures_repacked"). Only where this machine does any of it.
+    /// (The betas' "screenshots_ocr" pass is gone: with the words off by default it read text nobody asked for, and a
+    /// folder that asks for them is requeued by its rule. Old indexes keep the `meta` key; nothing reads it.)
     /// Returns how many files.
     @discardableResult
     public func readAgainOnce() throws -> Int {
         var files = Set<Int64>(), flags: [String] = []
-        if OCR.isAvailable, try meta("screenshots_ocr") == nil {
-            // The words a screenshot has were never read here before: it kept `ocr_chars` 0 (or nothing) and a rule
-            // change can't tell, since `screenshots` is the default it holds now.
-            try db.query("""
-                SELECT id FROM files WHERE kind = 'screenshot' AND state IN ('done', 'partial')
-                    AND coalesce(json_extract(info, '$.ocr_chars'), 0) = 0
-                """) { files.insert($0.int(0)) }
-            flags.append("screenshots_ocr")
-        }
         if ImageExtractor.drawsVectorPictures, try meta("pictures_drawn") == nil {
             try db.query("SELECT id FROM files WHERE kind = 'image' AND state = 'skipped' AND detail = ?",
                          [.text(ExtractError.tooSmall(0, 0).description)]) { files.insert($0.int(0)) }

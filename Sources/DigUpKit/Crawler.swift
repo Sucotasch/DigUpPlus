@@ -23,7 +23,7 @@ public struct Candidate: Sendable {
     public let ocrScans: Bool
 
     public init(path: String, kind: FileKind, size: Int64, mtime: Double, inode: UInt64, device: UInt64,
-                tagsOnly: Bool = false, ocrPictures: PictureText = .screenshots, looksPictures: Bool = true,
+                tagsOnly: Bool = false, ocrPictures: PictureText = .off, looksPictures: Bool = true,
                 looksDocuments: Bool = true, ocrScans: Bool = false) {
         self.path = path
         self.kind = kind
@@ -271,7 +271,7 @@ public enum Crawler {
                     // and whether its words are read: two bits like a recording's tags and sound, carried with the row
                     // so a rule change re-reads exactly the pictures whose reading changed. A folder can read only the
                     // words (no image vector) — a screenshots folder shown as text, not as pictures.
-                    var ocrPictures = PictureText.screenshots
+                    var ocrPictures = PictureText.off   // only pictures set a choice; a document reads no picture words
                     var looksPictures = true
                     var looksDocuments = true
                     var ocrScans = false
@@ -281,7 +281,7 @@ public enum Crawler {
                             let rule = rules[ruleOwner]
                             let looks = rule?.readsPicturesByLook ?? true
                             let text = rule?.picturesText ?? .off
-                            let readsText = kind == .screenshot ? text != .off : text == .all
+                            let readsText = text.readsWords(for: kind)
                             if !looks && !readsText {
                                 leftOut("pictures aren't read here", under: reportOwner)
                                 return
