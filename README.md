@@ -116,6 +116,60 @@ so a search gets both the meaning and the exact string. On a Mac that includes t
 the words on any picture or scanned PDF page can be read too, once a folder's rule asks for it, and then they are
 searched as the same exact text.
 
+## What it looks like
+
+![The search window on All files: a query, the filter chips with their numbers, and a preview](docs/window-all.png)
+
+One query across kinds. Every chip carries its own number for the whole query and keeps it whichever view you are in,
+and the pane on the right shows what matched — here the words Windows OCR read on a picture, selectable and copyable
+with **Copy all**.
+
+![The Images view: a grid of drawings and reference sheets in cosine layers](docs/window-images.png)
+
+**Images** ranks pictures by their best-matching region's cosine and cuts them into layers: what's clearly close is
+shown at once, the middle folds as *weaker matches*, and the rest waits behind *hidden images*.
+
+![The OCR view: a quoted phrase and the picture's recognized text](docs/window-ocr.png)
+
+A quoted span is an exact phrase: `"greenhouse hush"` finds those two words only where they stand next to each other,
+in that order. In **OCR** the recognized text of the selected picture is shown as text — select it, right-click to
+copy, or **Copy all**.
+
+![An English query finding an English and a Russian lease, the Russian page in the preview](docs/window-documents.png)
+
+The same query in English finds an English lease, a Russian lease, an Arabic library handbook and a Bengali guide: one
+meaning space for all of them, and the page opens in the preview.
+
+![The Russian lease page in the big preview](docs/window-preview.png)
+
+**Space** shows the selected result over the window — the Russian page here, at its own size.
+
+### Hover, selection, tags and rules
+
+![The hover peek: a car at close to its own size](docs/window-peek.jpg)
+
+Rest the pointer on a picture for a moment and it comes up at close to its own size, up to the window, with the file's
+name, kind, date, size and folder — no click, and the selection stays where it was.
+
+![The hover peek on a PDF page](docs/window-peek-pdf.jpg)
+
+On a PDF the peek is the page itself (`Page 1 of 44`), and the wheel turns through the pages.
+
+![Four pictures ticked, the file operations bar below](docs/window-batch.png)
+
+Tick a group and the bar becomes the file operations: **Copy To…**, **Move To…**, **Delete** (to the Recycle Bin),
+**Copy Paths**, and Total Commander.
+
+![Audio found by its tags](docs/window-audio.png)
+
+A folder can read its recordings by their tags instead of their sound: a title or an artist finds them, and the pane
+shows the tags that matched — no decoding, no waiting.
+
+![Settings → Folders → Rules](docs/settings-rules.png)
+
+Rules on a folder: which kinds it holds, the **Images**/**OCR** pair for pictures and the **Documents**/**OCR
+Documents** pair for PDFs, recordings by tags or by sound, the types to skip, and whether subfolders are walked.
+
 ## Private
 
 Nothing you index leaves your computer. DigUp Plus goes online only to download the model once. No update check, no
