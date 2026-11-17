@@ -3778,6 +3778,17 @@ fn model_event(app: &AppHandle, event: Value) {
     }
 }
 
+/// Whether `costs.json` already holds a speed check with nothing left to do: a result, its device chosen, and the
+/// retries done (`checks` 3; `digup speed` times a doubtful check again only below that).
+fn speed_check_settled(index: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(index.join("costs.json")) else { return false };
+    let Ok(costs) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+    let speed = &costs["speed"];
+    speed["kinds"].as_object().map(|kinds| !kinds.is_empty()).unwrap_or(false)
+        && speed["device"].as_str().is_some()
+        && speed["checks"].as_u64().unwrap_or(0) >= 3
+}
+
 /// Once the model is in: this computer's speed with the model (`digup speed --model --if-needed`: once, kept beside
 /// the index; estimates on Linux and Windows go by it until indexing has measured enough itself), then indexing.
 fn measure_then_index(app: &AppHandle) {
@@ -3786,11 +3797,16 @@ fn measure_then_index(app: &AppHandle) {
     if cfg!(target_os = "macos") {
         return run_index(app);
     }
+    // Nothing to ask: starting the helper would only load llama.cpp's backends to be told the check stands (every
+    // launch did that). The helper's own `--if-needed` stays the authority for everything this can't judge.
+    if let Some(index) = shell.index_folder() {
+        if speed_check_settled(&index) {
+            return run_index(app);
+        }
+    }
     if shell.measuring.swap(true, Ordering::SeqCst) {
         return;
     }
-    shell.status.lock().unwrap().measuring = true;
-    changed(app);
     let app = app.clone();
     std::thread::spawn(move || {
         // Setup's folder estimates (walking folders, reading PDFs and media) would slow the check, and DigUp would then
@@ -3816,15 +3832,31 @@ fn measure_then_index(app: &AppHandle) {
         }
         let started = hours::clock(hours::now());
         command.stdout(std::process::Stdio::piped());
-        let output = command.spawn().and_then(|child| {
-            helper::adopt(&child);
-            child.wait_with_output()
-        });
-        let reply = match output {
-            Ok(output) => String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| serde_json::from_str(line).ok())
-                .next_back().unwrap_or_else(|| json!({"event": "speed", "error": format!("exit {}", output.status)})),
-            Err(error) => json!({"event": "speed", "error": error.to_string()}),
-        };
+        // "Checking this computer's speed…" only once the helper says it is timing: a saved check answers at once, and
+        // the window must not claim work that isn't happening.
+        let mut reply = json!({"event": "speed", "error": "no reply"});
+        match command.spawn() {
+            Ok(mut child) => {
+                helper::adopt(&child);
+                if let Some(stdout) = child.stdout.take() {
+                    use std::io::BufRead;
+                    for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                        match serde_json::from_str::<serde_json::Value>(&line) {
+                            Ok(value) if value["measuring"].as_bool() == Some(true) => {
+                                shell.status.lock().unwrap().measuring = true;
+                                changed(&app);
+                            }
+                            Ok(value) => reply = value,
+                            Err(_) => {}
+                        }
+                    }
+                }
+                if let Err(error) = child.wait() {
+                    reply = json!({"event": "speed", "error": error.to_string()});
+                }
+            }
+            Err(error) => reply = json!({"event": "speed", "error": error.to_string()}),
+        }
         if let Some(mut log) = log {
             use std::io::Write;
             let _ = writeln!(log, "speed check from {started}: {reply}");
@@ -3864,6 +3896,28 @@ fn reload(app: &AppHandle, now: bool) {
 #[cfg(test)]
 mod tests {
     use crate::settings::{RootRule, Settings};
+
+    #[test]
+    fn a_settled_speed_check_is_not_asked_again() {
+        let folder = std::env::temp_dir().join(format!("digup-speed-test-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("costs.json");
+        let write = |speed: &str| std::fs::write(&path, format!("{{\"speed\":{speed}}}")).unwrap();
+
+        write("{\"kinds\":{\"image\":1},\"device\":\"gpu\",\"checks\":3}");
+        assert!(crate::speed_check_settled(&folder));
+        // Two checks, still in doubt: the third has to run.
+        write("{\"kinds\":{\"image\":1},\"device\":\"gpu\",\"checks\":2,\"doubtful\":true}");
+        assert!(!crate::speed_check_settled(&folder));
+        // Never timed; no device chosen (an index from before the GPU was compared); a first check.
+        write("{}");
+        assert!(!crate::speed_check_settled(&folder));
+        write("{\"kinds\":{\"image\":1},\"checks\":3}");
+        assert!(!crate::speed_check_settled(&folder));
+        write("{\"kinds\":{\"image\":1},\"device\":\"gpu\",\"checks\":1}");
+        assert!(!crate::speed_check_settled(&folder));
+        std::fs::remove_dir_all(&folder).ok();
+    }
 
     #[test]
     fn login_entry_exec_is_replaced() {

@@ -613,6 +613,9 @@ func modelSpeed(_ args: Arguments) throws {
         if json { emit(["event": "speed", "kinds": kinds, "measured": false]) }
         return
     }
+    // From here on it is timing, and the shell may say so: answering what it already timed (above) must not look like
+    // a check, which on a cold start took long enough for people to ask what it was doing.
+    if json { emit(["event": "speed", "measuring": true]) }
     let quiet = args.values["--when-quiet"].flatMap(Double.init).map { SystemLoad.waitForQuiet(limit: $0) }
         ?? (waited: 0, settled: true, calmest: nil)
     let started = Date()
