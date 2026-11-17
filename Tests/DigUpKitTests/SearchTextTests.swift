@@ -67,6 +67,45 @@ import Testing
                 == ["/books/scan.pdf", "/photos/dog.png", "/shots/error.png"])
     }
 
+    @Test func theFilterChipsCountTheWholeQueryWhateverFilterAsks() throws {
+        let store = try IndexStore(directory: folder.appendingPathComponent("chips"))
+        let looked = try store.insert(Candidate(path: "/photos/dog.png", kind: .image, size: 1, mtime: 1, inode: 1,
+                                                device: 1, looksPictures: true))
+        try store.addSegment(file: looked, kind: .ocr, modality: .text, text: "zorblat too")
+        try store.finish(looked, state: "done")
+        let wordsOnly = try store.insert(Candidate(path: "/shots/error.png", kind: .screenshot, size: 1, mtime: 1,
+                                                   inode: 2, device: 1, looksPictures: false))
+        try store.addSegment(file: wordsOnly, kind: .ocr, modality: .text, text: "zorblat in the log")
+        try store.finish(wordsOnly, state: "done")
+        let scan = try store.insert(Candidate(path: "/books/scan.pdf", kind: .pdf, size: 1, mtime: 1, inode: 3,
+                                              device: 1, looksDocuments: false, ocrScans: true))
+        try store.addSegment(file: scan, kind: .ocr, modality: .text, loc: 2, text: "zorblat on page two")
+        try store.finish(scan, state: "done")
+        let book = try store.insert(Candidate(path: "/books/book.txt", kind: .doc, size: 1, mtime: 1, inode: 4, device: 1))
+        try store.addSegment(file: book, kind: .chunk, modality: .text, text: "zorblat")
+        try store.finish(book, state: "done")
+        let searcher = try Searcher(store: store, loadVectors: false)
+        // Every request names the layers' cutoffs, as the window does: the numbers must not depend on the filter.
+        let cutoffs = [0.648, 0.600]
+        let plain = try searcher.page("zorblat", queryVector: nil, tierThresholds: cutoffs)
+        #expect(plain.sectionTotals["all"] == 4)
+        #expect(plain.sectionTotals["documents"] == 1)   // the scan-only PDF is not a document
+        #expect(plain.sectionTotals["images"] == 1)      // the words-only screenshot has no place in Images
+        #expect(plain.sectionTotals["ocr"] == 3)
+        #expect(plain.sectionTotals["video"] == 0)
+        let documents = try searcher.page("zorblat", queryVector: nil, kinds: [.pdf, .doc], section: .documents,
+                                          tierThresholds: cutoffs)
+        let images = try searcher.page("zorblat", queryVector: nil, kinds: [.image, .screenshot], section: .images,
+                                       byCosine: true, tierThresholds: cutoffs)
+        let ocr = try searcher.page("zorblat", queryVector: nil, section: .ocr, tierThresholds: cutoffs)
+        #expect(documents.sectionTotals == plain.sectionTotals)
+        #expect(images.sectionTotals == plain.sectionTotals)
+        #expect(ocr.sectionTotals == plain.sectionTotals)
+        // The Images list holds what its chip says: the two upper layers plus the words-only picture.
+        #expect(images.total == plain.sectionTotals["images"])
+        #expect(images.tierCutoffs == nil || images.tierCutoffs!.count == 2)
+    }
+
     @Test func aPageRenderedForItsFewWordsIsNoOCRResult() throws {
         let store = try IndexStore(directory: folder.appendingPathComponent("page-image-ocr"))
         // A book whose cover had little text: the reader rendered that page, and its words sit in the page image. The

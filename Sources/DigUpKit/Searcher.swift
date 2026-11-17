@@ -21,10 +21,16 @@ public struct SearchPage: Sendable {
     /// full tail without materializing it. Both are independent of this page's offset and limit.
     public let kindCounts: [FileKind: Int]
     public let kindTotals: [FileKind: Int]
+    /// The chips' numbers by filter ("all", "documents", "images", "ocr", "video", "audio"): how many files each
+    /// filter's list holds for this query, over the whole ranking and the same whatever filter the request asked for.
+    public let sectionTotals: [String: Int]
     /// The window's cosine layers over the whole image ranking, when `tierThresholds` were given: "visible" (at or
-    /// above the first cutoff), "weak" (the middle fold) and "hidden" (below the second). Nil for an ordinary
-    /// search. Counted over every allowed image, including the hidden tail a cosine floor leaves out of the ranking.
+    /// above the first cutoff), "weak" (the middle fold) and "hidden" (below the second). Nil for a request that names
+    /// no cutoffs. Counted over every allowed picture, including the hidden tail a cosine floor leaves out of the list.
     public let tierCounts: [String: Int]?
+    /// The cutoffs those layers were cut on: the given ones, or lowered under the query's own top picture. The list
+    /// and its counts must use the same pair.
+    public let tierCutoffs: [Double]?
 }
 
 public struct SearchHit: Sendable {
@@ -212,6 +218,37 @@ public final class Searcher {
             }
         }
 
+        // The picture layers: the best segment's cosine, cut at absolute numbers (the query-normalized z can't promise
+        // them), and lowered under the query's own top picture when fewer than `tierMinVisible` are visible. Decided
+        // here, once, for every request that names the cutoffs, so the Images list, its chip and the All view's chip
+        // read the same numbers.
+        let isPicture = { (file: Int64) -> Bool in
+            (fileKind[file] == .image || fileKind[file] == .screenshot) && (fileLooks[file] ?? true)
+        }
+        var layerCutoffs: (visible: Double, weak: Double)?
+        var tierCounts: [String: Int]?
+        if tierThresholds.count >= 2 {
+            func layers(_ cut: (visible: Double, weak: Double)) -> [String: Int] {
+                var counts = ["visible": 0, "weak": 0, "hidden": 0]
+                for (file, semantic) in best where isPicture(file) {
+                    if semantic.cosine >= cut.visible { counts["visible", default: 0] += 1 }
+                    else if semantic.cosine >= cut.weak { counts["weak", default: 0] += 1 }
+                    else { counts["hidden", default: 0] += 1 }
+                }
+                return counts
+            }
+            var cut = (visible: tierThresholds[0], weak: tierThresholds[1])
+            var counts = layers(cut)
+            let top = best.filter { isPicture($0.key) }.map(\.value.cosine).max()
+            if counts["visible"] ?? 0 < Self.tierMinVisible, let top {
+                cut = (visible: max(0, top - Self.tierFall),
+                       weak: max(0, top - Self.tierFall - (tierThresholds[0] - tierThresholds[1])))
+                counts = layers(cut)
+            }
+            layerCutoffs = cut
+            tierCounts = counts
+        }
+
         // Words: FTS5 with Porter stemming over file names, folder names, OCR, page and document text. A name from code
         // ("quantize_row_q8_0_ref") is matched as one phrase, as it's written.
         let terms = Self.terms(text)   // the query as typed, for code lookups
@@ -274,14 +311,13 @@ public final class Searcher {
         let lookup = Self.isLookup(looseTerms + phrases.flatMap { $0 }) || identifier != nil
         let (meaningWeight, wordsWeight) = lookup ? (0.5, wordWeight * 2) : (1, wordWeight)
         let hinted = Self.kindHints(text)
-        // The image layers: visible / weaker / hidden are cut on the best segment's cosine, the same numbers for
-        // every query, where the query-normalized z can't promise that. A floor and a ceiling keep the layers in
-        // separate searches (the hidden tail is fetched on its own); a file the meaning path leaves out can still
-        // come in by its words.
+        // The image layers: a floor and a ceiling keep the layers in separate searches (the hidden tail is fetched on
+        // its own); a file the meaning path leaves out can still come in by its words. The floor of a layered request
+        // is the weak cutoff decided above, so the list and its counts can't disagree.
         let byCosineLayers = byCosine
         func withinCosine(_ file: Int64) -> Bool {
             guard byCosineLayers, let cosine = best[file]?.cosine else { return false }
-            if let cosineFloor, cosine < cosineFloor { return false }
+            if let floor = layerCutoffs?.weak ?? cosineFloor, cosine < floor { return false }
             if let cosineCeiling, cosine >= cosineCeiling { return false }
             return true
         }
@@ -292,14 +328,21 @@ public final class Searcher {
         for row in rowModality.indices where rowSetsScale[row] {
             scaleCounts[rowModality[row], default: 0] += 1
         }
-        var candidates = byCosine
+        // The one admission behind the chips: what an ordinary search admits (a meaning match, or enough words) — not
+        // what this request's own list admits (the Images filter admits by cosine), so a click can't rewrite the
+        // numbers. The OCR filter lists words alone: its page never takes a meaning match, though the vector may still
+        // be there for the counts.
+        let gated = Set(best.filter {
+            $0.key != excluding
+                && ($0.value.z >= zGate
+                    || (scaleCounts[rowModality[$0.value.row], default: 0] < Self.smallCorpusVectors
+                        && $0.value.cosine >= Self.smallCorpusFloor))
+        }.keys)
+        var admitted = gated
+        for (file, share) in coverage where share >= 0.5 { admitted.insert(file) }
+        var candidates: Set<Int64> = byCosine
             ? Set(best.keys.filter { withinCosine($0) && $0 != excluding })
-            : Set(best.filter {
-                $0.key != excluding
-                    && ($0.value.z >= zGate
-                        || (scaleCounts[rowModality[$0.value.row], default: 0] < Self.smallCorpusVectors
-                            && $0.value.cosine >= Self.smallCorpusFloor))
-            }.keys)
+            : (section == .ocr ? [] : gated)
         for (file, share) in coverage where share >= 0.5 { candidates.insert(file) }
         var scored: [Int64: Double] = [:]
         for file in candidates {
@@ -348,23 +391,29 @@ public final class Searcher {
             // the chip numbers alike.
             for entry in ranked { if let kind = chipKind(entry.key) { kindTotals[kind, default: 0] += 1 } }
         }
-        // The layer counts over the whole image ranking, for the window's fold headers: counted over `best`, so the
-        // hidden tail below the floor is included even though this ranking leaves it out.
-        var tierCounts: [String: Int]?
-        if byCosine, tierThresholds.count >= 2 {
-            let visibleCut = tierThresholds[0], weakCut = tierThresholds[1]
-            var counts = ["visible": 0, "weak": 0, "hidden": 0]
-            for (file, semantic) in best where fileKind[file] != nil {
-                if semantic.cosine >= visibleCut { counts["visible", default: 0] += 1 }
-                else if semantic.cosine >= weakCut { counts["weak", default: 0] += 1 }
-                else { counts["hidden", default: 0] += 1 }
+        // The chips' numbers: how many files each filter's list holds for this query, over the one admission above and
+        // the same whatever filter the request asked for — a click must not rewrite them. Images is the two upper
+        // cosine layers (what its list shows before the hidden fold); OCR is the words search's own set, which is what
+        // that filter runs; the rest are the ranking's kinds, with the bits that keep a file out of those sections.
+        var sectionTotals: [String: Int] = ["all": admitted.count, "documents": 0, "images": 0, "ocr": 0, "video": 0,
+                                            "audio": 0]
+        for file in admitted {
+            switch fileKind[file] {
+            case .pdf?, .doc?: if fileAsDocument[file] ?? true { sectionTotals["documents", default: 0] += 1 }
+            case .image?, .screenshot?: if fileLooks[file] ?? true { sectionTotals["images", default: 0] += 1 }
+            case .video?: sectionTotals["video", default: 0] += 1
+            case .audio?: sectionTotals["audio", default: 0] += 1
+            case .code?, nil: break
             }
-            // A file that only matched by words has no cosine; the window shows it at once.
-            for (file, share) in coverage where share >= 0.5 && best[file] == nil && fileKind[file] != nil {
-                counts["visible", default: 0] += 1
-            }
-            tierCounts = counts
         }
+        if let counts = tierCounts {
+            // A picture that matched by its words alone has no cosine: its list shows it at once, so it counts as
+            // visible rather than nowhere.
+            let wordsOnly = admitted.filter { isPicture($0) && best[$0] == nil }.count
+            tierCounts = counts.merging(["visible": (counts["visible"] ?? 0) + wordsOnly]) { $1 }
+            sectionTotals["images"] = (tierCounts?["visible"] ?? 0) + (tierCounts?["weak"] ?? 0)
+        }
+        sectionTotals["ocr"] = coverage.reduce(0) { $0 + ($1.value >= 0.5 && fileHasOCR.contains($1.key) ? 1 : 0) }
         let start = min(max(0, offset), total)
         let count = min(max(0, limit), total - start)
         let slice = ordered[start ..< start + count]
@@ -422,7 +471,9 @@ public final class Searcher {
                                   focus: focus))
         }
         return SearchPage(hits: hits, total: total, strong: strong, topScore: topScore, offset: start,
-                          consumed: count, kindCounts: kindCounts, kindTotals: kindTotals, tierCounts: tierCounts)
+                          consumed: count, kindCounts: kindCounts, kindTotals: kindTotals, sectionTotals: sectionTotals,
+                          tierCounts: tierCounts,
+                          tierCutoffs: layerCutoffs.map { [$0.visible, $0.weak] })
     }
 
     /// Code: the stretch to point at, and the line in it to open at. A name looked up points at the stretch that
@@ -517,6 +568,12 @@ public final class Searcher {
     /// on such corpora, adjacent-domain 0.59).
     static let smallCorpusVectors = 8
     static let smallCorpusFloor = 0.600
+
+    /// The Images filter's layer counts come down under the query's own top picture when fewer than `tierMinVisible`
+    /// are visible, by `tierFall` (the window's rule, moved here so the count and the list are one decision: measured
+    /// 2026-10-22 on Asian and Anime pictures, 0.648 where "not quite" begins, 0.600 where their irrelevant images end).
+    static let tierMinVisible = 30
+    static let tierFall = 0.05
 
     /// The scale (the averages and the deviation) comes from the vectors in `setsScale` (all by default): `search` leaves
     /// out the later pages of long files, which are scored on it but don't move it. A book's hundreds of pages pulled the

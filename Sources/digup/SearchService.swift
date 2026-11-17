@@ -15,11 +15,15 @@ import Foundation
 ///       adjacent; several spans must all match, loose words as usual, and the meaning vector reads them without the
 ///       quote marks (`SearchText.quoted`).
 ///       → {"hits":[…], "strong":n, "total":n, "strong_total":n, "offset":n, "consumed":n, "next_offset":n,
-///          "generation":n, "meaning":bool, "kind_counts":{kind:n}, "kind_totals":{kind:n}, "tier_counts":{…},
+///          "generation":n, "meaning":bool, "kind_counts":{kind:n}, "kind_totals":{kind:n},
+///          "section_totals":{filter:n}, "tier_counts":{…}, "tier_cutoffs":[visible, weak],
 ///          "ms":{"embed":…,"search":…}}
 ///         `by_cosine` + the band and cutoffs are the window's image layers (the Images filter): the ranking is the
 ///         best segment's cosine, the band keeps the hidden tail out (a search of its own fetches it), and
-///         `tier_counts` counts the whole image ranking as visible / weak / hidden.
+///         `tier_counts` counts the whole picture ranking as visible / weak / hidden; `tier_cutoffs` are the ones those
+///         layers were cut on (the given pair, or lowered under the query's own top picture), and the list uses them.
+///         `section_totals` is what the window's filter chips show — files per filter over the whole query, the same
+///         whatever filter this request asked for (`all`, `documents`, `images`, `ocr`, `video`, `audio`).
 ///         `meaning` false: keyword-only (while typing, or while the encoder isn't ready); `strong`: the strong results
 ///         in this page (`Searcher.strongCount`, against the whole query's top); `total`/`strong_total`: the whole
 ///         ranking; `kind_counts`/`kind_totals`: the whole ranking counted by kind (strong and all) — the window's
@@ -215,7 +219,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                 guard let codeSearcher else {
                     return ["hits": [], "strong": 0, "total": 0, "strong_total": 0, "offset": 0, "consumed": 0,
                             "next_offset": 0, "generation": generation, "meaning": false,
-                            "kind_counts": [:], "kind_totals": [:]]
+                            "kind_counts": [:], "kind_totals": [:], "section_totals": [:]]
                 }
                 page = try codeSearcher.page(text, queryVector: vector, limit: limit, offset: offset,
                                              zGate: zGate, prefixLast: prefixLast)
@@ -249,6 +253,8 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                        "search": Int(Date().timeIntervalSince(embedded) * 1000)],
             ]
             if let tierCounts = page.tierCounts { reply["tier_counts"] = tierCounts }
+            if let cutoffs = page.tierCutoffs { reply["tier_cutoffs"] = cutoffs }
+            reply["section_totals"] = page.sectionTotals
             if let warning { reply["warning"] = warning }
             return reply
         case "embed_ahead":

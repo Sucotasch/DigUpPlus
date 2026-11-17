@@ -10,14 +10,13 @@ const LIMIT = 120;          // the first page, as before: the window opens on th
 // The Images filter's cosine layers, by profile (Settings → Search → Images): shown at once, the middle folded as
 // weaker matches, and the tail behind its own fold. The standard cutoffs come from live results (2026-10-27, 3 772
 // images): 0.648 is where "not quite" begins for Asian and Anime, 0.600 where their single irrelevant images end. A
-// query whose whole scale sits lower has both cutoffs moved down under its own top image (TIER_MIN_VISIBLE).
+// query whose whole scale sits lower has both moved down under its own top picture — the engine decides that
+// (`Searcher.tierMinVisible`) and returns the pair it used, so the list and the chips can't disagree.
 const IMAGE_TIER_PROFILES = {
   standard: { visible: 0.648, weak: 0.600 },
   loose: { visible: 0.600, weak: 0.550 },     // more weaker matches: a small or uneven collection
   strict: { visible: 0.680, weak: 0.640 },    // fewer: only what's clearly close
 };
-const TIER_MIN_VISIBLE = 30;   // fewer visible images than this: the cutoffs come down to the query's own top
-const TIER_FALL = 0.05;        // how far under the top image the lowered visible cutoff sits
 const PAGE_SIZE = 300;      // later pages: measured at ~13–18 ms of DOM each
 const MORE_MARGIN = 400;    // px from the end of the list that asks for the next page
 const FILTERS = [
@@ -167,56 +166,35 @@ function run(immediate = false) {
   const filter = FILTERS.find((item) => item.key === state.filter);
   state.timer = setTimeout(async () => {
     // An encoder that idled out reloads on the first meaning search (1–5 s, measured): say so instead of showing
-    // nothing. OCR is a words search, so it never waits for the model.
-    const usesMeaning = !state.like && !(filter && filter.section === "ocr");
+    // nothing. Every filter now embeds the query: the chips' numbers come from the ordinary ranking, OCR's page alone
+    // stays a words search (the engine keeps its section words-only).
+    const usesMeaning = !state.like;
     const preparing = usesMeaning ? setTimeout(() => setNote("Preparing the model…"), 600) : null;
     try {
       const filtered = Boolean(filter) && !code;
-      // The Images filter is shown in cosine layers: the helper ranks those by the best segment's cosine (not the
-      // fused score) and reports how many of the whole image ranking fall in each layer.
+      // The Images filter is shown in cosine layers. Its cutoffs are asked for in every search: the helper lowers them
+      // under the query's own top picture when it must, and returns the pair it cut on, so the list, its folds and the
+      // chips read one decision.
       const layered = filtered && filter.key === "images";
-      let cutoffs = layered ? { ...imageTiers() } : null;
-      // One request, not two: the filter's page, and with `totals: "all"` the whole query's counts for the chips.
-      // OCR is a words search (no meaning vector, or both-on pictures would be ranked by their look here).
-      const all = filtered
-        ? await ask({ op: "search", q: text, code, meaning: filter.section === "ocr" ? false : !state.like,
-                      limit: LIMIT, totals: "all",
-                      ...(filter.kinds ? { kinds: filter.kinds } : {}),
-                      ...(filter.section ? { section: filter.section } : {}),
-                      ...(state.like && !code ? { like: state.like } : {}),
-                      ...(layered ? tierRequest(cutoffs) : {}) })
-        : await ask({ op: "search", q: text, code, meaning: !state.like, limit: LIMIT,
-                      ...(state.like && !code ? { like: state.like } : {}) });
-      let shown = all;
-      let tiers = layered ? shown.tier_counts ?? null : null;
-      if (filtered) {
-        // A like-search's scale is the reference's own (cosine to itself is 1.0): the fixed tiers apply as they
-        // are, and the query's-top lowering has nothing to correct.
-        if (layered && !state.like && tiers && tiers.visible < TIER_MIN_VISIBLE) {
-          // A query whose whole cosine scale sits below the usual cutoffs: both come down under its own top image,
-          // so its best results stay visible instead of all landing in the folds.
-          let top = shown.hits[0]?.cosine;
-          if (top == null && tiers.hidden > 0) {
-            // The usual floor left nothing at all: a look without any floor tells the query's own top.
-            const probe = await ask({ op: "search", q: text, code, meaning: true, limit: 1, kinds: filter.kinds,
-                                      by_cosine: true });
-            top = probe.hits[0]?.cosine;
-          }
-          if (top != null) {
-            const base = imageTiers();
-            cutoffs = { visible: Math.max(0, top - TIER_FALL),
-                        weak: Math.max(0, top - TIER_FALL - (base.visible - base.weak)) };
-            shown = await ask({ op: "search", q: text, code, meaning: true, limit: LIMIT, kinds: filter.kinds,
-                                ...tierRequest(cutoffs), totals: "all" });
-            tiers = shown.tier_counts ?? tiers;
-          }
-        }
-      }
+      const base = imageTiers();
+      // One request: the filter's page and, from the whole ranking, the numbers on every chip. The OCR filter's page
+      // is words-only (the engine's rule for that section), but the query is still embedded, because the other chips'
+      // numbers come from the ordinary ranking.
+      const all = await ask({ op: "search", q: text, code, meaning: !state.like,
+                              limit: LIMIT, tier_cutoffs: [base.visible, base.weak],
+                              ...(filter?.kinds ? { kinds: filter.kinds } : {}),
+                              ...(filter?.section ? { section: filter.section } : {}),
+                              ...(state.like && !code ? { like: state.like } : {}),
+                              ...(layered ? { by_cosine: true } : {}) });
+      const shown = all;
+      const tiers = shown.tier_counts ?? null;
+      const cutoffs = layered
+        ? (shown.tier_cutoffs ? { visible: shown.tier_cutoffs[0], weak: shown.tier_cutoffs[1] } : base)
+        : null;
       if (generation !== state.generation) return;
-      // The chips count the whole query; a helper too old to send its kind totals falls back to this first page.
-      const strong = all.hits.slice(0, all.strong);
-      const counts = countsOfReply(all, strong);
-      if (filtered && filter.key === "ocr") counts.ocr = shown.strong_total ?? shown.strong ?? 0;
+      // The chips count the whole query, the same on every request: a click can't rewrite them. A helper too old to
+      // send its totals falls back to this page's kind counts.
+      const counts = countsOfReply(all, all.hits.slice(0, all.strong));
       // A rerun of the same query (the index moved under the list) keeps the person on the file they were on; a
       // new query starts at the top.
       const sameQuery = text === state.text;
@@ -224,7 +202,6 @@ function run(immediate = false) {
       const visible = [], weak = [];
       for (const hit of shown.hits) (tierOf(hit, layered ? cutoffs : null) === "visible" ? visible : weak).push(hit);
       const layers = layered && tiers != null;
-      if (layers && filter.key) counts[filter.key] = tiers.visible;   // the chip's number is what's shown at once
       Object.assign(state, { counts, text, meaning: shown.meaning, hasResults: true,
                              // A kind filter asks for every result of that kind, so its weaker tail starts open. The
                              // All view keeps the fold: there the weak results are noise around unrelated kinds.
@@ -276,10 +253,10 @@ function imageTiers() {
   return IMAGE_TIER_PROFILES[state.info?.imageTiers] || IMAGE_TIER_PROFILES.standard;
 }
 
-/// The helper's request for the Images layers: ranked by cosine, with the hidden tail left out (its fold fetches
-/// that on its own), and the layer counts of the whole image ranking asked for.
+/// The helper's request for the Images pages after the first: ranked by cosine, cut on the pair the helper returned
+/// (the same numbers the first page and the chips used).
 function tierRequest(cutoffs) {
-  return { by_cosine: true, cosine_floor: cutoffs.weak, tier_cutoffs: [cutoffs.visible, cutoffs.weak] };
+  return { by_cosine: true, tier_cutoffs: [cutoffs.visible, cutoffs.weak] };
 }
 
 /// Which image layer a hit belongs to. A file that matched by its words is shown at once, whatever its cosine.
@@ -352,7 +329,7 @@ function loadMore(auto = false) {
   renderPagination();
   // The same mode the first page was ranked in: if the encoder wasn't ready then, later pages must not suddenly
   // switch to meaning and mix two different rankings.
-  ask({ op: "search", q: text, code, meaning: filter?.section === "ocr" ? false : state.meaning, limit, offset,
+  ask({ op: "search", q: text, code, meaning: state.meaning, limit, offset,
         ...(state.like && !code ? { like: state.like } : {}),
         ...(filter?.kinds ? { kinds: filter.kinds } : {}),
         ...(filter?.section ? { section: filter.section } : {}),
@@ -1293,7 +1270,7 @@ function loadHidden() {
   state.loadingHidden = true;
   state.hiddenError = null;
   renderContent();
-  ask({ op: "search", q: state.text, code: false, meaning: filter?.section === "ocr" ? false : state.meaning,
+  ask({ op: "search", q: state.text, code: false, meaning: state.meaning,
         limit, offset,
         ...(filter?.kinds ? { kinds: filter.kinds } : {}),
         ...(filter?.section ? { section: filter.section } : {}),
@@ -1703,7 +1680,7 @@ async function toTotalCommander(every) {
     const filter = pageFilter();
     try {
       const reply = await ask({ op: "search", q: state.text, code: isCode(),
-                                meaning: filter?.section === "ocr" ? false : state.meaning,
+                                meaning: state.meaning,
                                 limit: 20000,
                                 ...(state.like && !isCode() ? { like: state.like } : {}),
                                 ...(filter?.kinds ? { kinds: filter.kinds } : {}),
@@ -1743,10 +1720,18 @@ function countsOf(hits) {
   return counts;
 }
 
-/// The chips' numbers for the whole query, from the helper's `kind_totals` (counted over the full ranking, not the
-/// first page). `kind_counts` is the strong subset; older helpers have neither, so their first page's strong hits are
-/// the fallback.
+/// The chips' numbers for the whole query: the helper's `section_totals` — how many files each filter's list holds,
+/// one definition per filter, the same on every request, so switching filters can't rewrite them. A helper too old for
+/// them gets its kind totals; the first versions' fallback is this page's strong hits.
 function countsOfReply(reply, strongHits) {
+  const sections = reply?.section_totals;
+  if (sections && typeof sections === "object" && Object.keys(sections).length) {
+    const counts = { code: Number(sections.all) || 0 };
+    for (const key of ["images", "documents", "ocr", "video", "audio"]) {
+      counts[key] = Number(sections[key]) || 0;
+    }
+    return counts;
+  }
   const totals = reply?.kind_totals;
   const kinds = totals && Object.keys(totals).length ? totals : reply?.kind_counts;
   if (!kinds || typeof kinds !== "object" || !Object.keys(kinds).length) return countsOf(strongHits);
