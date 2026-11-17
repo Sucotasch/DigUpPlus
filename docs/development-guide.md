@@ -398,7 +398,7 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
   выключение «Scan its subfolders» сохраняет и правила, и выбор; поля правила общие для Settings и окна Choose Folders
   (`shell/ui/rules.js`), и его сохранение больше не теряет правила подпапок и OCR; shim собирается
   `scripts/build-ocr.sh`; helper изменился, нужен полный zip;
-- на 2026-11-17: `python .build/swift_test.py` — 216 тестов, 215 прошли (тот же symlink-тест), `cargo test --locked`
+- на 2026-11-17: `python .build/swift_test.py` — 220 тестов, 219 прошли (тот же symlink-тест), `cargo test --locked`
   — 78, все прошли;
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
   (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` удалён. Default branch —

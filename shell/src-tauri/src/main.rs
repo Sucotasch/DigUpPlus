@@ -229,6 +229,10 @@ impl Shell {
     fn search_launch(&self) -> Launch {
         let settings = self.settings.lock().unwrap().clone();
         let mut args = vec!["search-service".to_string()];
+        // The query encoder costs 1.3–5 s to reload after an idle spell (measured: 131 reloads in one worker-query log
+        // at the engine's 300 s default). Fifteen minutes keeps it warm through a working session; its memory
+        // (0.25 GB text-only, plus the vectors) goes back after that.
+        args.extend(["--encoder-idle".to_string(), "900".to_string()]);
         args.extend(self.index_arguments_for(&settings));
         args.extend(folder_arguments(&settings, &self.code_folders()));
         args.extend(self.folders());
@@ -370,7 +374,7 @@ fn clean_rule(kinds: Vec<String>, shallow: bool, audio_tags: bool, audio_content
     // Documents: an old rule had them when its kinds included pdf/doc; a new one says it with its bit. A PDF is still
     // read for its scanned pages' text when Documents is off and OCR Documents is on.
     let sent_documents = sent_all || sent.iter().any(|kind| kind == "pdf" || kind == "doc");
-    let looks_documents = looks_documents.unwrap_or(if looks_documents.is_none() { sent_documents } else { true });
+    let looks_documents = looks_documents.unwrap_or(sent_documents);
     let documents = looks_documents || ocr_scans;
     let kinds: Vec<String> = KINDS.iter().filter(|kind| match **kind {
         "image" | "screenshot" => pictures,
@@ -1035,6 +1039,13 @@ fn copy_file(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
     clipboard::copy_file(&window, Path::new(&path)).inspect_err(|error| eprintln!("digup-shell: can't copy {path}: {error}"))
 }
 
+/// "Copy all" on a picture's recognized text: the text itself on the clipboard (Ctrl+C on a selection is the web
+/// view's own copy, no command needed).
+#[tauri::command]
+fn copy_text(window: tauri::WebviewWindow, text: String) -> Result<(), String> {
+    clipboard::copy_text(&window, &text).inspect_err(|error| eprintln!("digup-shell: can't copy the text: {error}"))
+}
+
 /// A result dragged out of the window (to a file manager, a mail, a chat) on Windows and the Mac: the system's own drag
 /// of the file, with its thumbnail (`icon`, a picture already rendered) or DigUp's icon under the pointer, started while
 /// the button is down. On Linux the page drags it itself (WebKit's drag starts from the press, as Wayland wants).
@@ -1411,7 +1422,8 @@ fn main() {
             set_confirm_delete, set_include_datasets, hide_window, debug_query, debug_report, window_info, destination_conflicts, operation_confirmations,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, list_subfolders, set_search_settings, rescan_folder, reread_folder, repick_preview, repick_apply, forget_folder, set_index_hours, mcp_config, code_setup_info, set_code_folders, choose_code_folders,
-            remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
+            remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, copy_text,
+            drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases, pick_totalcmd, set_totalcmd_new_tab, open_in_totalcmd,
             set_lookalike,
             file_operation, cancel_file_operation, pick_destination_folder,
@@ -2173,7 +2185,7 @@ const FIXED_INDEX: &str = "DigUp was started with a fixed index folder (--index)
 /// helpers accept or reply. Pinned on the helper's side too (`Sources/digup/HelperProtocol.swift`): every spawn
 /// carries `--protocol`, so a shell-only update paired with a helper from another generation is refused by the
 /// helper itself instead of misparsing its replies.
-const HELPER_PROTOCOL: u32 = 1;
+const HELPER_PROTOCOL: u32 = 2;
 
 /// Clears `index_busy` when the index work that set it ends, however it ends.
 struct Busy<'a>(&'a AtomicBool);

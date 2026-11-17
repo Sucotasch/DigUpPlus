@@ -199,6 +199,16 @@ svg { display: block; }
 /* Everything under the picture keeps its size; the picture takes the height that's left. */
 .side > :not(.preview-picture) { flex: none; }
 
+/* The words OCR read on a picture (or a scanned page), under the facts: a line naming them, and the text itself —
+   selectable, with Copy all beside the label. Nothing at all for a file without a reading. */
+.ocr-slot:empty { display: none; }
+.ocr-text { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+.ocr-head { display: flex; gap: 10px; align-items: baseline; color: var(--secondary); font-size: 11px; }
+.ocr-label { margin-right: auto; }
+.ocr-body { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--text);
+  user-select: text; -webkit-user-select: text; cursor: text; }
+
 /* The Images filter's folds: the hidden tail under the weaker matches is drawn fainter. */
 .hidden-results { opacity: 0.6; }
 .tier-note { margin: 0 18px 8px; color: var(--tertiary); font-size: 12px; }

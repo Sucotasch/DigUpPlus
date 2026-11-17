@@ -8,7 +8,12 @@ import Foundation
 /// Protocol: one JSON request per line on stdin, one JSON response per line on stdout, carrying the request's `id`.
 ///   {"op":"search","q":…,"code":bool,"kinds":[…],"limit":n,"offset":n,"meaning":bool,"prefix_last":bool,
 ///     "like":path (search by example: that file's vector is the query, ranked by cosine, itself excluded),
-///     "by_cosine":bool,"cosine_floor":n,"cosine_ceiling":n,"tier_cutoffs":[visible, weak]}
+///     "by_cosine":bool,"cosine_floor":n,"cosine_ceiling":n,"tier_cutoffs":[visible, weak],
+///     "totals":"all" (count `kind_totals` over the whole query, not the filtered page: the window's chips and its
+///     page come from one request)}
+///       `q`: a quoted span (straight or typographic double quotes) is an exact phrase — its words in that order and
+///       adjacent; several spans must all match, loose words as usual, and the meaning vector reads them without the
+///       quote marks (`SearchText.quoted`).
 ///       → {"hits":[…], "strong":n, "total":n, "strong_total":n, "offset":n, "consumed":n, "next_offset":n,
 ///          "generation":n, "meaning":bool, "kind_counts":{kind:n}, "kind_totals":{kind:n}, "tier_counts":{…},
 ///          "ms":{"embed":…,"search":…}}
@@ -25,6 +30,8 @@ import Foundation
 ///                                               far on every keystroke, so the pause's vector is usually ready)
 ///   {"op":"text","segment":id,"code":bool}    → {"text":…}: the part of a file a hit points at, for the preview
 ///   {"op":"text","path":…,"loc":part}         → {"text":…}: a document's passage by its number (the preview's pages)
+///   {"op":"text","path":…,"ocr":true[,"loc":n]} → {"text":…}: the words OCR read on a picture (or on a scanned
+///                                               page `loc`, from 1), for the preview's recognized text
 ///   {"op":"render","path":…,"kind":"pdf|video|image","loc":n,"pixels":n} → {"image":path}: a JPEG for a preview or a
 ///                                               thumbnail (a PDF's page `loc`, a video's frame at `loc` seconds, or a
 ///                                               picture a web view can't show, such as HEIC), made beside the requests
@@ -217,7 +224,8 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                                          section: section, limit: limit, offset: offset, zGate: zGate,
                                          prefixLast: prefixLast, cosineFloor: cosineFloor,
                                          cosineCeiling: cosineCeiling,
-                                         byCosine: byCosine || likeFile != nil, tierThresholds: tierThresholds)
+                                         byCosine: byCosine || likeFile != nil, tierThresholds: tierThresholds,
+                                         totalsAll: request["totals"] as? String == "all")
             }
             let hits = page.hits.filter {
                 if code {
@@ -248,6 +256,12 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             return ["ok": true]
         case "text":
             let code = request["code"] as? Bool ?? false
+            // The words OCR read on a picture (or a scanned page): the preview's recognized text.
+            if request["ocr"] as? Bool == true, let path = request["path"] as? String {
+                guard !code else { throw CLIError("the recognized text is for the main index") }
+                let part = (request["loc"] as? NSNumber)?.intValue
+                return ["text": try searcher.ocrText(ofFile: path, part: part) ?? NSNull()]
+            }
             // A book's passage by its number, for turning pages where no search result points at it.
             if let path = request["path"] as? String, let part = (request["loc"] as? NSNumber)?.intValue {
                 guard !code else { throw CLIError("a passage by number is for the main index") }

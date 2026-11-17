@@ -365,6 +365,9 @@ public final class LlamaEmbedder: Embedder {
     /// The GPU left out: where this machine's speed check found its processor faster than its GPU
     /// (`MeasuredCosts.Speed.device`; the helpers set it before the model loads), or `DIGUP_DEVICE=cpu`.
     nonisolated(unsafe) public static var cpuOnly = ProcessInfo.processInfo.environment["DIGUP_DEVICE"] == "cpu"
+    /// Why the processor was chosen, for the log line: the three reasons differ (a person's setting, the speed
+    /// check, or the query encoder's deliberate choice) and one sentence can't honestly cover them all.
+    nonisolated(unsafe) public static var cpuReason = "the processor was chosen in the settings"
 
     /// A GPU llama.cpp can run on here (Metal on a Mac; CUDA or Vulkan elsewhere, when their backend loaded and found
     /// one), before `cpuOnly` leaves it out.
@@ -441,7 +444,7 @@ public final class LlamaEmbedder: Embedder {
         }
         LlamaLog.shared.line("backends: " + (0..<ggml_backend_reg_count()).map {
             String(cString: ggml_backend_reg_name(ggml_backend_reg_get($0)))
-        }.joined(separator: ", ") + (cpuOnly && gpuFound ? " (the GPU left out: the processor was faster here)" : ""))
+        }.joined(separator: ", ") + (cpuOnly && gpuFound ? " (the GPU left out: \(cpuReason))" : ""))
     }
     #endif
 }

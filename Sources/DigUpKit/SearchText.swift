@@ -24,6 +24,46 @@ public enum SearchText {
         return String(scalars)
     }
 
+    /// The query's quoted spans and the rest of it: `"greenhouse hush" notes` asks for the two words in that order and
+    /// adjacent, and for the word "notes". Straight and typographic double quotes open a span; a span still open at the
+    /// end is being typed, so its text stays loose words. Single quotes are not quote marks here: an apostrophe is
+    /// part of a word.
+    public static func quoted(_ text: String) -> (phrases: [[String]], loose: String) {
+        var phrases: [[String]] = []
+        var loose = ""
+        var span: String?
+        for character in text {
+            guard quoteMarks.contains(character) else {
+                if span != nil { span?.append(character) } else { loose.append(character) }
+                continue
+            }
+            if let closed = span {
+                if let words = phraseWords(closed) { phrases.append(words) }
+                span = nil
+            } else {
+                span = ""
+                loose.append(" ")   // the span's words are not loose words
+            }
+        }
+        if let open = span { loose += " " + open }
+        return (phrases, loose)
+    }
+
+    /// `text` without its quote marks, for the meaning vector: quotes say how to match words, not what the query means.
+    public static func withoutQuotes(_ text: String) -> String {
+        String(text.filter { !quoteMarks.contains($0) })
+    }
+
+    static let quoteMarks: Set<Character> = ["\"", "\u{201C}", "\u{201D}", "\u{201E}", "\u{00AB}", "\u{00BB}", "\u{FF02}"]
+
+    /// A phrase's words as keyword search tokenizes them: every word counts, stopwords and single letters included,
+    /// because a phrase is adjacency, not a list of words.
+    static func phraseWords(_ span: String) -> [String]? {
+        let words = normalized(span).lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        return words.isEmpty ? nil : words
+    }
+
     /// True for words of scripts that attach endings to words (Bengali, Hindi, Arabic): keyword search matches them as
     /// prefixes, so "কুমির" finds "কুমিরও" and "مدرس" finds "مدرسة".
     public static func inflects(_ word: String) -> Bool {

@@ -4,5 +4,5 @@
 /// helper refuses at once, and the message says to take the full package. Manual CLI runs pass nothing and always
 /// match their own build.
 enum HelperProtocol {
-    static let version = 1
+    static let version = 2
 }

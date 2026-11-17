@@ -212,7 +212,7 @@ function ruleText(rule) {
   if (docs.documents && docs.ocrDocuments) parts.push("documents + OCR");
   else if (docs.documents) parts.push("documents");
   else if (docs.ocrDocuments) parts.push("OCR documents only");
-  if (kinds.length === 0 || kinds.includes("video")) parts.push("videos");
+  if (kinds.includes("video") || (rule.looksPictures == null && kinds.length === 0)) parts.push("videos");
   if (tags && content) parts.push("recordings by tags and sound");
   else if (tags) parts.push("recordings by tags only");
   else if (content) parts.push("recordings by sound");
@@ -236,7 +236,7 @@ function rulesObject() {
     // Every rule is sent, bits and all: the engine's clean_rule decides what is no rule (all defaults). An old rule
     // loaded above carries the bits its kinds imply, so saving this window can't turn a kind back on.
     // No kinds in the rule means everything: say so with the list, so the bits sent beside it don't narrow it.
-    const kinds = rule.kinds.length ? [...rule.kinds] : ["screenshot", "image", "pdf", "doc", "audio", "video"];
+    const kinds = [...rule.kinds];   // empty = every kind; the bits say which
     const outRule = { kinds, shallow: rule.shallow, audioTags: tags, audioContent: content,
                       looksPictures: pics.images, ocrPictures: pics.ocr ? "all" : "off",
                       looksDocuments: docs.documents, ocrScans: docs.ocrDocuments };
@@ -288,7 +288,7 @@ function rulePanel(folder) {
   controls.depth.onchange = () => { listSlot.hidden = !controls.depth.checked; store(); };
   function store() {
     const values = controls.values();
-    if (!values.kinds.length) {
+    if (values.empty) {
       hint.hidden = false;
       hint.textContent = "Choose at least one kind of file to search in this folder.";
       return;
@@ -296,7 +296,10 @@ function rulePanel(folder) {
     onAudio();
     folderRules.set(key(folder), values);
     rulePaths.set(key(folder), folder);
-    renderFolders();
+    // The panel stays as it is: rebuilding it here (inside the change of a box that is still being clicked) loses the
+    // click and moves the rows under the pointer, so the wrong boxes get ticked. The folder's line and the estimate are
+    // drawn again when the panel closes.
+    renderFooter();
   }
   const done = element("button", "link", "Done");
   done.onclick = () => { ruling = null; renderFolders(); };

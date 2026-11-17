@@ -793,12 +793,15 @@ do {
     // Where this machine's speed check found its processor faster than its GPU, the model runs on the processor.
     if command != "speed", MeasuredCosts.load(from: args.indexFolder).speed?.device == "cpu" {
         LlamaEmbedder.cpuOnly = true
+        LlamaEmbedder.cpuReason = "the speed check measured the processor faster here"
     }
     #if !os(macOS)
     // Queries are a few words: the processor encodes one in hundredths of a second, and starts sooner than a GPU (an RTX
-    // 4050 laptop: a search from scratch 1.8 s on its i7, 3.0 s on the GPU under Vulkan). Indexing keeps the GPU.
+    // 4050 laptop: a search from scratch 1.8 s on its i7, 3.0 s on the GPU under Vulkan; this machine: measured 1353 ms
+    // against 1808 ms to start, then 18 ms against 27 ms a query). Indexing keeps the GPU.
     if command == "search-service" {
         LlamaEmbedder.cpuOnly = true
+        LlamaEmbedder.cpuReason = "queries run on the processor (measured faster to start and per query)"
     }
     #endif
     switch command {

@@ -126,9 +126,9 @@ function isCode() {
   return state.filter === "code" || /^code:/i.test(state.query.trim());
 }
 
-/// The query or the filter changed: after a short pause in typing, the search (and the same search of one kind, for a
-/// filter), all at once. The query's meaning is embedded on every keystroke, so the pause is the whole wait.
-function run() {
+/// The query or the filter changed: after a short pause in typing, the search. A filter click isn't typing, so it
+/// searches at once (`immediate`) — the pause exists for the encoder's per-keystroke embed, which a click doesn't make.
+function run(immediate = false) {
   const generation = ++state.generation;
   clearTimeout(state.timer);
   state.navigated = false;
@@ -166,26 +166,30 @@ function run() {
   if (!state.hasResults) renderContent();
   const filter = FILTERS.find((item) => item.key === state.filter);
   state.timer = setTimeout(async () => {
+    // An encoder that idled out reloads on the first meaning search (1–5 s, measured): say so instead of showing
+    // nothing. OCR is a words search, so it never waits for the model.
+    const usesMeaning = !state.like && !(filter && filter.section === "ocr");
+    const preparing = usesMeaning ? setTimeout(() => setNote("Preparing the model…"), 600) : null;
     try {
       const filtered = Boolean(filter) && !code;
       // The Images filter is shown in cosine layers: the helper ranks those by the best segment's cosine (not the
       // fused score) and reports how many of the whole image ranking fall in each layer.
       const layered = filtered && filter.key === "images";
-      // The chips count the whole query; a helper too old to send its kind totals falls back to this first page.
-      const all = await ask({ op: "search", q: text, code, meaning: !state.like, limit: LIMIT,
-                              ...(state.like && !code ? { like: state.like } : {}) });
       let cutoffs = layered ? { ...imageTiers() } : null;
+      // One request, not two: the filter's page, and with `totals: "all"` the whole query's counts for the chips.
+      // OCR is a words search (no meaning vector, or both-on pictures would be ranked by their look here).
+      const all = filtered
+        ? await ask({ op: "search", q: text, code, meaning: filter.section === "ocr" ? false : !state.like,
+                      limit: LIMIT, totals: "all",
+                      ...(filter.kinds ? { kinds: filter.kinds } : {}),
+                      ...(filter.section ? { section: filter.section } : {}),
+                      ...(state.like && !code ? { like: state.like } : {}),
+                      ...(layered ? tierRequest(cutoffs) : {}) })
+        : await ask({ op: "search", q: text, code, meaning: !state.like, limit: LIMIT,
+                      ...(state.like && !code ? { like: state.like } : {}) });
       let shown = all;
-      let tiers = null;
+      let tiers = layered ? shown.tier_counts ?? null : null;
       if (filtered) {
-        // OCR is a words search: no meaning vector, or both-on pictures would be ranked by their look here.
-        const wordsOnly = filter.section === "ocr";
-        shown = await ask({ op: "search", q: text, code, meaning: wordsOnly ? false : !state.like, limit: LIMIT,
-                            ...(filter.kinds ? { kinds: filter.kinds } : {}),
-                            ...(filter.section ? { section: filter.section } : {}),
-                            ...(state.like && !code ? { like: state.like } : {}),
-                            ...(layered ? tierRequest(cutoffs) : {}) });
-        tiers = layered ? shown.tier_counts ?? null : null;
         // A like-search's scale is the reference's own (cosine to itself is 1.0): the fixed tiers apply as they
         // are, and the query's-top lowering has nothing to correct.
         if (layered && !state.like && tiers && tiers.visible < TIER_MIN_VISIBLE) {
@@ -203,7 +207,7 @@ function run() {
             cutoffs = { visible: Math.max(0, top - TIER_FALL),
                         weak: Math.max(0, top - TIER_FALL - (base.visible - base.weak)) };
             shown = await ask({ op: "search", q: text, code, meaning: true, limit: LIMIT, kinds: filter.kinds,
-                                ...tierRequest(cutoffs) });
+                                ...tierRequest(cutoffs), totals: "all" });
             tiers = shown.tier_counts ?? tiers;
           }
         }
@@ -251,8 +255,14 @@ function run() {
       if (generation !== state.generation) return;
       state.error = String(error);
       renderStatus();
+    } finally {
+      clearTimeout(preparing);
+      if (state.note === "Preparing the model…") {
+        state.note = null;
+        renderStatus();
+      }
     }
-  }, TYPING_PAUSE);
+  }, immediate ? 0 : TYPING_PAUSE);
 }
 
 /// The filter whose `kinds` the list is showing (the same one `run` sends), or nil for all files/code.
@@ -537,6 +547,12 @@ function queryChanged() {
   run();
 }
 
+/// A filter key this window knows, or All files: a saved or handed-over "screenshots" (from before Images and OCR were
+/// the same pictures) must not leave the window on a filter that no longer exists.
+function knownFilter(key) {
+  return key === "code" || FILTERS.some((filter) => filter.key === key) ? key : null;
+}
+
 function setFilter(key) {
   if (key === state.filter) return;
   state.filter = key;
@@ -546,7 +562,7 @@ function setFilter(key) {
     $query.value = state.query.trim().slice(5).trim();
     state.query = $query.value;
   }
-  run();
+  run(true);
 }
 
 /// Every result shown, in the order it's shown: the strong ones, then the weaker ones once they're unfolded; in the
@@ -2414,6 +2430,10 @@ function renderSide() {
   $side.replaceChildren();
   if (!hit) return;
   $side.append(previewPicture(hit), facts(hit));
+  // The words OCR read on the picture (or the scanned page), under the facts: open in the OCR filter, behind a
+  // one-line "show" everywhere else. Nothing for a file whose folder didn't ask for them.
+  const words = ocrBlock(hit, state.filter === "ocr");
+  if (words) $side.append(words);
   const chosen = shown && isWindows ? selectedHits() : [];
   if (chosen.length > 1) $side.append(selectionSummary(chosen));
   $side.append(why(hit), actions(hit));
@@ -2518,7 +2538,72 @@ function previewPicture(hit) {
   return box;
 }
 
+/// Puts text on the clipboard: the shell's own command (the web view's copy needs a user gesture the preview's button
+/// may not carry), with the web view's own copy as the fallback where the shell has no command.
+function copyPlainText(text) {
+  invoke("copy_text", { text }).catch(() => {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.top = "-1000px";
+    document.body.append(area);
+    area.select();
+    try {
+      document.execCommand("copy");
+    } finally {
+      area.remove();
+    }
+  });
+}
+
+let ocrToken = 0;   // the preview whose words are being fetched: a late reply for an older one is dropped
+
+/// The recognized text of a result, under its facts in the side pane. Open in the OCR filter (that mode is about the
+/// words); elsewhere one line — "Recognized text · 1 497 characters · show" — opens the same block. Fetched once, when
+/// the preview opens; a file without an OCR reading gets nothing.
+function ocrBlock(hit, open) {
+  if (!["image", "screenshot", "pdf"].includes(hit.kind)) return null;
+  const slot = element("div", "ocr-slot");
+  const token = ++ocrToken;
+  const page = hit.kind === "pdf" && hit.loc != null ? Math.trunc(hit.loc) : null;
+  ask({ op: "text", path: hit.path, ocr: true, ...(page != null ? { loc: page } : {}) })
+    .then((reply) => {
+      if (token !== ocrToken || !reply?.text) return;
+      const text = String(reply.text);
+      const box = element("div", "ocr-text" + (open ? " open" : ""));
+      const head = element("div", "ocr-head");
+      head.append(element("span", "ocr-label",
+        `Recognized text · ${text.length.toLocaleString()} characters`));
+      const copy = element("button", "link", "Copy all");
+      copy.title = "Put all of it on the clipboard";
+      copy.onclick = () => {
+        copyPlainText(text);
+        setNote("Copied the recognized text");
+      };
+      head.append(copy);
+      const body = element("pre", "ocr-body", text);
+      box.append(head);
+      if (!open) {
+        // Closed: the line names what there is, and "show" opens it in place (one block, not a second copy).
+        const show = element("button", "link", "show");
+        show.onclick = () => {
+          body.hidden = !body.hidden;
+          show.textContent = body.hidden ? "show" : "hide";
+          fitPreview();
+        };
+        head.append(show);
+        body.hidden = true;
+      }
+      box.append(body);
+      slot.replaceChildren(box);
+      fitPreview();
+    })
+    .catch(() => {});
+  return slot;
+}
+
 // MARK: The big preview (Space, as Quick Look on the Mac)
+
 
 /// How many pages a PDF has, or passages a document, as the index counted them; 0 when it isn't that kind of file.
 /// A document still being read offers only the passages that are in the index (`read_to`), not the whole plan:
@@ -3383,6 +3468,9 @@ document.addEventListener("keydown", (event) => {
         invoke("hide_window").catch(() => {});
         return;
       case "c":
+        // A selection in the pane (the recognized text of a picture) is what Ctrl+C copies; the file copies only when
+        // nothing is selected.
+        if (window.getSelection()?.toString()) return;
         copyResult(event, state.hasResults && state.query.trim() ? selectedHit() : null, state.navigated);
         return;
       case "f":
@@ -3575,7 +3663,7 @@ tauri.event.listen("lookalike", ({ payload }) => {
 // The panel handed its search over (Ctrl+O, "Show all…"): this window was already open.
 tauri.event.listen("window-search", ({ payload }) => {
   state.like = null;
-  state.filter = payload.kind || null;
+  state.filter = knownFilter(payload.kind);
   setQuery(payload.query || "");
   $query.focus();
 });
@@ -3676,7 +3764,7 @@ async function start() {
   // The index's age grows between events: the status bar's "synced 2 min ago" is redrawn without one.
   setInterval(renderStatus, 30000);
   if (info.search) {
-    state.filter = info.search.kind || null;
+    state.filter = knownFilter(info.search.kind);
     $query.value = info.search.query || "";
     state.query = $query.value;
     $("clear").hidden = !state.query;

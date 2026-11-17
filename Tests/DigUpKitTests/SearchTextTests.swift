@@ -67,6 +67,47 @@ import Testing
                 == ["/books/scan.pdf", "/photos/dog.png", "/shots/error.png"])
     }
 
+    @Test func aPageRenderedForItsFewWordsIsNoOCRResult() throws {
+        let store = try IndexStore(directory: folder.appendingPathComponent("page-image-ocr"))
+        // A book whose cover had little text: the reader rendered that page, and its words sit in the page image. The
+        // folder never asked for its scans' text, so the book is a document and not an OCR result.
+        let book = try store.insert(Candidate(path: "/books/book.pdf", kind: .pdf, size: 1, mtime: 1, inode: 1, device: 1))
+        try store.addSegment(file: book, kind: .pageImage, modality: .image, loc: 1, text: "zorblat cover")
+        try store.finish(book, state: "done")
+        // The 0.1.16 betas kept a scan's reading in its page image: a folder that asked for the text is an OCR result.
+        let beta = try store.insert(Candidate(path: "/books/scan.pdf", kind: .pdf, size: 1, mtime: 1, inode: 2, device: 1,
+                                              ocrScans: true))
+        try store.addSegment(file: beta, kind: .pageImage, modality: .image, loc: 3, text: "zorblat on the scan")
+        try store.finish(beta, state: "done")
+        let searcher = try Searcher(store: store, loadVectors: false)
+        #expect(try searcher.search("zorblat", queryVector: nil, section: .ocr).map(\.path) == ["/books/scan.pdf"])
+        #expect(try searcher.search("zorblat", queryVector: nil, section: .documents).map(\.path).sorted()
+                == ["/books/book.pdf", "/books/scan.pdf"])
+        #expect(try searcher.search("zorblat", queryVector: nil).map(\.path).sorted()
+                == ["/books/book.pdf", "/books/scan.pdf"])
+    }
+
+    @Test func theRecognizedTextOfAFileIsItsOCRText() throws {
+        let store = try IndexStore(directory: folder.appendingPathComponent("ocr-text"))
+        let picture = try store.insert(Candidate(path: "/shots/error.png", kind: .screenshot, size: 1, mtime: 1,
+                                                inode: 1, device: 1, ocrPictures: .all))
+        try store.addSegment(file: picture, kind: .ocr, modality: .text, text: "the words on it")
+        try store.finish(picture, state: "done")
+        let plain = try store.insert(Candidate(path: "/photos/dog.png", kind: .image, size: 1, mtime: 1,
+                                              inode: 2, device: 1))
+        try store.finish(plain, state: "done")
+        // A scan keeps one reading a page: the preview asks for the page it is on.
+        let scan = try store.insert(Candidate(path: "/books/scan.pdf", kind: .pdf, size: 1, mtime: 1,
+                                              inode: 3, device: 1, looksDocuments: false, ocrScans: true))
+        try store.addSegment(file: scan, kind: .ocr, modality: .text, loc: 5, text: "page five")
+        try store.finish(scan, state: "done")
+        let searcher = try Searcher(store: store, loadVectors: false)
+        #expect(try searcher.ocrText(ofFile: "/shots/error.png") == "the words on it")
+        #expect(try searcher.ocrText(ofFile: "/photos/dog.png") == nil)
+        #expect(try searcher.ocrText(ofFile: "/books/scan.pdf", part: 5) == "page five")
+        #expect(try searcher.ocrText(ofFile: "/books/scan.pdf", part: 6) == nil)
+    }
+
     @Test func bengaliAndArabicWordsStayWhole() throws {
         let store = try IndexStore(directory: folder)
         let id = try store.insert(Candidate(path: "/notes/trip.txt", kind: .doc, size: 1, mtime: 1, inode: 1, device: 1))
@@ -104,6 +145,69 @@ import Testing
         // A word that's in a file as typed stays whole: "cat" isn't "category". So do two letters.
         #expect(try searcher.search("cat", queryVector: nil).map(\.path) == ["/notes/pets.txt"])
         #expect(try searcher.search("gr", queryVector: nil).isEmpty)
+    }
+
+    @Test func quotesSplitAQueryIntoPhrasesAndLooseWords() {
+        let straight = SearchText.quoted("\"greenhouse hush\" notes")
+        #expect(straight.phrases == [["greenhouse", "hush"]])
+        #expect(Searcher.terms(straight.loose) == ["notes"])
+        // Typographic quotes are what a phone or a word processor inserts; an apostrophe is not a quote.
+        let typographic = SearchText.quoted("“greenhouse hush” another")
+        #expect(typographic.phrases == [["greenhouse", "hush"]])
+        #expect(Searcher.terms(typographic.loose) == ["another"])
+        #expect(SearchText.quoted("it's").phrases.isEmpty)
+        // Still typing: an unclosed span is loose words, not a phrase that can't match yet.
+        let typing = SearchText.quoted("\"still typ")
+        #expect(typing.phrases.isEmpty)
+        #expect(Searcher.terms(typing.loose) == ["still", "typ"])
+        // Stopwords and single letters stay in a phrase: adjacency, not a list of words.
+        #expect(SearchText.quoted("\"the a b\"").phrases == [["the", "a", "b"]])
+        // The meaning vector reads the words, not the syntax.
+        #expect(SearchText.withoutQuotes("\"greenhouse hush\"") == "greenhouse hush")
+        #expect(Prompts.query("\"greenhouse hush\"").hasSuffix("query: greenhouse hush"))
+    }
+
+    @Test func aQueryWithoutQuotesIsNotAPhrase() {
+        // Every character of what's typed stays in the loose text, so a search without quotes matches and ranks as it
+        // always has; only a quote mark changes anything.
+        #expect(SearchText.quoted("greenhouse hush notes").loose == "greenhouse hush notes")
+        #expect(SearchText.quoted("greenhouse hush notes").phrases.isEmpty)
+    }
+
+    @Test func aQuotedQueryFindsOnlyConsecutiveWordsInOrder() throws {
+        let store = try IndexStore(directory: folder)
+        func add(_ path: String, _ text: String, kind: FileKind = .doc, segment: SegmentKind = .chunk) throws {
+            let id = try store.insert(Candidate(path: path, kind: kind, size: 1, mtime: 1, inode: UInt64(path.count),
+                                                device: 1))
+            try store.addSegment(file: id, kind: segment, modality: .text, loc: 1, text: text)
+        }
+        try add("/notes/adjacent.txt", "A greenhouse hush around the gaze.")
+        try add("/notes/apart.txt", "Greenhouse notes.\n\nSome lines between.\n\nHush later.")
+        try add("/notes/folded.txt", "THE GREENHOUSE,\nHUSH — and a résumé.")
+        try add("/notes/other.txt", "Greenhouse plans and a hush fund.")
+        try add("/shots/scan.png", "greenhouse hush", kind: .screenshot, segment: .ocr)
+        let searcher = try Searcher(store: store, loadVectors: false)
+
+        // In that order and adjacent; punctuation, a line break, case and accents are not gaps. A file with the same
+        // two words apart, and one with them swapped, are not matches.
+        let phrase = try searcher.search("\"greenhouse hush\"", queryVector: nil)
+        #expect(Set(phrase.map(\.path)) == ["/notes/adjacent.txt", "/notes/folded.txt", "/shots/scan.png"])
+        #expect(try searcher.search("\"hush greenhouse\"", queryVector: nil).isEmpty)
+        #expect(try searcher.search("\"greenhouse meadow\"", queryVector: nil).isEmpty)
+        // The words outside the quotes search as they do today: every file with either word.
+        #expect(Set(try searcher.search("greenhouse hush", queryVector: nil).map(\.path))
+                == ["/notes/adjacent.txt", "/notes/apart.txt", "/notes/folded.txt", "/notes/other.txt",
+                    "/shots/scan.png"])
+        // A phrase and a loose word: both must be there.
+        #expect(try searcher.search("\"greenhouse hush\" gaze", queryVector: nil).map(\.path) == ["/notes/adjacent.txt"])
+        // Several spans: all of them.
+        #expect(try searcher.search("\"greenhouse hush\" \"around the gaze\"", queryVector: nil).map(\.path)
+                == ["/notes/adjacent.txt"])
+        // The OCR section is a words search, so it gets phrases with no extra code.
+        #expect(try searcher.search("\"greenhouse hush\"", queryVector: nil, section: .ocr).map(\.path)
+                == ["/shots/scan.png"])
+        // The excerpt points at the phrase.
+        #expect(phrase.first { $0.path == "/notes/folded.txt" }?.excerpt?.contains("HUSH") == true)
     }
 
     @Test func garbledPageTextIsNoticed() {

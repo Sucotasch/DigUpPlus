@@ -140,10 +140,13 @@ public final class Searcher {
             fileAsDocument[row.int(0)] = row.int(3) != 0
         }
         fileHasOCR.removeAll(keepingCapacity: true)
-        // A page_image with text is how 0.1.16 betas stored a scan's OCR before `.ocr` segments; both count.
+        // The OCR results: a picture's `.ocr` text, or a scanned PDF page's. A page_image carrying text is a scan's
+        // only in the 0.1.16 betas, which stored the reading there (`.ocr` came after); a page the reader rendered for
+        // its few words of real text (a cover, a plate) also carries them there, and those are no OCR. The row's
+        // `ocr_scans` separates the two: only a folder that asked for its scans' text has it.
         try store.db.query("""
-            SELECT DISTINCT s.file FROM segments s JOIN fts ON fts.rowid = s.id
-            WHERE s.kind = 'ocr' OR (s.kind = 'page_image' AND fts.body <> '')
+            SELECT DISTINCT s.file FROM segments s WHERE s.kind = 'ocr'
+                OR (s.kind = 'page_image' AND s.file IN (SELECT id FROM files WHERE ocr_scans = 1))
             """) { row in
             fileHasOCR.insert(row.int(0))
         }
@@ -172,7 +175,7 @@ public final class Searcher {
     public func page(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil, section: SearchSection = .none,
                      limit: Int = 20, offset: Int = 0, zGate: Double = 2.0, wordWeight: Double? = nil,
                      prefixLast: Bool = false, cosineFloor: Double? = nil, cosineCeiling: Double? = nil,
-                     byCosine: Bool = false, tierThresholds: [Double] = [],
+                     byCosine: Bool = false, tierThresholds: [Double] = [], totalsAll: Bool = false,
                      excluding: Int64? = nil) throws -> SearchPage {
 
         let wordWeight = wordWeight ?? (isCode ? Self.codeWordWeight : Self.wordWeight)
@@ -203,7 +206,7 @@ public final class Searcher {
         if let query = queryVector, query.count == Vectors.dimension, !rowFile.isEmpty {
             let scores = score(query)
             let meaning = Self.meaning(scores, rowModality, setsScale: rowSetsScale)
-            for row in 0..<scores.count where allowed(rowFile[row]) {
+            for row in 0..<scores.count {
                 let z = meaning[row]
                 if z > (best[rowFile[row]]?.z ?? -.infinity) { best[rowFile[row]] = (z, Double(scores[row]), row) }
             }
@@ -211,32 +214,46 @@ public final class Searcher {
 
         // Words: FTS5 with Porter stemming over file names, folder names, OCR, page and document text. A name from code
         // ("quantize_row_q8_0_ref") is matched as one phrase, as it's written.
-        let terms = Self.terms(text)
+        let terms = Self.terms(text)   // the query as typed, for code lookups
+        // A quoted span is one phrase: its words in that order and adjacent (punctuation and line breaks don't count,
+        // the tokenizer's job). Several spans must all be there, and so must at least one loose word; the loose words
+        // keep their OR among themselves — what quoting means, and what a search without quotes does today. The
+        // phrase's own words are not loose words: it is one term, not two that may be anywhere in the file.
+        let quoted = SearchText.quoted(text)
+        let phrases = quoted.phrases
+        let looseTerms = Self.terms(quoted.loose)
         let identifier = isCode ? CodeLookup.identifier(text) : nil
         var words: [(file: Int64, segment: Int64, snippet: String?)] = []
-        var coverage: [Int64: Double] = [:]   // share of the query's words found anywhere in the file
-        var patterns = identifier.map { [CodeLookup.phrase($0)] } ?? Self.patterns(terms, prefixLast: prefixLast)
+        var coverage: [Int64: Double] = [:]   // share of the query's phrases and words found anywhere in the file
+        var groups: [[String]] = identifier.map { [[CodeLookup.phrase($0)]] }
+            ?? phrases.map { ["\"" + $0.joined(separator: " ") + "\""] }
         // A word that's in no file as typed matches as the start of longer words, as the last word does while it's
         // being typed: "grok" finds "Grok4" and "Grokipedia" (stemming only covers endings, as in "grokking").
         // Otherwise a file the panel showed while you typed dropped out once you stopped. A word that is in the index
         // as typed stays whole, so "cat" doesn't bring in "category"; so does a word of two letters, the start of too
-        // many words to stand for one.
-        if identifier == nil {
-            for index in terms.indices where terms[index].count >= 3 && !patterns[index].hasSuffix("*") {
-                if try !isIndexed(patterns[index]) { patterns[index] += "*" }
+        // many words to stand for one. A phrase is exact by definition: no prefix there.
+        if identifier == nil, !looseTerms.isEmpty {
+            var termPatterns = Self.patterns(looseTerms, prefixLast: prefixLast)
+            for index in looseTerms.indices where looseTerms[index].count >= 3 && !termPatterns[index].hasSuffix("*") {
+                if try !isIndexed(termPatterns[index]) { termPatterns[index] += "*" }
             }
+            groups.append(termPatterns)
         }
+        let patterns = groups.flatMap { $0 }
         if !patterns.isEmpty {
+            let match = groups.map { $0.count == 1 ? $0[0] : "(" + $0.joined(separator: " OR ") + ")" }
+                .joined(separator: " AND ")
             var seen = Set<Int64>()
             try store.db.query("""
                 SELECT s.file, s.id, snippet(fts, 1, '«', '»', '…', 12), fts.original FROM fts
                 JOIN segments s ON s.id = fts.rowid
                 WHERE fts MATCH ? ORDER BY bm25(fts, 3.0, 1.0) LIMIT 1000
-                """, [.text(patterns.joined(separator: " OR "))]) { row in
+                """, [.text(match)]) { row in
                 let file = row.int(0)
-                guard words.count < 100, allowed(file), seen.insert(file).inserted else { return }
+                guard words.count < 100, seen.insert(file).inserted else { return }
                 // Text that normalizing changed is quoted as it's written (with its hamza, harakat, joiners).
-                let snippet = row.text(3).flatMap { SearchText.snippet($0, terms: terms) } ?? row.text(2)
+                let marks = looseTerms + phrases.map { $0.joined(separator: " ") }
+                let snippet = row.text(3).flatMap { SearchText.snippet($0, terms: marks) } ?? row.text(2)
                 words.append((file, row.int(1), snippet))
             }
             if !words.isEmpty {
@@ -254,7 +271,7 @@ public final class Searcher {
         // Score: meaning z + a bonus that grows with word coverage, + 1 for the kind the query asks for.
         // One common word can't beat a strong meaning match; all the words of an exact lookup usually do.
         // (This beat reciprocal-rank fusion on both evals, 2026-10-07: R@1 0.88 vs 0.73 synthetic, 0.86 vs 0.82 real.)
-        let lookup = Self.isLookup(terms) || identifier != nil
+        let lookup = Self.isLookup(looseTerms + phrases.flatMap { $0 }) || identifier != nil
         let (meaningWeight, wordsWeight) = lookup ? (0.5, wordWeight * 2) : (1, wordWeight)
         let hinted = Self.kindHints(text)
         // The image layers: visible / weaker / hidden are cut on the best segment's cosine, the same numbers for
@@ -296,12 +313,16 @@ public final class Searcher {
         // Rank once, then page it. The whole order is needed for total/strong anyway, and keeping one order makes
         // page boundaries stable between requests. The cosine layers rank by that cosine (a file that only matched
         // by words — no vector — stays at the top), so a page boundary always falls between the layers.
-        let ordered = byCosine
+        let ranked = byCosine
             ? scored.sorted {
                 let left = best[$0.key]?.cosine ?? 1, right = best[$1.key]?.cosine ?? 1
                 return left == right ? $0.key < $1.key : left > right
             }
             : scored.sorted { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) }
+        // The page shows what the filter allows; `ranked` keeps everything the query matched, which is what the window's
+        // chips count when it asks for the whole-query totals (`totalsAll`) — one request then answers both, and the
+        // filter's own `total`/`strong`/paging stay what they were.
+        let ordered = ranked.filter { allowed($0.key) }
         let total = ordered.count
         let topScore = ordered.map(\.value).max() ?? 0
         // `strong` stays the score-based fold of the ordinary search; the cosine layers don't use it.
@@ -311,12 +332,21 @@ public final class Searcher {
         var kindCounts: [FileKind: Int] = [:]
         var kindTotals: [FileKind: Int] = [:]
         let strongKeys = byCosine ? Set(ordered.filter { topScore > 0 && $0.value >= topScore * 0.5 }.map(\.key)) : []
+        // The pictures' chips count pictures a folder looks at; a words-only picture has no place there.
+        let chipKind = { (file: Int64) -> FileKind? in
+            guard let kind = fileKind[file] else { return nil }
+            if kind == .image || kind == .screenshot, fileLooks[file] == false { return nil }
+            return kind
+        }
         for (index, entry) in ordered.enumerated() {
-            guard let kind = fileKind[entry.key] else { continue }
-            // The pictures' chips count pictures a folder looks at; a words-only picture has no place there.
-            if kind == .image || kind == .screenshot, fileLooks[entry.key] == false { continue }
-            kindTotals[kind, default: 0] += 1
+            guard let kind = chipKind(entry.key) else { continue }
+            if !totalsAll { kindTotals[kind, default: 0] += 1 }
             if byCosine ? strongKeys.contains(entry.key) : index < strong { kindCounts[kind, default: 0] += 1 }
+        }
+        if totalsAll {
+            // The whole query's counts for the window's chips, from the same scoring: one request serves the page and
+            // the chip numbers alike.
+            for entry in ranked { if let kind = chipKind(entry.key) { kindTotals[kind, default: 0] += 1 } }
         }
         // The layer counts over the whole image ranking, for the window's fold headers: counted over `best`, so the
         // hidden tail below the floor is included even though this ranking leaves it out.
@@ -543,6 +573,24 @@ public final class Searcher {
             SELECT s.id FROM segments s JOIN files f ON f.id = s.file
             WHERE f.path = ? AND s.kind = 'chunk' AND s.loc = ?
             """, [.text(path), .double(Double(part))]) { id = $0.int(0) }
+        return try id.flatMap { try text(ofSegment: $0) }
+    }
+
+    /// The words OCR read on a file: a picture's text, or a scanned page's (`part`, from 1, when the file has several).
+    /// The preview shows them beside the picture, and nothing comes back for a file whose folder didn't ask for them.
+    public func ocrText(ofFile path: String, part: Int? = nil) throws -> String? {
+        var id: Int64?
+        if let part {
+            try store.db.query("""
+                SELECT s.id FROM segments s JOIN files f ON f.id = s.file
+                WHERE f.path = ? AND s.kind = 'ocr' AND s.loc = ?
+                """, [.text(path), .double(Double(part))]) { id = $0.int(0) }
+        } else {
+            try store.db.query("""
+                SELECT s.id FROM segments s JOIN files f ON f.id = s.file
+                WHERE f.path = ? AND s.kind = 'ocr' ORDER BY s.loc LIMIT 1
+                """, [.text(path)]) { id = $0.int(0) }
+        }
         return try id.flatMap { try text(ofSegment: $0) }
     }
 

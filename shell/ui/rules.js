@@ -63,7 +63,12 @@ function ruleControls(rule, box) {
   box.append(scansOnly);
   documents.addEventListener("change", refreshScans);
   ocrDocuments.addEventListener("change", refreshScans);
-  const videos = choice("Videos", (rule.kinds || []).length === 0 || rule.kinds.includes("video"), "video");
+  // A rule from the Images/OCR split stores kinds for what no bit owns (video) alone; an older rule's empty list meant
+  // every kind, and its bits are absent.
+  const oldRule = rule.looksPictures == null && rule.ocrPictures == null;
+  const videosOn = oldRule ? (rule.kinds || []).length === 0 || rule.kinds.includes("video")
+                           : rule.kinds.includes("video");
+  const videos = choice("Videos", videosOn, "video");
   const audioChoice = (label, checked) => choice(label, checked);
   const inKinds = (rule.kinds || []).length === 0 || (rule.kinds || []).includes("audio");
   // A rule saved before the bits existed read recordings exactly when its kinds included them.
@@ -91,15 +96,13 @@ function ruleControls(rule, box) {
   box.append(shallow);
 
   const values = () => {
-    const all = [];
-    // Either picture result keeps the pictures in the rule (each is read as asked); neither leaves them out.
-    if (images.checked || ocr.checked) all.push("image", "screenshot");
-    // A PDF is read for a document result, for its scanned pages' text, or both; a text document only as a document.
-    if (documents.checked || ocrDocuments.checked) all.push("pdf");
-    if (documents.checked) all.push("doc");
-    if (videos.checked) all.push("video");
-    if (tags.checked || content.checked) all.push("audio");
-    return { kinds: all, audioTags: tags.checked, audioContent: content.checked, shallow: !depth.checked,
+    // The bits decide image/screenshot/pdf/doc/audio; the kind list carries only what no bit owns (video). The shell
+    // derives the rest from the bits in one place (clean_rule), so the two can't disagree — the reason three copies of
+    // this mapping drifted before. An empty list is "every kind", which is how the shell reads it too.
+    const any = images.checked || ocr.checked || documents.checked || ocrDocuments.checked || videos.checked
+      || tags.checked || content.checked;
+    return { kinds: videos.checked ? ["video"] : [], empty: !any,
+             audioTags: tags.checked, audioContent: content.checked, shallow: !depth.checked,
              skipTypes: skip.value.split(",").map((type) => type.trim()).filter(Boolean),
              looksPictures: images.checked, ocrPictures: ocr.checked ? "all" : "off",
              looksDocuments: documents.checked, ocrScans: ocrDocuments.checked };

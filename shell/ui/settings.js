@@ -263,7 +263,9 @@ async function loadSummaries() {
   } catch {
     summaries = summaries || [];
   }
-  renderFolders();
+  // An open rule editor keeps the ticks being made: the counts arrive on every change of the index, and rebuilding the
+  // editor from the saved rule (which is only written on Save) would put them back as they were.
+  if (!ruling) renderFolders();
 }
 
 function renderFolders() {
@@ -588,8 +590,10 @@ function ruleEditor(folder) {
     remove.title = "Read this folder by the defaults again";
     remove.onclick = async () => {
       try {
+        // No rule: everything read the default way, which is no OCR at all (not the 0.1.16 betas' screenshots).
         await invoke("set_root_rule", { folder, kinds: [], shallow: false, audioTags: false, audioContent: false,
-                                        skipTypes: [], ocrPictures: "screenshots", ocrScans: false });
+                                        skipTypes: [], looksPictures: true, ocrPictures: "off",
+                                        looksDocuments: true, ocrScans: false });
         ruling = null;
         await refresh();
       } catch (error) {
@@ -603,7 +607,7 @@ function ruleEditor(folder) {
   const save = element("button", "", "Save");
   save.onclick = async () => {
     const values = controls.values();
-    if (!values.kinds.length) {
+    if (values.empty) {
       hint.hidden = false;
       hint.textContent = "Choose at least one kind of file to search in this folder.";
       return;
@@ -716,7 +720,7 @@ function ruleText(rule) {
   if (docs.documents && docs.ocrDocuments) parts.push("documents + OCR");
   else if (docs.documents) parts.push("documents");
   else if (docs.ocrDocuments) parts.push("OCR documents only");
-  if (kinds.length === 0 || kinds.includes("video")) parts.push("videos");
+  if (kinds.includes("video") || (rule.looksPictures == null && kinds.length === 0)) parts.push("videos");
   if (tags && content) parts.push("recordings by tags and sound");
   else if (tags) parts.push("recordings by tags only");
   else if (content) parts.push("recordings by sound");
@@ -1393,7 +1397,9 @@ async function refresh() {
   info = await invoke("settings_info");
   renderGeneral();
   renderStatus();
-  renderFolders();
+  // Never while a rule is being edited (the same rule as the text fields below): a rule is saved by its Save button,
+  // and redrawing the editor from the saved one would undo the ticks made since it opened.
+  if (!ruling) renderFolders();
   renderFields();
   renderSearch();
   renderStorage();

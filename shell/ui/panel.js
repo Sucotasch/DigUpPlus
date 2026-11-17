@@ -13,8 +13,9 @@ const BIG_HEIGHT = 640;   // the panel at its tallest, for the big preview
 const WEAKER = "\u0000weaker";     // the selectable row that folds and unfolds the weaker matches
 // Wayland: the window fills the screen and this page places the panel (the shell's wayland.rs).
 const fillsScreen = new URLSearchParams(location.search).has("fills");
-// A group's name in the window's kind filters.
-const FILTER_OF = { Screenshots: "screenshots", Images: "images", Documents: "documents", Video: "video",
+// A group's name in the window's filters. Screenshots are pictures too: the window has one Images section, so both
+// groups open there (the OCR section is not what a look-search group wants).
+const FILTER_OF = { Screenshots: "images", Images: "images", Documents: "documents", Video: "video",
                     Audio: "audio" };
 
 const $ = (id) => document.getElementById(id);

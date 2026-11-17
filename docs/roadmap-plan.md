@@ -15,8 +15,9 @@ macOS-каталог на стадии дизайн-документов). Ап�
 машинным свойством, после чего релиз может выкладывать маленький `-shell-only.zip` (~3 МБ), когда helper не менялся.
 
 **Решение:**
-- `HelperProtocol.version = 1` (Swift, `Sources/digup/HelperProtocol.swift`) и `HELPER_PROTOCOL = 1` (Rust,
+- `HelperProtocol.version = 2` (Swift, `Sources/digup/HelperProtocol.swift`) и `HELPER_PROTOCOL = 2` (Rust,
   `main.rs`) — парные константы; номер растёт при любом изменении формы протокола (поля, команды, семантика).
+  Версия 2 — `{"op":"text","ocr":true}` (распознанный текст картинки или страницы скана в предпросмотре).
 - Шелл передаёт `--protocol <n>` в **каждый** спавн helper'а (`Shell::launch` — точка всех запусков, плюс прямой
   `Command` в `index_opens` и `estimate`, плюс стартовый search-Launch). Helper стрипает аргумент до разбора и при
   несовпадении выходит с ошибкой «update the whole package, not just DigUpPlus.exe». Ручные CLI-запуски без флага
@@ -98,6 +99,10 @@ overflow, проверка «файл ещё пишется», фолбэк пр
 - **PR #164** (fixes #153): настройка датасетов — https://github.com/ARahim3/DigUp/pull/164 (ветка feature/153-include-datasets-setting; engine-флаг `--include-datasets` апстримовский).
 - Find similar (#162) — не предлагаем: автор везёт свою реализацию в 0.7.0. File-operations — против их заявленной в #140 концепции («Deleting or moving files stays with the Finder, on purpose») — не предлагаем.
 - Worktree'ы для итераций по ревью: `.build/pr151`, `.build/pr153`.
+- **Форк gsaaad/DigUp (проверено 2026-11-17):** ветки `pr/1`…`pr/6` — кумулятивный стек на другой базе, патчи не
+  переносятся. Взята одна идея — точные фразы в кавычках (0.1.16, `SearchText.quoted`); оставлены на будущее как
+  отдельный релиз — локальная генеративная модель и «дайджесты» PDF; отвергнуты опечатки и телеметрия. Источник,
+  вердикты по каждой ветке и числа: `docs/upstream-proposals.md`.
 
 ## Порядок и каденция
 
