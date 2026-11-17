@@ -33,9 +33,10 @@ let usage = """
                                               --model times the model itself (Linux and Windows) and keeps it
       digup eval <queries.json> [-n 10]       recall of known answers (see evals/; "code: …" queries search code)
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
-                          [--memory-limit MB] [--time-limit S]
+                          [--memory-limit MB] [--time-limit S] [--rest-when-idle S]
                                               the app's indexing helper (JSON lines; see IndexService); it stops
-                                              on a file whose reading passes the limits (see Watchdog)
+                                              on a file whose reading passes the limits (see Watchdog); the rest
+                                              of long files waits for S seconds without input
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
       digup search-service <folder>... [--code-root DIR]... [--encoder-idle S]
                                               the searcher as a process, index open and encoder warm (JSON lines;
@@ -82,8 +83,8 @@ struct Arguments {
     /// The folder rules, decoded where a bad one stops the run (the shell sends only rules it validated).
     var rootRules: [RootRule] = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--offset", "--zgate", "--word-weight", "--new-limit",
-                                      "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
-                                      "--memory-limit", "--time-limit", "--tries", "--when-quiet", "--print-config",
+                                      "--linger", "--rest-when-idle", "--shot-tokens", "--code-stretch", "--encoder-idle",
+                                      "--to", "--memory-limit", "--time-limit", "--tries", "--when-quiet", "--print-config",
                                       "--from", "--threads"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--root-rule",
                                         "--tag-type", "--root"]
@@ -525,7 +526,8 @@ func indexService(_ args: Arguments) throws -> Int32 {
                                modelReady: { embedderSource() == nil || LlamaModels.complete },
                                backfill: args.flags.contains("--backfill"),
                                newFilesLimit: args.values["--new-limit"].flatMap(Int.init) ?? 50,
-                               linger: args.values["--linger"].flatMap(Double.init) ?? 60)
+                               linger: args.values["--linger"].flatMap(Double.init) ?? 60,
+                               restWhenIdle: args.values["--rest-when-idle"].flatMap(Double.init) ?? 0)
     return service.serve()
 }
 

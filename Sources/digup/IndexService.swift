@@ -63,6 +63,9 @@ final class IndexService: @unchecked Sendable {
     private var codeChangedPaths: Set<String>?
     private var stopRequested = false
     private var backfillAllowed: Bool
+    /// Seconds without keyboard or mouse input before the rest of long files may run (0: no gate). The shell asks for
+    /// five minutes: a book's last pages aren't worth the fans while someone is reading their results.
+    private let restWhenIdle: Double
     /// A sync asked for while files are being indexed waits until then. A crawl of a big folder can take minutes, and
     /// a folder that keeps changing asks for the next one meanwhile: yielding at once, every pass went back to crawling
     /// before a single file was read. Indexing gets at least as long as the sync before it (2 s at the least).
@@ -70,7 +73,7 @@ final class IndexService: @unchecked Sendable {
     private let wake = DispatchSemaphore(value: 0)
 
     init(main: Part, code: Part?, folder: URL, model: SharedEmbedder, modelReady: @escaping () -> Bool,
-         backfill: Bool, newFilesLimit: Int, linger: Double) {
+         backfill: Bool, newFilesLimit: Int, linger: Double, restWhenIdle: Double = 0) {
         self.main = main
         self.code = code
         self.folder = folder
@@ -79,6 +82,7 @@ final class IndexService: @unchecked Sendable {
         self.backfillAllowed = backfill
         self.newFilesLimit = newFilesLimit
         self.linger = linger
+        self.restWhenIdle = restWhenIdle
     }
 
     private var parts: [Part] { [main] + (code.map { [$0] } ?? []) }
@@ -193,9 +197,17 @@ final class IndexService: @unchecked Sendable {
                     if lock.withLock({ syncRequested || codeSyncRequested }) { continue }
                 }
             }
-            // Once nothing is waiting: the rest of long PDFs and documents, the same way.
+            // Once nothing is waiting: the rest of long PDFs and documents, the same way. Only while the person is
+            // away: that pass alone keeps the workers on the graphics card at full tilt, and reading results doesn't
+            // deserve the fans. The loop comes back after its usual wait; nothing is lost, `read_to` holds the place.
             if lock.withLock({ backfillAllowed }), (try? main.store.pendingCount()) ?? 1 == 0,
                (try? code?.store.pendingCount() ?? 0) ?? 1 == 0, (try? main.store.unfinishedCount().files) ?? 0 > 0 {
+                if !RestPacing.mayStart(idle: Idle.seconds(), after: restWhenIdle) {
+                    let left = (try? main.store.unfinishedCount()) ?? (files: 0, left: 0)
+                    emit(["event": "rest", "waiting": true, "files": left.files, "left": left.left, "done": 0, "total": 0])
+                    guard waitUntilIdle() else { break }
+                    continue
+                }
                 guard finishLongFiles() else { break }
                 if lock.withLock({ syncRequested || codeSyncRequested }) { continue }
             }
@@ -330,11 +342,16 @@ final class IndexService: @unchecked Sendable {
             let states = try main.indexer.finishLongFiles(shouldStop: { [self] in
                 lock.withLock {
                     stopRequested || !backfillAllowed
+                        || (restWhenIdle > 0 && !RestPacing.mayStart(idle: Idle.seconds(), after: restWhenIdle))
                         || Date() >= yieldAt && (syncRequested || codeSyncRequested && code != nil)
                 }
             }, onStep: { step in
                 emit(["event": "rest", "done": step.done, "total": step.total, "files": step.files, "path": step.path,
                       "kind": step.kind.rawValue, "state": step.state, "seconds": step.seconds, "note": step.note ?? ""])
+                // A third of the speed: it still finishes, and someone who comes back mid-step doesn't wait for the
+                // fans to calm down. Only when the idle gate is on (a script's own pass stays as fast as it was).
+                let pause = RestPacing.pause(after: step.seconds, enabled: restWhenIdle > 0)
+                if pause > 0 { Thread.sleep(forTimeInterval: pause) }
             })
             if !states.isEmpty {
                 emit(["event": "summary", "rest": true, "states": states,
@@ -344,6 +361,19 @@ final class IndexService: @unchecked Sendable {
         } catch {
             emit(["event": "error", "message": "\(error)", "fatal": true])
             return false
+        }
+    }
+
+    /// Waits for the person to leave the computer, or for something to do. True: the loop goes on (idle now, a sync,
+    /// or nothing left to read); false: stop. Unlike `waitForWork`, this doesn't end when `linger` passes: a book's
+    /// last pages can wait an afternoon, and the helper holds the index while it waits.
+    private func waitUntilIdle() -> Bool {
+        while true {
+            if lock.withLock({ stopRequested }) { return false }
+            if lock.withLock({ syncRequested || codeSyncRequested && code != nil }) { return true }
+            if (try? main.store.unfinishedCount().files) ?? 0 == 0 { return true }
+            if RestPacing.mayStart(idle: Idle.seconds(), after: restWhenIdle) { return true }
+            _ = wake.wait(timeout: .now() + 5)
         }
     }
 

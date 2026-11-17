@@ -269,6 +269,11 @@ impl Shell {
     fn index_launch(&self) -> Launch {
         let settings = self.settings.lock().unwrap().clone();
         let mut args = vec!["index-service".to_string(), "--backfill".to_string()];
+        // The rest of long files waits for five minutes without keyboard or mouse input: that pass keeps the workers
+        // on the graphics card at full tilt, and reading search results doesn't deserve the fans (a person reading is
+        // still "idle" for the system, so the threshold is generous, and the pass runs at a third of its speed after).
+        args.push("--rest-when-idle".into());
+        args.push("300".into());
         if self.prune.swap(false, Ordering::SeqCst) {
             args.push("--prune".into());
         }

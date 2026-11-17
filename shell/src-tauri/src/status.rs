@@ -15,6 +15,8 @@ pub enum Activity {
     Indexing { done: u64, total: u64 },
     /// The rest of long PDFs and documents: `done` of the `total` pages and chunks this pass reads, `files` unfinished.
     Finishing { done: u64, total: u64, files: u64 },
+    /// The rest of long files waiting for the computer to be idle: `files` unfinished, `left` pages and chunks to read.
+    RestIdle { files: u64, left: u64 },
     Failed(String),
 }
 
@@ -102,6 +104,9 @@ impl Status {
                     self.searchable += 1;
                 }
             }
+            "rest" if event["waiting"] == true => {
+                self.activity = Activity::RestIdle { files: count("files"), left: count("left") }
+            }
             "rest" => {
                 self.activity = Activity::Finishing { done: count("done"), total: count("total"), files: count("files") }
             }
@@ -116,7 +121,8 @@ impl Status {
             "error" if event["fatal"] == true => self.activity = Activity::Failed("Indexing stopped".into()),
             // The helper is gone: whatever it was doing is over.
             "exit" | "ended" => {
-                if matches!(self.activity, Activity::Starting | Activity::Scanning | Activity::Indexing { .. } | Activity::Finishing { .. }) {
+                if matches!(self.activity, Activity::Starting | Activity::Scanning | Activity::Indexing { .. }
+                    | Activity::Finishing { .. } | Activity::RestIdle { .. }) {
                     self.activity = Activity::Idle;
                 }
             }
@@ -157,6 +163,15 @@ impl Status {
                 let which = if files > 0 { format!("{} long {}", number(files), plural(files, "file", "files")) } else { "long files".into() };
                 format!("Reading the rest of {which} · {}%", percent(done, total))
             }
+            // Nothing runs while the person is at the computer: say so, and what is left (the pages come with the last
+            // event before the wait).
+            Activity::RestIdle { files, left } => format!(
+                "{} long {} read when the computer is idle ({} {} left)",
+                number(files),
+                plural(files, "file", "files"),
+                number(left),
+                plural(left, "page/chunk", "pages/chunks")
+            ),
             _ if self.pending > 0 => {
                 let waiting = format!("{} {} waiting", number(self.pending), plural(self.pending, "file", "files"));
                 match &self.held_until {
@@ -258,6 +273,7 @@ impl Status {
                 Activity::Idle => "idle",
                 Activity::Indexing { .. } => "indexing",
                 Activity::Finishing { .. } => "finishing",
+                Activity::RestIdle { .. } => "rest-idle",
                 Activity::Failed(_) => "failed",
             },
             "model": model,
@@ -325,6 +341,9 @@ mod tests {
         assert_eq!(status.line(true, &ready), "Indexing 42% · 129 of 306");
         status.apply(&json!({"event": "rest", "done": 40, "total": 100, "files": 3}));
         assert_eq!(status.line(true, &ready), "Reading the rest of 3 long files · 40%");
+        status.apply(&json!({"event": "rest", "waiting": true, "files": 3, "left": 77}));
+        assert_eq!(status.line(true, &ready), "3 long files read when the computer is idle (77 pages/chunks left)");
+        assert_eq!(status.progress(&ready), None);
         status.apply(&json!({"event": "idle", "files": 1306, "searchable": 1306, "pending": 0, "unfinished": 0}));
         assert_eq!(status.line(true, &ready), "1,306 files indexed");
         assert_eq!(status.progress(&ready), None);
