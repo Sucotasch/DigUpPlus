@@ -106,6 +106,8 @@ class Embedder:
         return np.array(output.text_embeds.astype(self.mx.float32))
 
     def text(self, inputs):
+        if not inputs:
+            return np.zeros((0, DIM), np.float32), []
         rows = []
         for i in range(0, len(inputs), BATCH["text"]):
             batch = inputs[i : i + BATCH["text"]]
@@ -114,6 +116,8 @@ class Embedder:
         return np.concatenate(rows), [None] * len(inputs)
 
     def media(self, kind, inputs, budget=None):
+        if not inputs:
+            return np.zeros((0, DIM), np.float32), []
         if self.processor is None:
             raise RuntimeError("this worker was started --text-only")
         if kind == "image":

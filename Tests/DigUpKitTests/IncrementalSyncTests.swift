@@ -71,6 +71,22 @@ import Testing
         #expect(try store.file(at: file.path) != nil)
     }
 
+    #if os(Windows)
+    /// A row spelled with another case isn't selected by `files(under:)` (its ranges compare bytes), so a sync leaves it
+    /// alone instead of deleting it, and the inode branch fixes its spelling when the file is seen again. The sync's
+    /// prefix guards rely on that: every row they see was written under the root's own spelling.
+    @Test func aRowSpelledInAnotherCaseIsLeftAlone() throws {
+        let store = try IndexStore(directory: base.appendingPathComponent("index"))
+        let root = base.appendingPathComponent("Away")
+        let id = try store.insert(Candidate(path: root.path.lowercased() + "/notes.txt", kind: .doc, size: 1, mtime: 1,
+                                            inode: 1, device: 1))
+        try store.finish(id, state: "done")
+        let summary = try indexer(store).sync([root])   // the folder is gone: its rows are kept
+        #expect(summary.removed == 0)
+        #expect(try store.file(id) != nil)
+    }
+    #endif
+
     /// A folder whose files are still there but all left out by its rule is not a move: its rows go, as asked.
     @Test func aRuleThatLeavesOutEveryTypeStillRemovesTheRows() throws {
         let page = try write("A/page.html")

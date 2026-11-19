@@ -404,8 +404,18 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
   скорости не запускается, когда замер уже есть, и строка «Checking this computer's speed…» — только при реальном
   замере; остаток длинных книг читается только в простое (`--rest-when-idle 300`, пауза 2× шага после каждого);
   helper изменился, нужен полный zip;
-- на 2026-11-17: `python .build/swift_test.py` — 226 тестов, 225 прошли (тот же symlink-тест), `cargo test --locked`
-  — 79, все прошли;
+- 0.1.17 выпущен 2026-11-19: закрыты подтверждённые находки стороннего аудита (Gemini + проверка Claude, оба сверены с
+  кодом): счётчики `scanned_pages`/`ocr_chars` в PDF пишутся числами, а не текстом `(0 + N)`; картинка, удалённая или
+  перемещённая во время OCR, не роняет транзакцию своего пакета (проверка `current` в `pictureText`); веб-вью больше не
+  может слать `file_op` в обход `file_operation`; перенос индекса подвешивает поисковый helper (`SearchService::suspend`),
+  чтобы запрос, проскочивший флаг, не открыл старый индекс; Re-pick/Forget в Settings больше не блокируют главный поток
+  (async + `spawn_blocking` под `index_move`), а Re-pick откатывает индекс, если настройки не сохранились; шаги уже
+  завершённого длинного файла не читаются впустую; Drop-guard для `RUNNING` и защита worker'а от пустого батча. Не
+  меняли (проверено): длинные пути (`std::fs` сам добавляет `\\?\`), `Names::taken`'s `path.exists()`, ожидание рендеров
+  при выходе, регистр в `vanished`/`emptyRoots` (строки с другим регистром не попадают в `files(under:)` — инвариант
+  записан комментарием и тестом); helper изменился, нужен полный zip;
+- на 2026-11-19: `python .build/swift_test.py` — 230 тестов, 229 прошли (тот же symlink-тест), `cargo test --locked`
+  — 81, все прошли;
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
   (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` удалён. Default branch —
   `file-operations`; сборки только вручную (`scripts/package-portable.sh`).

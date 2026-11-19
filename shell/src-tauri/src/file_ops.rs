@@ -115,8 +115,16 @@ pub fn run(app: &AppHandle, shell: &crate::Shell, request: Value) -> Result<Valu
     {
         let flag = Arc::new(AtomicBool::new(false));
         running().lock().unwrap().insert(request.id, flag.clone());
+        // The entry goes however `operate` ends: a panic (a bug, not a file problem) must not leave a cancel flag in
+        // the map for an id nothing will ask about again.
+        struct RunningEntry(u64);
+        impl Drop for RunningEntry {
+            fn drop(&mut self) {
+                running().lock().unwrap_or_else(|error| error.into_inner()).remove(&self.0);
+            }
+        }
+        let _entry = RunningEntry(request.id);
         let report = operate(app, shell, &request, destination.as_deref(), &flag);
-        running().lock().unwrap().remove(&request.id);
         Ok(report)
     }
 }

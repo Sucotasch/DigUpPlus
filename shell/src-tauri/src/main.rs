@@ -505,12 +505,17 @@ fn inside(path: &str, folder: &str) -> bool {
 
 // MARK: Commands
 
+/// What the window may ask the search service: reading and rendering, never a write to the index. File changes go
+/// through `file_operation`, which takes `index_move` and tells the watcher its echo; `file_op` here was a second,
+/// unguarded way to move or delete rows.
+const ASK_OPS: [&str; 8] = ["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries",
+                            "visual_groups"];
+
 /// The panel's and the window's questions for `search-service`.
 #[tauri::command]
 async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, String> {
     let op = request.get("op").and_then(Value::as_str).unwrap_or_default();
-    if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries", "file_op", "visual_groups"]
-        .contains(&op) {
+    if !ASK_OPS.contains(&op) {
         return Err(format!("not a question the panel asks: {op}"));
     }
     if shell.index_busy.load(Ordering::SeqCst) {
@@ -766,42 +771,86 @@ async fn repick_preview(app: AppHandle, window: tauri::WebviewWindow, shell: Sta
     if shell.folders().iter().any(|path| models::same_path(Path::new(path), &to)) {
         return Err("That folder is already searched. Stop searching it first, then re-pick this one.".into());
     }
-    shell.index.stop();
-    let counts = run_index_command(&shell, "repick", &[
-        "--from".to_string(), from.display().to_string(), "--to".to_string(), to.display().to_string()])?;
-    Ok(json!({"target": to.display().to_string(), "rows": counts["rows"], "matched": counts["matched"],
-              "changed": counts["changed"], "missing": counts["missing"]}))
+    // Reading the rows to say what the move would mean: off the UI thread, and never beside a move.
+    tauri::async_runtime::spawn_blocking(move || {
+        if shell.index_busy.load(Ordering::SeqCst) {
+            return Err("The index is being moved; try again in a moment.".to_string());
+        }
+        let _moving = shell.index_move.lock().unwrap_or_else(|error| error.into_inner());
+        shell.index.stop();
+        let counts = run_index_command(&shell, "repick", &[
+            "--from".to_string(), from.display().to_string(), "--to".to_string(), to.display().to_string()])?;
+        Ok(json!({"target": to.display().to_string(), "rows": counts["rows"], "matched": counts["matched"],
+                  "changed": counts["changed"], "missing": counts["missing"]}))
+    })
+    .await
+    .map_err(|error| format!("the re-pick check stopped: {error}"))?
 }
 
 /// Settings → Folders → Re-pick, after the confirmation: the rows move to the new place (files that didn't change keep
 /// their vectors), the settings' paths and rules follow, and the folder is synced there.
 #[tauri::command]
-fn repick_apply(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, target: String) -> Result<Value, String> {
-    let from = chosen_folder(&shell, &folder)?;
-    let to = PathBuf::from(&target);
+async fn repick_apply(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String, target: String)
+    -> Result<Value, String> {
+    let shell = shell.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || repoint_folder(&app, &shell, &folder, &target))
+        .await
+        .map_err(|error| format!("the re-pick stopped: {error}"))?
+}
+
+fn repoint_folder(app: &AppHandle, shell: &Arc<Shell>, folder: &str, target: &str) -> Result<Value, String> {
+    let from = chosen_folder(shell, folder)?;
+    let to = PathBuf::from(target);
     if !to.is_dir() {
         return Err("That path isn't a folder.".into());
     }
-    let shell = shell.inner().clone();
-    shell.index.stop();
-    let counts = run_index_command(&shell, "repick", &[
-        "--from".to_string(), from.display().to_string(), "--to".to_string(), to.display().to_string(),
-        "--apply".to_string()])?;
-    {
-        let (from_text, to_text) = (from.display().to_string(), to.display().to_string());
-        let mut settings = shell.settings.lock().unwrap();
-        repoint_list(&mut settings.folders, &from_text, &to_text);
-        repoint_list(&mut settings.skipped, &from_text, &to_text);
-        repoint_list(&mut settings.code_folders, &from_text, &to_text);
-        repoint_list(&mut settings.code_skipped, &from_text, &to_text);
-        let mut rules = std::collections::BTreeMap::new();
-        for (root, rule) in std::mem::take(&mut settings.root_rules) {
-            rules.insert(repoint_path(&root, &from_text, &to_text).unwrap_or(root), rule);
+    // The stop, the rows and the settings file are one step under the move lock. The notifications that follow
+    // (`apply_folders` stops the watcher and joins its thread) must come after it: a watcher thread waiting for this
+    // lock while we wait for it to end is a deadlock.
+    let counts = {
+        if shell.index_busy.load(Ordering::SeqCst) {
+            return Err("The index is being moved; try again in a moment.".into());
         }
-        settings.root_rules = rules;
-        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
-    }
-    apply_folders(&app);
+        let _moving = shell.index_move.lock().unwrap_or_else(|error| error.into_inner());
+        if shell.index_busy.swap(true, Ordering::SeqCst) {
+            return Err("The index is being moved; try again in a moment.".into());
+        }
+        let _busy = Busy(&shell.index_busy);
+        shell.index.stop();
+        let (from_text, to_text) = (from.display().to_string(), to.display().to_string());
+        let counts = run_index_command(shell, "repick", &[
+            "--from".to_string(), from_text.clone(), "--to".to_string(), to_text.clone(),
+            "--apply".to_string()])?;
+        let previous = shell.settings.lock().unwrap().clone();
+        let saved = {
+            let mut settings = shell.settings.lock().unwrap();
+            repoint_list(&mut settings.folders, &from_text, &to_text);
+            repoint_list(&mut settings.skipped, &from_text, &to_text);
+            repoint_list(&mut settings.code_folders, &from_text, &to_text);
+            repoint_list(&mut settings.code_skipped, &from_text, &to_text);
+            let mut rules = std::collections::BTreeMap::new();
+            for (root, rule) in std::mem::take(&mut settings.root_rules) {
+                rules.insert(repoint_path(&root, &from_text, &to_text).unwrap_or(root), rule);
+            }
+            settings.root_rules = rules;
+            settings.save(&shell.settings_path)
+        };
+        if let Err(error) = saved {
+            // The rows already point at the new place: put the file back the way it was, and say what happened rather
+            // than leaving the index and the settings describing different folders.
+            *shell.settings.lock().unwrap() = previous;
+            let put_back = run_index_command(shell, "repick", &[
+                "--from".to_string(), to_text, "--to".to_string(), from_text, "--apply".to_string()]).is_ok();
+            return Err(if put_back {
+                format!("the settings couldn't be saved ({error}); the index was put back where it was")
+            } else {
+                format!("the settings couldn't be saved ({error}), and the index already points at the new folder: \
+                         choose it again in Settings → Storage")
+            });
+        }
+        counts
+    };
+    apply_folders(app);
     // The rows are at the new place: an unchanged file keeps its vectors, a changed one is read again, a file that's
     // gone drops out, and new files are indexed.
     let _ = shell.index.sync_paths(&shell.index_launch(), &[to]);
@@ -836,11 +885,25 @@ fn list_subfolders(shell: State<'_, Arc<Shell>>, folder: String) -> Result<Vec<S
 /// Settings → Folders, for a folder that is there but empty: its rows are the files that were deleted, and they leave the
 /// index while the folder stays searched.
 #[tauri::command]
-fn forget_folder(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String) -> Result<Value, String> {
-    let path = chosen_folder(&shell, &folder)?;
+async fn forget_folder(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String) -> Result<Value, String> {
     let shell = shell.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || forget_rows(&app, &shell, &folder))
+        .await
+        .map_err(|error| format!("forgetting the folder stopped: {error}"))?
+}
+
+fn forget_rows(app: &AppHandle, shell: &Arc<Shell>, folder: &str) -> Result<Value, String> {
+    let path = chosen_folder(shell, folder)?;
+    if shell.index_busy.load(Ordering::SeqCst) {
+        return Err("The index is being moved; try again in a moment.".into());
+    }
+    let _moving = shell.index_move.lock().unwrap_or_else(|error| error.into_inner());
+    if shell.index_busy.swap(true, Ordering::SeqCst) {
+        return Err("The index is being moved; try again in a moment.".into());
+    }
+    let _busy = Busy(&shell.index_busy);
     shell.index.stop();
-    let answer = run_index_command(&shell, "forget", &[path.display().to_string()])?;
+    let answer = run_index_command(shell, "forget", &[path.display().to_string()])?;
     // The folder is still chosen: a sync now finds it empty with no rows, so the “moved?” question goes.
     let _ = shell.index.sync_paths(&shell.index_launch(), &[path]);
     // The search helper still holds the rows that just left: reload it, as a file operation does.
@@ -911,7 +974,8 @@ fn run_index_command(shell: &Shell, command: &str, args: &[String]) -> Result<Va
 /// A person asked for work now: the model has to be in (the helper embeds what it reads), and indexing can't be paused
 /// or outside its hours. Unlike `may_index`, an indexing pass already running is fine — the helper queues this after it.
 fn may_read_folders(shell: &Shell) -> bool {
-    shell.model_ready() && !shell.measuring.load(Ordering::SeqCst) && !shell.quitting.load(Ordering::SeqCst) && {
+    shell.model_ready() && !shell.measuring.load(Ordering::SeqCst) && !shell.quitting.load(Ordering::SeqCst)
+        && !shell.index_busy.load(Ordering::SeqCst) && {
         let status = shell.status.lock().unwrap();
         !status.paused && status.held_until.is_none()
     }
@@ -2248,7 +2312,7 @@ fn move_index_folder(app: &AppHandle, shell: &Arc<Shell>, target: PathBuf) -> Re
     *shell.code_watcher.lock().unwrap() = None;
     restore.0 = Some(app.clone());
     shell.index.stop();
-    shell.search.stop();
+    let _suspended = shell.search.suspend();
     let had_index = !index_folder::data_files(&current).is_empty();
     // The destination stays "empty" while the copy runs (the files land under temporary names): the settings page
     // gets the running total, so the move doesn't look stuck on a big index.
@@ -2535,7 +2599,7 @@ fn use_index_folder(app: &AppHandle, shell: &Arc<Shell>, folder: &str) -> Result
     // No waiting for the speed check: this only writes a path, and it may run for minutes (it waits for folder
     // estimates and for the machine to be quiet). The helpers are stopped here; the next ones read the new path.
     shell.index.stop();
-    shell.search.stop();
+    let _suspended = shell.search.suspend();
     let saved = {
         let mut settings = shell.settings.lock().unwrap();
         let previous = settings.index_folder.clone();
@@ -3901,6 +3965,14 @@ fn reload(app: &AppHandle, now: bool) {
 #[cfg(test)]
 mod tests {
     use crate::settings::{RootRule, Settings};
+
+    #[test]
+    fn the_window_cannot_move_index_rows_itself() {
+        // File changes go through `file_operation`: it holds `index_move` and suppresses the watcher's echo.
+        assert!(!crate::ASK_OPS.contains(&"file_op"));
+        assert!(crate::ASK_OPS.contains(&"search"));
+        assert!(crate::ASK_OPS.contains(&"render"));
+    }
 
     #[test]
     fn a_settled_speed_check_is_not_asked_again() {

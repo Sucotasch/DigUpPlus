@@ -9,7 +9,7 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -111,6 +111,9 @@ pub struct SearchService {
     running: Arc<Mutex<Option<Searching>>>,
     next_id: AtomicU64,
     on_event: EventSink,
+    /// An index move closed the helper (`suspend`): no process starts until `resume`, or a request that passed the
+    /// shell's flag check would open the old index while it's being copied.
+    suspended: AtomicBool,
 }
 
 struct Searching {
@@ -121,6 +124,16 @@ struct Searching {
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
 }
 
+/// Holds the search service closed (`suspend`) until it goes: an error path out of an index move must not leave the
+/// app without search.
+pub struct Suspended<'a>(&'a SearchService);
+
+impl Drop for Suspended<'_> {
+    fn drop(&mut self) {
+        self.0.resume();
+    }
+}
+
 impl SearchService {
     pub fn new(launch: Launch, on_event: impl Fn(Value) + Send + Sync + 'static) -> SearchService {
         SearchService {
@@ -128,12 +141,26 @@ impl SearchService {
             running: Arc::default(),
             next_id: AtomicU64::new(1),
             on_event: Arc::new(on_event),
+            suspended: AtomicBool::new(false),
         }
+    }
+
+    /// No search process may start until the returned guard drops: the index is being copied, and a request that
+    /// passed the shell's flag check must not open the old one mid-copy. The running process is stopped here.
+    pub fn suspend(&self) -> Suspended<'_> {
+        self.suspended.store(true, Ordering::SeqCst);
+        self.stop();
+        Suspended(self)
+    }
+
+    pub fn resume(&self) {
+        self.suspended.store(false, Ordering::SeqCst);
     }
 
     /// The next search process starts with this launch (changed folders, skipped types or rules): the one running now
     /// keeps going and is told by a `folders` request, so a warm encoder isn't thrown away for a settings change.
     pub fn set_next_launch(&self, launch: Launch) {
+        self.resume();
         *self.launch.lock().unwrap() = launch;
     }
 
@@ -142,6 +169,7 @@ impl SearchService {
     pub fn set_launch(&self, launch: Launch) {
         // The running process is taken while the launch is still held: a request can't slip in with the old
         // environment between the two.
+        self.resume();
         let mut current = self.launch.lock().unwrap();
         *current = launch;
         let running = self.running.lock().unwrap().take();
@@ -174,6 +202,9 @@ impl SearchService {
         // with the old environment and the new folder's process slot.
         let launch = self.launch.lock().unwrap();
         let mut running = self.running.lock().unwrap();
+        if self.suspended.load(Ordering::SeqCst) {
+            return Err("The index is being moved; search works again in a moment.".to_string());
+        }
         if let Some(searching) = running.as_mut() {
             if !matches!(searching.child.try_wait(), Ok(None)) {
                 *running = None;
@@ -426,6 +457,18 @@ mod tests {
         assert_eq!(service.env(), vec![("DIGUP_MODELS".into(), "C:/old".into())]);
         service.set_launch(launch("G:/Ai/DigUp/Models/embeddinggemma-2"));
         assert_eq!(service.env(), vec![("DIGUP_MODELS".into(), "G:/Ai/DigUp/Models/embeddinggemma-2".into())]);
+    }
+
+    #[test]
+    fn a_suspended_search_service_starts_no_process_until_a_new_launch() {
+        let service = SearchService::new(launch("C:/old"), |_| {});
+        let held = service.suspend();
+        let error = service.send(1, &json!({"op": "status"})).unwrap_err();
+        assert!(error.contains("being moved"), "{error}");
+        // The move finished (its launch reaches the next process): the service opens again.
+        service.set_launch(launch("C:/new"));
+        drop(held);
+        assert!(!service.suspended.load(Ordering::SeqCst));
     }
 
     /// A folder (or skipped type, or rule) added while the app runs must reach the helper that starts after the running

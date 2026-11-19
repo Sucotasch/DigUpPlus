@@ -80,6 +80,69 @@ import Testing
         #expect(embedder.texts == 120)                    // every page embedded once
     }
 
+    @Test func theScannedPageCounterIsANumber() throws {
+        // It was written as the text "(0 + 0)": the sum sat outside the interpolation, so nothing could parse it and
+        // each later step read it back as 0.
+        let pdf = try makePDF("Guide.pdf", pages: 70)
+        let store = try store()
+        let indexer = try indexer(store, FakeEmbedder())
+        _ = try indexer.sync([files])
+        _ = try indexer.run()
+        #expect(try state(store, pdf.path).info["scanned_pages"] == "0")
+        try indexer.finishLongFiles()
+        #expect(try state(store, pdf.path).info["scanned_pages"] == "0")
+    }
+
+    @Test func aPictureDeletedWhileItsWordsAreReadDoesNotFailTheBatch() throws {
+        // The search helper's file_op deletes a picture while the indexing helper reads its words (two processes).
+        // Its segment insert would break the foreign key and roll back the whole batch's transaction, marking every
+        // picture in it failed; the words of the others would go with it.
+        let store = try store()
+        let indexer = try indexer(store, FakeEmbedder())
+        for number in 1...3 {
+            _ = try store.insert(Candidate(path: "/shots/picture-\(number).png", kind: .screenshot, size: 1, mtime: 1,
+                                           inode: UInt64(number), device: 1, ocrPictures: .all,
+                                           looksPictures: false))
+        }
+        let batch = try store.pending(limit: nil)
+        try store.delete(batch[1].id)
+        let current = try batch.map { try indexer.stillIndexed($0) }
+        #expect(current == [true, false, true])
+        var results = [(String, String?)](repeating: ("failed", nil), count: batch.count)
+        for slot in batch.indices where !current[slot] { results[slot] = ("skipped", "moved or deleted") }
+        try indexer.pictureText(batch, texts: ["first words", "second words", "third words"], current: current,
+                                results: &results)
+        #expect(results.map(\.0) == ["done", "skipped", "done"])
+        var texts: [(Int64, String)] = []
+        try store.db.query("SELECT file, kind FROM segments WHERE kind = 'ocr' ORDER BY file") {
+            texts.append(($0.int(0), $0.text(1) ?? ""))
+        }
+        #expect(texts.map(\.0) == [batch[0].id, batch[2].id])   // nothing for the row that's gone
+    }
+
+    @Test func stepsOfAFinishedFileAreNotRead() throws {
+        // A document whose stored end says more than it holds: the first step settles it, and the steps after it must
+        // not be read at all (their reading and OCR would be thrown away by `skip` after the wait).
+        try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
+        let url = files.appendingPathComponent("notes.txt")
+        try Data("The river runs by the garden and the window looks over it.\n".utf8).write(to: url)
+        let store = try store()
+        let indexer = try indexer(store, FakeEmbedder())
+        _ = try indexer.sync([files])
+        _ = try indexer.run()
+        try store.db.run("UPDATE files SET state = 'partial', info = ? WHERE path = ?",
+                         [.text(#"{"read_to":"40","read_end":"1000"}"#), .text(url.path)])
+        var prepared = 0
+        indexer.onPrepare = { _ in prepared += 1 }
+        var steps = 0
+        try indexer.finishLongFiles(onStep: { _ in steps += 1 })
+        // 24 steps were queued; the one in flight when the file finishes is prepared anyway (the overlap), and no
+        // step after it is read.
+        #expect(prepared <= 2)
+        #expect(steps == 1)
+        #expect(try state(store, url.path).state != "partial")
+    }
+
     @Test func stoppingBetweenStepsLosesNothing() throws {
         let pdf = try makePDF("Book.pdf", pages: 100)
         let store = try store()

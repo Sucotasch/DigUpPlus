@@ -57,6 +57,8 @@ public final class Indexer {
     /// pays only when the model work runs on several workers (`WorkerPool`): one thread then reads no faster than they
     /// embed, and the workers would sit idle between batches.
     public var prepareAhead = 1
+    /// Called before a job is prepared: the test that a finished file's later steps aren't read.
+    var onPrepare: ((Job) -> Void)?
     private var measured = MeasuredCosts()
 
     public init(store: IndexStore, options: IndexOptions, makeEmbedder: @escaping () throws -> any Embedder) throws {
@@ -152,7 +154,9 @@ public final class Indexer {
                 && FolderSelection.isEmptyFolder(root)
                 && existing.contains { $0.path.hasPrefix(root.hasSuffix("/") ? root : root + "/") }
         }
-        let emptyPrefixes = emptyRoots.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+        // `existing` comes from `files(under:)`, whose ranges compare paths byte for byte, so every row here was
+        // written under this root's own spelling: a byte prefix is exact for it. A row spelled with another case (a
+        // destination from the window) isn't selected at all and is fixed by the inode branch above on this same pass.
         summary.emptyRoots = emptyRoots
         try store.db.transaction {
             for file in crawl.candidates {
@@ -197,7 +201,7 @@ public final class Indexer {
                 .filter { !FileManager.default.fileExists(atPath: $0) }.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
             for row in existing where !seen.contains(row.path) && !movedFrom.contains(row.path)
                 && !vanished.contains(where: { row.path.hasPrefix($0) })
-                && !emptyPrefixes.contains(where: { row.path.hasPrefix($0) }) {
+                && !emptyRoots.contains(where: { row.path.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") }) {
                 try store.delete(row.id)
                 summary.removed += 1
             }
@@ -305,11 +309,13 @@ public final class Indexer {
     private func process(_ jobs: [Job], shouldStop: () -> Bool,
                          committed: (Int, Job, [(String, String?)], Double) -> Void,
                          skip: (Job) -> Bool = { _ in false }) throws {
-        var ahead: [(pictures: Bool, batch: PendingBatch)] = []
+        var ahead: [(pictures: Bool, batch: PendingBatch?)] = []
         var next = 0   // the first job not prepared yet
         // A job prepared for a run that stopped early: throw its files away (waiting: its reading is under way).
         defer {
-            for item in ahead { try? FileManager.default.removeItem(at: item.batch.wait().folder) }
+            for item in ahead {
+                if let batch = item.batch { try? FileManager.default.removeItem(at: batch.wait().folder) }
+            }
             if let costsFolder, !measured.tallies.isEmpty {
                 MeasuredCosts.merge(measured, into: costsFolder)
                 measured = MeasuredCosts()
@@ -321,9 +327,17 @@ public final class Indexer {
             let depth = max(1, prepareAhead)
             while ahead.count < depth, next < jobs.count {
                 let upcoming = jobs[next]
+                // A step of a file that finished earlier (an error, or its end reached before the steps said) is
+                // dropped before anything reads it: rendering and OCRing pages nobody will store is wasted work.
+                if skip(upcoming) {
+                    ahead.append((false, nil))
+                    next += 1
+                    continue
+                }
                 let kind = upcoming.files[0].kind
                 let pictures = kind == .image || kind == .screenshot
-                if !pictures, ahead.contains(where: { !$0.pictures }) { break }
+                if !pictures, ahead.contains(where: { $0.batch != nil && !$0.pictures }) { break }
+                onPrepare?(upcoming)
                 ahead.append((pictures, prepare(upcoming)))
                 next += 1
             }
@@ -332,7 +346,8 @@ public final class Indexer {
             guard !shouldStop() else { break }
             fill()
             let started = Date()
-            let prepared = ahead.removeFirst().batch.wait()
+            guard let batch = ahead.removeFirst().batch else { continue }   // skip dropped it: nothing was read
+            let prepared = batch.wait()
             fill()   // the next batches are read while this one is embedded
             defer { try? FileManager.default.removeItem(at: prepared.folder) }
             guard !skip(job) else { continue }
@@ -673,7 +688,7 @@ public final class Indexer {
             case .images(let screenshot, let ready):
                 try images(batch, screenshot: screenshot, ready: ready.filter { current[$0.slot] }, results: &results)
             case .pictureText(let texts):
-                try pictureText(batch, texts: texts, results: &results)
+                try pictureText(batch, texts: texts, current: current, results: &results)
             case .pdf(let pages, let read, let total, let title):
                 guard current[0] else { break }
                 results[0] = try pdf(batch[0], pages: pages, read: read, total: total, title: title, later: later)
@@ -729,10 +744,14 @@ public final class Indexer {
 
     /// Pictures whose folder keeps their words and not their look: the `.ocr` segment only, no image vector and no
     /// look-alike fingerprint. A picture with no words at all is skipped (its name is still searchable).
-    private func pictureText(_ batch: [FileRecord], texts: [String],
+    /// Words-only pictures. Internal rather than private for the test that deletes one mid-batch.
+    func pictureText(_ batch: [FileRecord], texts: [String], current: [Bool],
                              results: inout [(String, String?)]) throws {
         try store.db.transaction {
-            for (slot, file) in batch.enumerated() {
+            // A file moved or deleted while its words were being read: nothing is written for it (a segment for a row
+            // that's gone breaks the foreign key, and the whole batch's transaction with it), and its "skipped" result
+            // from `commit` stands.
+            for (slot, file) in batch.enumerated() where current[slot] {
                 let text = texts[slot]
                 guard !text.isEmpty else {
                     try store.finish(file.id, state: "skipped", detail: "no text on it")
@@ -842,9 +861,12 @@ public final class Indexer {
             }
             var info = later ? try store.info(of: file.id) : [:]
             info["pages"] = "\(total)"
-            info["scanned_pages"] = "(\(info["scanned_pages"].flatMap(Int.init) ?? 0) + imagePages.count)"
+            let scannedPages = (info["scanned_pages"].flatMap(Int.init) ?? 0) + imagePages.count
+            info["scanned_pages"] = "\(scannedPages)"
             if !storesDocument {
-                info["ocr_chars"] = "(\(info["ocr_chars"].flatMap(Int.init) ?? 0) + ocrPages.reduce(0) { $0 + $1.text.count })"
+                let ocrCharacters = (info["ocr_chars"].flatMap(Int.init) ?? 0)
+                    + ocrPages.reduce(0) { $0 + $1.text.count }
+                info["ocr_chars"] = "\(ocrCharacters)"
             }
             info["read_to"] = unread ? "\(read.upperBound)" : nil
             info["read_end"] = unread ? "\(end)" : nil
