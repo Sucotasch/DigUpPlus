@@ -2,7 +2,8 @@
 
 **Дата:** 2026-11-04
 
-**Статус:** актуально для ветки `file-operations` (форк `Sucotasch/DigUpPlus`, upstream `ARahim3/DigUp`).
+**Статус:** актуально для ветки `main` (форк `Sucotasch/DigUpPlus`, upstream `ARahim3/DigUp`; чистый снимок
+upstream лежит в `upstream-main`).
 
 **Зачем этот файл:** чтобы человек или агент, открывший репозиторий без контекста, мог собрать, протестировать и
 упаковать проект на этой машине, не выясняя заново пути, флаги и причины прошлых решений. Здесь только то, что
@@ -364,7 +365,7 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
 
 ## 9. Состояние ветки и что дальше
 
-Ветка `file-operations`, база — `main` (upstream/main `d6f1f48`). Перед коммитом 2026-10-27 origin был на
+Ветка `file-operations` (сегодня это `main`), база — upstream/main `d6f1f48`. Перед коммитом 2026-10-27 origin был на
 `ceeb001 Load search results a page at a time`; рабочее дерево содержало незакоммиченные слои Images, counts и
 починку кэша превью — они вошли в коммит вместе с этим руководством.
 
@@ -435,8 +436,9 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
 - на 2026-11-19: `python .build/swift_test.py` — 230 тестов, 229 прошли (тот же symlink-тест), `cargo test --locked`
   — 81, все прошли;
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
-  (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` удалён. Default branch —
-  `file-operations`; сборки только вручную (`scripts/package-portable.sh`).
+  (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` в нашей ветке нет. Default
+  branch — `main` (до 2026-11-19 проект жил в `file-operations`, та же история; чистый upstream — в `upstream-main`,
+  кнопку **Sync fork** у форка не нажимать); сборки только вручную (`scripts/package-portable.sh`).
 
 Проверено на 2026-10-27 (снимок того дня, числа в нём исторические):
 
