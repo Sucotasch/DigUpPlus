@@ -191,6 +191,12 @@ scripts/package-portable.sh        # → shell/src-tauri/target/release/DigUpPlu
 `%APPDATA%`/`%LOCALAPPDATA%`; `--data <папка>` или `DIGUP_DATA` указывают другое место. Без `portable.txt` (установщик)
 всё по-прежнему в `%APPDATA%\com.sucotasch.digupplus` и `%LOCALAPPDATA%\DigUpPlus`.
 
+**В этой папке должен остаться один exe.** Любая `cargo build --release` (и `tauri build`) кладёт туда же
+`digup-shell.exe`, `digup_shell.pdb` и `digup-shell.d` — рядом с `DigUpPlus.exe`; скрипт пакета их удаляет, ручная
+сборка сюда — нет. Собирать в `target/release` руками нельзя, и после такой сборки эти три файла надо убрать: иначе в
+папке два exe, и легко запустить устаревший. Живые проверки (гейты G26, G30) запускают уже собранные
+`DigUpPlus.exe` и `helper\digup.exe` и ничего не собирают.
+
 Скрипт печатает SHA-256 helper'а (`HELPER SHA256: …`): если в новом релизе helper побитово тот же, можно выложить
 только `DigUpPlus.exe` и `portable.txt` (и `THIRD-PARTY-NOTICES.txt`), без 400 МБ helper'а. `SHELL_ONLY=1
 scripts/package-portable.sh` дополнительно собирает `-shell-only.zip` из этих трёх файлов.
