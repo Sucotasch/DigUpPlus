@@ -40,4 +40,16 @@ import Testing
         try await VideoExtractor.frame(at: seconds, of: Self.shots, pixels: 320, to: out)
         #expect(try ImageTests.decode(out.path).quadrants[0] == color)
     }
+
+    /// Saving a frame asks for the source's own size: 0 takes it as it is (this clip is 320×192), never upscales, and
+    /// a positive size keeps the preview's scaling.
+    @Test func aFrameCanBeTakenAtItsOwnSize() async throws {
+        let full = folder.appendingPathComponent("full.jpg")
+        try await VideoExtractor.frame(at: 5, of: Self.shots, pixels: 0, to: full)
+        let shown = try ImageTests.decode(full.path)
+        #expect(shown.width == 320 && shown.height == 192)
+        let small = folder.appendingPathComponent("small.jpg")
+        try await VideoExtractor.frame(at: 5, of: Self.shots, pixels: 200, to: small)
+        #expect(try ImageTests.decode(small.path).width == 200)
+    }
 }

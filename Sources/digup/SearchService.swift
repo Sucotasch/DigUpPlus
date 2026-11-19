@@ -36,11 +36,13 @@ import Foundation
 ///   {"op":"text","path":…,"loc":part}         → {"text":…}: a document's passage by its number (the preview's pages)
 ///   {"op":"text","path":…,"ocr":true[,"loc":n]} → {"text":…}: the words OCR read on a picture (or on a scanned
 ///                                               page `loc`, from 1), for the preview's recognized text
-///   {"op":"render","path":…,"kind":"pdf|video|image","loc":n,"pixels":n} → {"image":path}: a JPEG for a preview or a
-///                                               thumbnail (a PDF's page `loc`, a video's frame at `loc` seconds, or a
-///                                               picture a web view can't show, such as HEIC), made beside the requests
-///                                               (typing never waits on one) and kept in <index>/previews until the
-///                                               next start
+///   {"op":"render","path":…,"kind":"pdf|video|image","loc":n,"pixels":n,"full":bool,"data":bool} → {"image":path,
+///                                               "data":base64?}: a JPEG for a preview or a thumbnail (a PDF's page
+///                                               `loc`, a video's frame at `loc` seconds, or a picture a web view can't
+///                                               show, such as HEIC), made beside the requests (typing never waits on
+///                                               one) and kept in <index>/previews until the next start; `full` keeps a
+///                                               video frame at the file's own size (saving it), and ignores `pixels`;
+///                                               `data` adds the JPEG's bytes inline (a copy to the clipboard)
 ///   {"op":"visual_groups","paths":[…],"difference":6} → {"groups":[[path…],…],"computed":n,"pending":n}: Find similar's
 ///                                               look-alike groups (Phash256; `difference` is a percentage of the 256
 ///                                               bits). A few missing fingerprints are computed per call and kept.
@@ -532,7 +534,9 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         guard let path = request["path"] as? String else { throw CLIError("which file?") }
         let kind = request["kind"] as? String ?? "image"
         let loc = (request["loc"] as? NSNumber)?.doubleValue
-        let pixels = min(max(request["pixels"] as? Int ?? 1024, 32), 2048)
+        // `full` asks for the picture at its own size (saving a video frame): no preview cap.
+        let full = request["full"] as? Bool == true
+        let pixels = full ? 0 : min(max(request["pixels"] as? Int ?? 1024, 32), 2048)
         let modified = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)?
             .timeIntervalSince1970 ?? 0
         let key = "\(path)|\(modified)|\(kind)|\(loc ?? -1)|\(pixels)"
@@ -544,10 +548,21 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                     renderedOrder.append(key)
                 }
             }
-            return ["image": done]
+            var reply: [String: Any] = ["image": done]
+            if request["data"] as? Bool == true, let bytes = try? Data(contentsOf: URL(fileURLWithPath: done)) {
+                reply["data"] = bytes.base64EncodedString()
+            }
+            return reply
         }
         let image = try PreviewImages.make(PreviewImages.Kind(rawValue: kind) ?? .image, of: path, at: loc,
                                            pixels: pixels, in: previews)
+        // `data` hands the same JPEG back inline (base64): the web view can't fetch the asset URL (another origin)
+        // nor export a canvas it drew it into, and a copy to the clipboard needs the bytes themselves.
+        let inline = request["data"] as? Bool == true
+        var reply: [String: Any] = ["image": image]
+        if inline, let bytes = try? Data(contentsOf: URL(fileURLWithPath: image)) {
+            reply["data"] = bytes.base64EncodedString()
+        }
         renderLock.withLock {
             rendered[key] = image
             renderedOrder.removeAll { $0 == key }
@@ -559,7 +574,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                 }
             }
         }
-        return ["image": image]
+        return reply
     }
 
     // MARK: The query encoder

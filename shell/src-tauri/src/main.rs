@@ -1115,6 +1115,51 @@ fn copy_text(window: tauri::WebviewWindow, text: String) -> Result<(), String> {
     clipboard::copy_text(&window, &text).inspect_err(|error| eprintln!("digup-shell: can't copy the text: {error}"))
 }
 
+/// The name a saved frame gets: the video's own, the moment, and `.jpg` — `Name — 00-12-34.jpg`. Characters Windows
+/// doesn't allow in a name become '-' (a name is what a person sees, not a path), and trailing dots and spaces go.
+fn frame_name(path: &Path, at: f64) -> String {
+    let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("frame");
+    let clean: String = stem
+        .chars()
+        .map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '-' } else { c })
+        .collect();
+    let clean = clean.trim_matches([' ', '.']);
+    let clean = if clean.is_empty() { "frame" } else { clean };
+    let total = at.max(0.0).trunc() as i64;
+    let (hours, minutes, seconds) = (total / 3600, (total % 3600) / 60, total % 60);
+    format!("{clean} — {hours:02}-{minutes:02}-{seconds:02}.jpg")
+}
+
+/// Save Frame…: the helper renders the frame at `loc` at the video's own size (not the preview's 2048 px), and the
+/// chosen path gets a copy. The dialog starts in the folder the last frame went to (`default_dir`, remembered by the
+/// window), else beside the video.
+#[tauri::command]
+async fn save_frame(window: tauri::WebviewWindow, app: AppHandle, shell: State<'_, Arc<Shell>>, path: String,
+                    loc: f64, kind: String, default_dir: Option<String>) -> Result<Value, String> {
+    let shell = shell.inner().clone();
+    let reply = shell.search.ask(json!({"op": "render", "path": path, "kind": kind, "loc": loc, "full": true}))
+        .await?;
+    let frame = reply["image"].as_str().ok_or("the helper made no frame")?.to_string();
+    let nearby = Path::new(&path).parent().map(|parent| parent.display().to_string());
+    let start = default_dir.filter(|dir| Path::new(dir).is_dir()).or(nearby);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let dialog = app.dialog().file().set_parent(&window).set_title("Save Frame")
+        .set_file_name(frame_name(Path::new(&path), loc)).add_filter("JPEG image", &["jpg"]);
+    let dialog = match start { Some(dir) => dialog.set_directory(dir), None => dialog };
+    dialog.save_file(move |chosen| {
+        let _ = sender.send(chosen);
+    });
+    let Some(chosen) = receiver.await.map_err(|error| error.to_string())? else {
+        return Ok(json!({ "saved": Value::Null }));
+    };
+    let mut target = chosen.into_path().map_err(|error| error.to_string())?;
+    if target.extension().is_none() {
+        target.set_extension("jpg");
+    }
+    std::fs::copy(&frame, &target).map_err(|error| format!("the frame couldn't be written: {error}"))?;
+    Ok(json!({ "saved": target.display().to_string() }))
+}
+
 /// A result dragged out of the window (to a file manager, a mail, a chat) on Windows and the Mac: the system's own drag
 /// of the file, with its thumbnail (`icon`, a picture already rendered) or DigUp's icon under the pointer, started while
 /// the button is down. On Linux the page drags it itself (WebKit's drag starts from the press, as Wayland wants).
@@ -1492,6 +1537,7 @@ fn main() {
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, list_subfolders, set_search_settings, rescan_folder, reread_folder, repick_preview, repick_apply, forget_folder, set_index_hours, mcp_config, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, copy_text,
+            save_frame,
             drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases, pick_totalcmd, set_totalcmd_new_tab, open_in_totalcmd,
             set_lookalike,
@@ -4191,6 +4237,15 @@ mod tests {
         let rule = rules.get("C:\\Photos\\Screenshoot").expect("the subfolder's rule is kept");
         assert_eq!(rule.ocr_pictures.as_deref(), Some("all"));
         assert_eq!(rule.ocr_scans, Some(true));
+    }
+
+    #[test]
+    fn a_frame_name_says_which_moment_and_stays_a_name() {
+        assert_eq!(super::frame_name(std::path::Path::new(r"D:\Films\Yellow car.mkv"), 3725.4),
+                   "Yellow car — 01-02-05.jpg");
+        assert_eq!(super::frame_name(std::path::Path::new("C:/a/b/shot.ts"), 0.0), "shot — 00-00-00.jpg");
+        // A colon, a star and a question mark can't be in a Windows name; trailing spaces and dots go.
+        assert_eq!(super::frame_name(std::path::Path::new("what: a *film? .mp4"), 59.6), "what- a -film- — 00-00-59.jpg");
     }
 
     #[test]

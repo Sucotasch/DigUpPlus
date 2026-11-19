@@ -96,11 +96,13 @@ extension VideoExtractor {
         return (frames, duration, hasAudio)
     }
 
-    /// The frame shown at `seconds`, its long side at most `pixels`, as a JPEG for a preview.
+    /// The frame shown at `seconds`, its long side at most `pixels` (0: the source's own size), as a JPEG for a
+    /// preview.
     static func frame(at seconds: Double, of url: URL, pixels: Int, to out: URL) async throws {
         let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
         generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: pixels, height: pixels)
+        // 0 leaves the generator's maximumSize at .zero, which takes the frame at its own size.
+        if pixels > 0 { generator.maximumSize = CGSize(width: pixels, height: pixels) }
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
         let (image, _) = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600))

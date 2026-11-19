@@ -1396,6 +1396,12 @@ function wire(item, hit) {
       ["Copy", () => invoke("copy_file", { path: hit.path }).catch(failed)],
       [pathTargets.length > 1 ? "Copy Paths" : "Copy Path", () => copyPaths(pathTargets)],
     ];
+    if (hit.kind === "video" && hit.loc != null) {
+      // The moment the result matched: the helper renders it at the video's own size, the shell saves or copies it.
+      items.push(null,
+        [`Save Frame at ${clock(hit.loc)}…`, () => saveFrame(hit.path, "video", hit.loc)],
+        ["Copy Frame", () => copyFrame(hit.path, "video", hit.loc)]);
+    }
     if (MEDIA.has(hit.kind)) items.push(null, ["Find similar", () => findSimilar(hit)]);
     if (fileTargets.length) {
       items.push(null, ["Move To…", () => moveOrCopy("move", fileTargets)],
@@ -2527,7 +2533,12 @@ function previewPicture(hit) {
       video.src = `${fileURL(hit.path)}#t=${hit.loc ?? 0}`;
       video.controls = true;
       video.autoplay = true;
-      box.replaceChildren(video);
+      // The frame on screen, not only the moment that matched: the person can stop anywhere and take this one.
+      const actions = element("div", "media-actions");
+      const save = element("button", "", "Save frame");
+      save.onclick = () => saveFrame(hit.path, "video", video.currentTime);
+      actions.append(save);
+      box.replaceChildren(video, actions);
     };
     frame.append(play);
   }
@@ -2551,6 +2562,44 @@ function copyPlainText(text) {
       area.remove();
     }
   });
+}
+
+/// A video's frame at `at` saved at its own size: the helper renders it without the preview's 2048 px cap, the shell
+/// asks where it goes and copies it. The folder chosen last is remembered (the web view's storage, beside the app's
+/// data), and the next Save Frame starts there.
+async function saveFrame(path, kind, at) {
+  try {
+    const reply = await invoke("save_frame", {
+      path, kind, loc: at, defaultDir: localStorage.getItem("frameFolder") || null,
+    });
+    if (!reply?.saved) return;
+    const folder = reply.saved.replace(/[\\/][^\\/]*$/, "");
+    if (folder) localStorage.setItem("frameFolder", folder);
+    setNote(`Saved ${reply.saved.split(/[\\/]/).pop()}`);
+  } catch (error) {
+    failed(`The frame couldn't be saved: ${error}`);
+  }
+}
+
+/// The frame as a picture on the clipboard, so it pastes into a chat. The helper sends the JPEG's bytes inline (the
+/// asset URL can't be fetched — another origin — and a canvas drawn from it can't be exported), the web view decodes
+/// them into a clean bitmap and puts a PNG on the clipboard; the click that asked is the gesture it wants.
+async function copyFrame(path, kind, at) {
+  try {
+    const reply = await ask({ op: "render", path, kind, loc: at, full: true, data: true });
+    if (!reply.data) throw new Error("the helper sent no frame");
+    const bytes = Uint8Array.from(atob(reply.data), (c) => c.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0);
+    const png = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    setNote("Frame copied");
+  } catch (error) {
+    failed(`The frame couldn't be copied: ${error}`);
+  }
 }
 
 let ocrToken = 0;   // the preview whose words are being fetched: a late reply for an older one is dropped
@@ -2748,6 +2797,14 @@ function bigView(hit) {
     media.controls = true;
     media.autoplay = true;
     view.append(media);
+    if (hit.kind === "video") {
+      // The frame the player is on: seek to the number plate, then save exactly that.
+      const actions = element("div", "media-actions");
+      const save = element("button", "", "Save frame");
+      save.onclick = () => saveFrame(hit.path, "video", media.currentTime);
+      actions.append(save);
+      view.append(actions);
+    }
     return view;
   }
   const what = renderOf(hit);

@@ -7,19 +7,22 @@ public enum PreviewImages {
         case pdf, video, image
     }
 
-    /// Writes the picture into `folder` and returns its path. `loc` is the page (from 1) or the second.
+    /// Writes the picture into `folder` and returns its path. `loc` is the page (from 1) or the second; `pixels` 0
+    /// keeps a video frame at the file's own size (a PDF page is still rasterized at its ceiling: a page has no pixels
+    /// of its own to take).
     public static func make(_ kind: Kind, of path: String, at loc: Double?, pixels: Int, in folder: URL) throws
         -> String {
         let url = URL(fileURLWithPath: path)
         let out = folder.appendingPathComponent(UUID().uuidString + ".jpg")
         switch kind {
         case .pdf:
-            try PDFExtractor.renderPage(Int(loc ?? 1), of: url, pixels: pixels, to: out)
+            try PDFExtractor.renderPage(Int(loc ?? 1), of: url, pixels: pixels > 0 ? pixels : 2048, to: out)
         case .video:
             let seconds = loc ?? 0
             try runBlocking { try await VideoExtractor.frame(at: seconds, of: url, pixels: pixels, to: out) }
         case .image:
-            return try ImageExtractor.prepare(url, maxPixel: pixels, minSide: 0, to: folder, png: false).path
+            return try ImageExtractor.prepare(url, maxPixel: pixels > 0 ? pixels : 4096, minSide: 0, to: folder,
+                                              png: false).path
         }
         return out.path
     }

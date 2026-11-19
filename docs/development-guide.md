@@ -434,8 +434,18 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
   и `json_extract` дало 10 % (0.90 против 1.00 с) и тоже не оправдывает правку. Попутно найдено: `MCPServer.version`
   остался `0.1.16` после выпуска 0.1.17 — агенты видели старую версию; поднят до 0.1.18 (тест
   `theServerVersionIsTheAppsVersion` теперь ловит это в прогоне). helper изменился, нужен полный zip;
-- на 2026-11-19: `python .build/swift_test.py` — 230 тестов, 229 прошли (тот же symlink-тест), `cargo test --locked`
-  — 81, все прошли;
+- 0.1.19 выпущен 2026-11-19: движок llama.cpp поднят `b11461` → `b12540`; собственный патч `no-logits` удалён —
+  upstream #30445/#30461 делает то же (и #30522 чинит их регрессию). Reference-векторы прошли (тест не пропущен),
+  индекс не переиндексируется; на нашем CUDA это **не** бит-в-бит: косинус ≥ 0.99962, top-5 поиска сохраняется,
+  хвост top-20 сдвигается на ~0.02 z. helper изменился, полный zip;
+- 0.1.20 выпущен 2026-11-19: кадр из видео наконец можно **сохранить и скопировать**. Меню результата —
+  `Save Frame at 0:12:34…` (момент совпадения) и `Copy Frame`; в боковой панели и Space-просмотре — `Save frame`
+  для **текущего** кадра после перемотки. Helper отдаёт кадр в нативном размере (`full`) и его байты inline
+  (`data`: asset-URL не `fetch`-ится из-за origin, а canvas из него tainted); `save_frame` — диалог, имя
+  `<видео> — ЧЧ-ММ-СС.jpg`, папка рядом с видео, последняя выбранная запоминается. Замеры и границы —
+  `docs/frame-extraction-plan.md`. helper изменился, полный zip;
+- на 2026-11-19: `python .build/swift_test.py` — 231 тест, 230 прошли (тот же symlink-тест), `cargo test --locked`
+  — 82, все прошли;
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
   (`gh workflow list -R Sucotasch/DigUpPlus --all` → `disabled_manually`); `website.yml` в нашей ветке нет. Default
   branch — `main` (до 2026-11-19 проект жил в `file-operations`, та же история; чистый upstream — в `upstream-main`,
@@ -473,6 +483,11 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
   отклонён: 512d меняет ~1.2 из топ-5 картинок на другие (не look-alike), 256d — ~2 из 5, и оба ломают калибровку
   слоёв Images. Мотивы, цифры и условия возврата — `docs/vector-dimensions-plan.md`; менять размерность только с
   `vectorVersion`/fingerprint и полным реиндексом.
+- **Кадр из видео и asset-URL.** Страница не может `fetch`-ить `convertFileSrc(path)` (другой origin), а canvas,
+  нарисованный из такой картинки, tainted — `toBlob` бросает `SecurityError`. Поэтому `render` с `"data":true`
+  отдаёт байты JPEG inline (base64) для Copy Frame (PNG в буфер), а `"full":true` — кадр в размере файла
+  (`pixels: 0`, без scale) для Save Frame. Не пытайтесь снова через fetch/canvas: см.
+  `docs/frame-extraction-plan.md`, `.build/frame-live2.mjs`.
 - **`Vendor/`**: SHA-256 пины в `scripts/vendor-checksums.json`; версию и хэши менять одним коммитом, хэш не
   брать из самого скачанного файла.
 - **llama.cpp**: пин — `b12540` (коммит `95b09b62`), `scripts/build-llama.sh`; собственный патч `llama.cpp-no-logits.patch`

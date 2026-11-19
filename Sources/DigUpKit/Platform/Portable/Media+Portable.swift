@@ -185,12 +185,15 @@ extension VideoExtractor {
         return (frames, duration, streams.audio)
     }
 
-    /// The frame shown at `seconds`, its long side at most `pixels`, as a JPEG for a preview.
+    /// The frame shown at `seconds`, its long side at most `pixels` (0: the source's own size, never upscaled), as a
+    /// JPEG.
     static func frame(at seconds: Double, of url: URL, pixels: Int, to out: URL) async throws {
         let at = max(0, seconds)
-        let rest = ["-frames:v", "1", "-vf",
-                    "scale='min(iw,\(pixels))':'min(ih,\(pixels))':force_original_aspect_ratio=decrease",
-                    "-q:v", "3", "-y", out.path]
+        // 0 asks for the file's own size: `min(iw, 0)` would be invalid, so the filter is left out entirely.
+        let scale = pixels > 0
+            ? ["-vf", "scale='min(iw,\(pixels))':'min(ih,\(pixels))':force_original_aspect_ratio=decrease"]
+            : []
+        let rest = ["-frames:v", "1"] + scale + ["-q:v", "3", "-y", out.path]
         // Seeking before reading starts at the keyframe before the moment and decodes on to it: quick at any length. An
         // MPEG-TS has no index, so its seek lands on the moment itself, and nothing decodes until the next keyframe (a
         // later frame is written, or none): seek to a while before and read on. ffmpeg may then exit with an error for
