@@ -1,6 +1,6 @@
 #!/bin/bash
-# Builds llama.cpp (MIT), the embedding runtime: the pinned build tag plus scripts/llama.cpp-no-logits.patch, as static
-# libraries combined into Vendor/llama/lib/libllamacpp.a, with the headers in Vendor/llama/include (all out of git).
+# Builds llama.cpp (MIT), the embedding runtime: the pinned build tag, as static libraries combined into
+# Vendor/llama/lib/libllamacpp.a, with the headers in Vendor/llama/include (all out of git).
 # Metal shaders are embedded and compiled on first use, so no Metal toolchain is needed. CMake comes from PATH, or from
 # a venv in Vendor/ (needs uv). Does nothing when that build is already there; build.sh runs it every time.
 # On Linux and Windows it builds shared libraries instead, with ggml's backends as modules loaded at run
@@ -10,12 +10,13 @@
 # leaves DLLs with their import libraries.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-TAG=b11461   # the first tags with EmbeddingGemma 2 (text + vision + audio) are b11452+
-COMMIT=4d756bc72bf00a4aacf410ae15a2d315f3db400d   # TAG's commit: a tag can be moved, a commit can't
+TAG=b12540   # EmbeddingGemma 2 support came in b11452+; this also carries the upstream pooled-embedding graph work
+COMMIT=95b09b62beb95c40fc6b317a0c1473c27b5f27fa   # TAG's commit: a tag can be moved, a commit can't
 # A new TAG ships only if `swift test` passes: ReferenceVectorTests checks it makes the same vectors, so every index is
 # kept. If it fails, keep this TAG, or bump LlamaEmbedder.vectorVersion and write the reference vectors again
 # (DIGUP_WRITE_REFERENCE=1 swift test --filter ReferenceVectorTests): every index then embeds again.
-PATCH=scripts/llama.cpp-no-logits.patch
+# Since b11461's successor (#30445, #30461) llama.cpp skips the LM head for pooled embeddings itself, tested bit-exact for
+# EmbeddingGemma 2: the patch this build used to carry (llama.cpp-no-logits.patch) is gone with it.
 SOURCE="${LLAMA_SOURCE:-Vendor/llama.cpp}"
 BUILD="${LLAMA_BUILD:-Vendor/llama-build}"
 OUT=Vendor/llama
@@ -29,7 +30,7 @@ elif command -v glslc > /dev/null; then
 else
   FLAVOR=cpu
 fi
-STAMP="$TAG $(shasum -a 256 "$PATCH" 2>/dev/null | cut -c1-12 || sha256sum "$PATCH" | cut -c1-12) $FLAVOR"
+STAMP="$TAG $FLAVOR"
 if [[ ( -f "$OUT/lib/libllamacpp.a" || -f "$OUT/lib/libllama.so" || -f "$OUT/lib/llama.dll" ) \
       && "$(cat "$OUT/BUILD" 2>/dev/null)" == "$STAMP" ]]; then
   exit 0
@@ -39,23 +40,15 @@ if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]]; then
 fi
 
 if [[ ! -d "$SOURCE" ]]; then
-  # Line endings as they are (Git for Windows would turn them into CRLF, and the patch wouldn't apply).
+  # Line endings as they are (Git for Windows would turn them into CRLF, and anything applied on top wouldn't fit).
   git -c advice.detachedHead=false -c core.autocrlf=false clone --quiet --depth 1 --branch "$TAG" \
     https://github.com/ggml-org/llama.cpp "$SOURCE"
 elif [[ "$(git -C "$SOURCE" describe --tags --exact-match 2>/dev/null)" != "$TAG" ]]; then
   git -C "$SOURCE" fetch --quiet --depth 1 origin tag "$TAG"
-  git -C "$SOURCE" checkout --quiet --force "$TAG"   # --force also drops the old patch
+  git -C "$SOURCE" checkout --quiet --force "$TAG"
 fi
 if [[ "$(git -C "$SOURCE" rev-parse HEAD)" != "$COMMIT" ]]; then
   echo "llama.cpp's $TAG isn't commit $COMMIT here: not building it" >&2
-  exit 1
-fi
-# Without the patch, every input token costs 1 MiB of logits that an embedding model never produces (262k vocabulary).
-# Its path is absolute: git -C reads a relative one from the source folder, which LLAMA_SOURCE can put anywhere.
-if git -C "$SOURCE" apply --check "$PWD/$PATCH" 2>/dev/null; then
-  git -C "$SOURCE" apply "$PWD/$PATCH"
-elif ! git -C "$SOURCE" apply --reverse --check "$PWD/$PATCH" 2>/dev/null; then
-  echo "$PATCH doesn't apply to $SOURCE, and isn't applied already: not building it" >&2
   exit 1
 fi
 
@@ -133,4 +126,4 @@ cp "$SOURCE/include/llama.h" "$SOURCE"/ggml/include/*.h "$SOURCE/tools/mtmd/mtmd
 printf '// Written by scripts/build-llama.sh.\n#define LLAMA_BUILD_TAG "%s"\n' "$TAG" > "$OUT/include/llama-build.h"
 touch Sources/LlamaRuntime/LlamaEmbedder.swift
 echo "$STAMP" > "$OUT/BUILD"
-echo "Built llama.cpp $TAG (patched, $FLAVOR${CC:+, $CC}) into $OUT"
+echo "Built llama.cpp $TAG ($FLAVOR${CC:+, $CC}) into $OUT"
