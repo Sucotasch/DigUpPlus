@@ -37,6 +37,7 @@ const state = {
   selection: null,       // a result's path, or WEAKER
   navigated: false,      // the arrow keys moved the selection since the last edit
   encoder: "stopped",
+  ready: 0,              // the helper's ready events (model and vectors), so a reply can tell one arrived meanwhile
   height: FIELD_HEIGHT,
   error: null,
   indexing: null,        // {done, total} while the index helper works through new files
@@ -69,11 +70,15 @@ function queryChanged() {
   // The meaning is embedded now, so its vector is ready when typing pauses: the pause is the whole wait.
   ask({ op: "embed_ahead", q: text, code }).catch(() => {});
   state.timer = setTimeout(() => {
+    const readyAt = state.ready;
     ask({ op: "search", q: text, code, meaning: true, limit: 40 })
       .then((reply) => {
         if (generation !== state.generation) return;
         state.finalGeneration = generation;
         show(reply, text, reply.meaning ? "meaning" : "wordsOnly");
+        // The model or the vectors became ready while this request was in flight: its answer is words only, so ask
+        // again rather than leave that on screen.
+        if (!reply.meaning && state.ready !== readyAt) queryChanged();
         if (debugPending) report();
       })
       .catch(failed);
@@ -492,6 +497,12 @@ tauri.event.listen("helper", ({ payload }) => {
   if (from === "search" && event.event === "encoder") {
     state.encoder = event.state;
     if (state.phase !== "empty") renderFooter();
+  }
+  // The model or the vectors arrived after the panel asked: its words-only answer runs again, with meaning this time.
+  const loaded = (event.event === "vectors" || event.event === "encoder") && event.state === "ready";
+  if (from === "search" && loaded) {
+    state.ready += 1;
+    if (state.phase === "wordsOnly" && $query.value.trim()) queryChanged();
   }
 });
 

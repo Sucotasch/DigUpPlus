@@ -58,7 +58,10 @@ import Foundation
 ///   {"op":"folders","roots":[…],"skipped":[…],"types":[…],"code_roots":[…],"code_skipped":[…],"zgate":n} → {"ok":true}: each
 ///                                               optional; no code folders closes the code index; `zgate` is how far a
 ///                                               meaning match must stand out from now on (2.0 otherwise)
-///   {"op":"prewarm"}                          → {"ok":true}: starts the encoder and loads the vectors (the panel opening)
+///   {"op":"prewarm"}                          → {"ok":true}: starts the encoder and loads the vectors in the background
+///                                               (the panel opening) and answers at once; a search meanwhile is answered with
+///                                               words (`"warming":true`), and {"event":"vectors","state":"ready"} says when
+///                                               meaning is back
 ///   {"op":"status"}                           → {"encoder":"stopped|starting|ready|unavailable","vectors":n,"files":n,
 ///                                               "searchable":n,"pending":n,"unfinished":n,…}
 ///   {"op":"quit"}                             → {"ok":true}, then exit
@@ -80,6 +83,10 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
 
     private var encoder: (any Embedder)?
     private var encoderState = "stopped"
+    private var encoderLoading = false
+    /// A background load of the vectors (`prewarm`): a cold disk takes seconds to minutes over 240 MB, and a search
+    /// must answer with words meanwhile instead of waiting behind it.
+    private var vectorsLoading = false
     private var vectorCache: [String: [Float]] = [:]
     private var lastQuery = Date()
     private var warnedAboutSource = false
@@ -186,6 +193,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let started = Date()
             var vector: [Float]?
             var warning: String?
+            var warming = false
             // Search by example ("Find similar"): the reference file's own vector is the query, ranked by cosine.
             // The reference is in its own results, first (cosine 1.0): it is what the person asked about, and it is
             // the picture its look-alikes fold under. The vectors are already in memory: nothing re-embeds.
@@ -202,14 +210,24 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                 }
                 vector = reference
             } else if wantMeaning, !text.isEmpty {
-                vector = self.vector(for: text, code: code)
-                // Vectors from another model or runtime must never meet: keyword-only then, and say so once.
-                if vector != nil, let indexed = (code ? codeSearcher : searcher)?.vectorSource,
-                   let source = encoder?.info.vectorSource, indexed != source {
-                    vector = nil
-                    if !warnedAboutSource {
-                        warning = "meaning search is off: the index was built with \(indexed), the encoder is \(source)"
-                        warnedAboutSource = true
+                // The vectors are still loading (`prewarm` on a cold start): words now, and the window searches again
+                // when they're in, rather than holding every request behind the load.
+                if !code && !searcher.vectorsLoaded {
+                    warming = true
+                    startLoadingVectors()
+                } else {
+                    vector = self.vector(for: text, code: code)
+                    // The model itself may still be loading beside the request loop: words now, and the encoder's
+                    // "ready" event searches again (the vectors' one when both were cold).
+                    if vector == nil, encoderLoading { warming = true }
+                    // Vectors from another model or runtime must never meet: keyword-only then, and say so once.
+                    if vector != nil, let indexed = (code ? codeSearcher : searcher)?.vectorSource,
+                       let source = encoder?.info.vectorSource, indexed != source {
+                        vector = nil
+                        if !warnedAboutSource {
+                            warning = "meaning search is off: the index was built with \(indexed), the encoder is \(source)"
+                            warnedAboutSource = true
+                        }
                     }
                 }
             }
@@ -256,6 +274,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             if let cutoffs = page.tierCutoffs { reply["tier_cutoffs"] = cutoffs }
             reply["section_totals"] = page.sectionTotals
             if let warning { reply["warning"] = warning }
+            if warming { reply["warming"] = true }
             return reply
         case "embed_ahead":
             _ = vector(for: request["q"] as? String ?? "", code: request["code"] as? Bool ?? false)
@@ -359,9 +378,9 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             return ["ok": true]
         case "prewarm":
             lastQuery = Date()
-            _ = runningEncoder()
-            if !searcher.vectorsLoaded { try searcher.reload() }
-            return ["ok": true, "encoder": encoderState, "vectors": searcher.vectorCount]
+            startEncoderInBackground()
+            startLoadingVectors()
+            return ["ok": true, "encoder": encoderState, "vectors": searcher.vectorsLoaded ? searcher.vectorCount : 0]
         case "visual_groups":
             // The window's Find similar: which of the pictures it shows look alike (Phash256). Paths come in ranking
             // order, so each group starts with the best-ranked one. A few missing fingerprints are taken here within a
@@ -426,7 +445,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         let hadCodeVectors = codeSearcher?.vectorsLoaded ?? false
         // Open both before replacing either, and bump the generation only once the new index is really in use:
         // a failed reload must leave the old one (and its generation) untouched.
-        let newSearcher = try Searcher(store: store, loadVectors: hadVectors)
+        let newSearcher = try Searcher(store: store, loadVectors: false)
         var newCodeSearcher: Searcher?
         if let codeStore {
             newCodeSearcher = try Searcher(store: codeStore, loadVectors: hadCodeVectors)
@@ -437,6 +456,10 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         searcher = newSearcher
         codeSearcher = newCodeSearcher
         generation += 1
+        // The vectors follow in the background like `prewarm`'s (a search meanwhile is answered with words): reading
+        // 240 MB under this lock is what used to freeze the window at every index change. A load already in flight
+        // sees the new generation, drops its set and asks once more.
+        if hadVectors, !vectorsLoading { startLoadingVectors() }
     }
 
     /// Whether the crawl of one of the chosen folders reaches a moved file's new folder. `Rules.isWalked`, not just
@@ -561,7 +584,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
 
     private func runningEncoder() -> (any Embedder)? {
         if let encoder { return encoder }
-        guard encoderState != "unavailable" else { return nil }
+        guard encoderState != "unavailable", !encoderLoading else { return nil }
         encoderState = "starting"
         do {
             let started = Date()
@@ -576,6 +599,87 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             write(["event": "encoder", "state": "unavailable", "error": String("\(error)".prefix(300))])
             return nil
         }
+    }
+
+    /// Starts the encoder beside the request loop (`prewarm`): loading the model now costs 1.3 s warm and far more on a
+    /// cold disk, and a keyword search mustn't wait for it. A meaning search meanwhile answers with words
+    /// (`runningEncoder` returns nil while `encoderLoading`).
+    private func startEncoderInBackground() {
+        guard encoder == nil, encoderState != "unavailable", !encoderLoading else { return }
+        encoderState = "starting"
+        encoderLoading = true
+        Thread.detachNewThread { [self] in
+            let started = Date()
+            do {
+                let worker = try makeEmbedder(textOnly: true, log: log, qos: .userInitiated)
+                let seconds = (Date().timeIntervalSince(started) * 100).rounded() / 100
+                lock.withLock {
+                    encoder = worker
+                    encoderState = "ready"
+                    encoderLoading = false
+                    write(["event": "encoder", "state": "ready", "seconds": seconds,
+                           "source": worker.info.vectorSource])
+                }
+                note("encoder ready in \(seconds) s")
+            } catch {
+                lock.withLock {
+                    encoderState = "unavailable"
+                    encoderLoading = false
+                    write(["event": "encoder", "state": "unavailable", "error": String("\(error)".prefix(300))])
+                }
+            }
+        }
+    }
+
+    /// Loads the vectors beside the request loop, on its own connection to the same index: the panel opening (`prewarm`)
+    /// used to hold the whole service behind 240 MB of vectors, which on a cold disk is minutes of an empty window.
+    /// The loaded searcher replaces the old one under the lock, and only if the index wasn't opened again meanwhile.
+    private func startLoadingVectors() {
+        guard !searcher.vectorsLoaded, !vectorsLoading else { return }
+        vectorsLoading = true
+        let generation = self.generation
+        let directory = self.directory
+        Thread.detachNewThread { [self] in
+            let started = Date()
+            do {
+                let store = try IndexStore(directory: directory, file: IndexStore.mainFile)
+                let loaded = try Searcher(store: store, loadVectors: true)
+                let seconds = (Date().timeIntervalSince(started) * 100).rounded() / 100
+                var again = false
+                lock.withLock {
+                    if generation == self.generation {
+                        vectorsLoading = false
+                        searcher = loaded
+                        write(["event": "vectors", "state": "ready", "seconds": seconds,
+                               "vectors": loaded.vectorCount])
+                    } else if searcher.vectorsLoaded {
+                        // The index changed and something else already brought newer vectors in: this set is older.
+                        vectorsLoading = false
+                    } else {
+                        // The index changed while these loaded: the set describes the old one; ask once more, with
+                        // the flag still set so no request starts a second load in between.
+                        again = true
+                    }
+                }
+                note("vectors \(loaded.vectorCount) in \(seconds) s")
+                if again {
+                    lock.withLock {
+                        vectorsLoading = false
+                        startLoadingVectors()
+                    }
+                }
+            } catch {
+                lock.withLock { vectorsLoading = false }
+                note("vectors failed: \(error)")
+                write(["event": "vectors", "state": "failed", "error": String("\(error)".prefix(300))])
+            }
+        }
+    }
+
+    /// Why a load took as long as it did, in the shell's search log: a cold disk is minutes, and the next report of a
+    /// slow start needs the number, not a guess.
+    private func note(_ text: String) {
+        FileHandle.standardError.write(Data("prewarm: \(text)\n".utf8))
     }
 
     private func stopEncoder() {

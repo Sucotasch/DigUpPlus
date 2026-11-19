@@ -68,6 +68,8 @@ const state = {
   weaker: [],           // below half the best one's score: folded
   counts: {},           // results of each filter for the query, whatever the filter (the chips' numbers)
   meaning: true,        // the results matched by meaning too (false: words only)
+  warming: false,       // words only because the vectors are still loading (they arrive with a "vectors" event)
+  ready: 0,             // the helper's ready events (model and vectors), so a reply can tell one arrived meanwhile
   hasResults: false,    // the results of the query in the field are in
   total: 0,             // files in the whole ranking (the engine's total; the helper may filter a few)
   strongTotal: 0,       // of those, the strong ones, over the whole ranking
@@ -180,6 +182,7 @@ function run(immediate = false) {
       // One request: the filter's page and, from the whole ranking, the numbers on every chip. The OCR filter's page
       // is words-only (the engine's rule for that section), but the query is still embedded, because the other chips'
       // numbers come from the ordinary ranking.
+      const readyAt = state.ready;
       const all = await ask({ op: "search", q: text, code, meaning: !state.like,
                               limit: LIMIT, tier_cutoffs: [base.visible, base.weak],
                               ...(filter?.kinds ? { kinds: filter.kinds } : {}),
@@ -202,7 +205,8 @@ function run(immediate = false) {
       const visible = [], weak = [];
       for (const hit of shown.hits) (tierOf(hit, layered ? cutoffs : null) === "visible" ? visible : weak).push(hit);
       const layers = layered && tiers != null;
-      Object.assign(state, { counts, text, meaning: shown.meaning, hasResults: true,
+      Object.assign(state, { counts, text, meaning: shown.meaning, warming: shown.warming === true,
+                             hasResults: true,
                              // A kind filter asks for every result of that kind, so its weaker tail starts open. The
                              // All view keeps the fold: there the weak results are noise around unrelated kinds.
                              showWeaker: Boolean(filter) && !code,
@@ -215,6 +219,12 @@ function run(immediate = false) {
                              strongTotal: layers ? tiers.visible : shown.strong_total ?? shown.strong,
                              nextOffset: shown.next_offset ?? shown.hits.length,
                              matchesGeneration: shown.generation ?? null, loadingMore: false, pageError: null });
+      // The model or the vectors became ready while this request was in flight (the helper's event can reach the page
+      // first): this answer is words only, so ask again rather than leave that on screen.
+      if (state.warming && state.ready !== readyAt) {
+        run();
+        return;
+      }
       // A new query starts at its best result (the comment above `sameQuery`): the preview beside the list shows the
       // first row. The same query run again stays on the file the person was on, if it's still there.
       if (!sameQuery || !rows().some((hit) => hit.path === state.selection)) {
@@ -867,6 +877,8 @@ function renderContent() {
   else if (!state.query.trim()) $content.append(home());
   else if (state.codePhase) $content.append(codeHintOrOff());
   else if (!state.hasResults) $content.append(centered(element("div", "spinner")));
+  // Words found nothing while the model loads: "Nothing found" would be a lie, and the answer is on its way.
+  else if (state.warming) $content.append(centered(element("div", "spinner")));
   else if (!state.ranked.length && !state.weaker.length && !state.hiddenTotal) $content.append(nothingFound());
   else if (groupingActive() && state.onlyGroups && !state.groups?.length) {
     $content.append(centered(element("div", "tier-note", "No look-alikes at this difference.")));
@@ -3235,7 +3247,8 @@ function renderStatus() {
     } else if (state.total > strong + weaker) {
       count = `All ${state.total.toLocaleString()} results shown` + (weaker ? ` · ${weaker.toLocaleString()} weaker` : "");
     } else {
-      count = app.caveat || (!state.meaning ? "Words only: meaning search isn't available"
+      count = state.warming ? "The model is loading: meaning follows in a moment"
+        : app.caveat || (!state.meaning ? "Words only: meaning search isn't available"
         : `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : ""));
     }
   }
@@ -3665,6 +3678,18 @@ tauri.event.listen("file-op", ({ payload }) => {
     state.busy.size = payload.size ?? null;
     renderOperation();
   }
+});
+
+// The helper loaded the vectors beside its requests (`prewarm`): a search answered meanwhile was words only, so it
+// runs again now, with meaning this time.
+tauri.event.listen("helper", ({ payload }) => {
+  if (payload?.from !== "search") return;
+  const event = payload.event || {};
+  const arrived = (event.event === "vectors" && event.state === "ready")
+    || (event.event === "encoder" && event.state === "ready");
+  if (!arrived) return;
+  state.ready += 1;
+  if (state.warming && state.query.trim()) run();
 });
 
 window.addEventListener("focus", () => ask({ op: "prewarm" }).catch(() => {}));

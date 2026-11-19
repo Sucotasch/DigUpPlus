@@ -212,7 +212,7 @@ runtime, Swift runtime, C++ CRT, ffmpeg/ffprobe, Windows OCR shim `ocr.exe` из
 `THIRD-PARTY-NOTICES.txt` как resources.
 
 Выход: `shell/src-tauri/target/release/bundle/nsis/DigUp Plus_<version>_x64-setup.exe` (~440 МБ).
-Версия берётся из `shell/src-tauri/tauri.conf.json` (сейчас `0.1.16`), не из `Cargo.toml` (там `0.1.0` у пакета
+Версия берётся из `shell/src-tauri/tauri.conf.json` (сейчас `0.1.18`), не из `Cargo.toml` (там `0.1.0` у пакета
 оболочки, но имя файла и настройки идут от `tauri.conf.json`). Подписи и update-артефактов больше нет: `signing` из
 скрипта убран вместе с плагином updater.
 
@@ -414,6 +414,18 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
   меняли (проверено): длинные пути (`std::fs` сам добавляет `\\?\`), `Names::taken`'s `path.exists()`, ожидание рендеров
   при выходе, регистр в `vanished`/`emptyRoots` (строки с другим регистром не попадают в `files(under:)` — инвариант
   записан комментарием и тестом); helper изменился, нужен полный zip;
+- 0.1.18 выпущен 2026-11-19: долгий старт после обновления разобран по замерам. Ничего не переиндексировалось (mtime
+  базы и worker-логов не менялись): диск читали модель и векторы, а `prewarm` держал под своим локом всю очередь
+  запросов, поэтому окно стояло пустым, пока грузились 240 МБ векторов (на холодном HDD — минуты). Теперь `prewarm`
+  отвечает сразу: модель и векторы грузятся в фоне (`startEncoderInBackground`, `startLoadingVectors` — своё соединение
+  с тем же индексом), поиск в это время отвечает словами с `"warming":true`, а события `encoder`/`vectors` со
+  `state:"ready"` заставляют окно и панель повторить запрос сами — с защитой от гонки «событие пришло раньше ответа»
+  (`state.ready`). Время загрузки пишется в `search.log` (`prewarm: …`). Замеры, отменившие первый план: частичный
+  covering-индекс `segments(id, file, modality, kind, loc, vec) WHERE vec IS NOT NULL` оказался **медленнее** табличного
+  скана (1.66–1.73 с против 0.90–1.05 с на копии реального индекса) и добавил 556 МБ — не делаем; снятие JOIN с `files`
+  и `json_extract` дало 10 % (0.90 против 1.00 с) и тоже не оправдывает правку. Попутно найдено: `MCPServer.version`
+  остался `0.1.16` после выпуска 0.1.17 — агенты видели старую версию; поднят до 0.1.18 (тест
+  `theServerVersionIsTheAppsVersion` теперь ловит это в прогоне). helper изменился, нужен полный zip;
 - на 2026-11-19: `python .build/swift_test.py` — 230 тестов, 229 прошли (тот же symlink-тест), `cargo test --locked`
   — 81, все прошли;
 - GitHub Actions в форке выключены, workflow-ов три: `ci.yml`, `packages.yml`, `homebrew.yml`
