@@ -2633,7 +2633,7 @@ function framesDialog(hit, mode) {
   if (!hit || hit.kind !== "video" || !$modal.hidden) return;
   const sheet = mode === "sheet";
   const duration = Number(hit.info?.duration || 0);
-  const box = element("div", "frames-sheet");
+  const box = element("div", "modal-box frames-sheet");
   box.append(element("h2", "", sheet ? "Contact sheet" : "Extract frames"));
   box.append(element("div", "sheet-about",
     `${nameOf(hit.path)}${duration > 0 ? ` · ${clock(duration)}` : ""}`));
@@ -3265,10 +3265,13 @@ const $hoverPin = element("button", "hp-button", "Pin");
 $hoverPin.type = "button";
 const $hoverSave = element("button", "hp-button", "Save frame");
 $hoverSave.type = "button";
+const $hoverFrames = element("button", "hp-button", "Frames…");
+$hoverFrames.type = "button";
+$hoverFrames.title = "Stills from this video, as JPEGs in a folder beside it";
 const $hoverClose = element("button", "hp-button hp-close", "×");
 $hoverClose.type = "button";
 $hoverClose.setAttribute("aria-label", "Close the player");
-$hoverChip.append($hoverPin, $hoverSave, $hoverClose);
+$hoverChip.append($hoverPin, $hoverSave, $hoverFrames, $hoverClose);
 const $hoverFallback = element("div", "hp-fallback");
 $hoverFallback.hidden = true;
 const $hoverFrame = element("img");
@@ -3454,6 +3457,7 @@ function hoverMoment() {
 }
 
 $hoverSave.onclick = () => { if (hoverHit) saveFrame(hoverHit.path, "video", hoverMoment()); };
+$hoverFrames.onclick = () => { if (hoverHit) framesDialog(hoverHit, "sequence"); };
 $hoverOpen.onclick = () => { if (hoverHit) open(hoverHit); };
 $hoverClose.onclick = () => closeHover(true);
 $hoverPin.onclick = () => setHoverPinned(!hoverPinned);
