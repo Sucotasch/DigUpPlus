@@ -1146,51 +1146,62 @@ svg { display: block; }
 }
 .peek-text mark { background: var(--mark); color: var(--text); border-radius: 2px; }
 
-/* The hover player (hover a video): the peek's counterpart for recordings. It takes clicks - its buttons do - so it
-   opens beside the cell rather than under the pointer, and one height keeps the controls where the pointer expects
-   them whatever the video's shape. */
+/* The hover player (hover a video), taken from Imagus: the box is the source's size with its corner at the cursor.
+   The video keeps the native controls (the side pane's player); only Pin, Save frame and the close button float
+   above them, always visible so they never race the controls' own hiding. */
 .hover-play {
   position: fixed;
   z-index: 16;
-  width: 480px;
-  max-width: calc(100vw - 24px);
   border-radius: 8px;
   overflow: hidden;
-  background: var(--surface);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4), 0 0 0 0.5px var(--line);
-  font-size: 12px;
+  background: #000;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 0 0.5px var(--line);
 }
 .hover-play[hidden] { display: none; }
 .hover-play:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.hp-head { display: flex; align-items: center; gap: 2px; padding: 5px 6px 5px 10px; cursor: grab; }
-.hp-head:active { cursor: grabbing; }
-.hp-head .hp-name { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hp-button {
+.hp-video { display: block; width: 100%; height: 100%; background: #000; }
+.hp-video[hidden] { display: none; }
+.hp-chip {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.hp-chip .hp-button,
+.hp-fallback .hp-button {
   font: inherit;
   font-size: 11px;
-  color: var(--secondary);
+  color: #fff;
   background: none;
   border: 0;
-  padding: 4px 7px;
-  border-radius: 5px;
+  padding: 3px 7px;
+  border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
 }
-.hp-button:hover { color: var(--text); background: var(--line); }
-.hp-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.hp-button[aria-pressed="true"] { color: var(--accent); }
-.hp-close { font-size: 15px; line-height: 1; padding: 2px 7px 4px; }
-.hp-video { display: block; width: 100%; height: 270px; background: black; object-fit: contain; }
-.hp-video[hidden] { display: none; }
-.hp-controls { display: flex; align-items: center; gap: 8px; padding: 4px 10px 8px; }
-.hp-controls[hidden] { display: none; }
-.hp-play { padding: 2px; display: grid; place-items: center; }
-.hp-play svg { width: 18px; height: 18px; fill: currentColor; }
-.hp-controls input[type="range"] { accent-color: var(--accent); height: 16px; cursor: pointer; margin: 0; }
-.hp-seek { flex: 1; min-width: 60px; }
-.hp-time { color: var(--secondary); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.hp-volume { width: 70px; flex: none; }
-.hp-fallback { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 10px 10px; }
+.hp-chip .hp-button:hover { background: rgba(255, 255, 255, 0.18); }
+.hp-chip .hp-button:focus-visible,
+.hp-fallback .hp-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.hp-chip .hp-button[aria-pressed="true"] { color: var(--accent); }
+.hp-chip .hp-close { font-size: 15px; line-height: 1; padding: 1px 7px 3px; }
+.hp-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  background: var(--surface);
+  color: var(--secondary);
+  font-size: 12px;
+}
 .hp-fallback[hidden] { display: none; }
-.hp-fallback img { display: block; max-width: 100%; max-height: 270px; border-radius: 6px; background: black; }
-.hp-why { color: var(--secondary); }
+.hp-fallback img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.hp-fallback .hp-button { color: var(--ember); font-size: 12px; }
+.hp-why { line-height: 1.4; }

@@ -3242,62 +3242,33 @@ window.addEventListener("resize", hidePeek);
 
 // MARK: The hover player (hover a video to watch it, without opening anything)
 
-/// The peek's counterpart for a recording: a player beside the cell the pointer rests on. It takes clicks (its buttons
-/// do), so it opens in the room beside the cell rather than under the pointer. Sound starts muted - a page that makes
-/// noise when a pointer crosses it is a page nobody keeps - at the volume remembered from last time, and playback
-/// starts two seconds before the moment the search matched. A long right-click on the player (or Pin) keeps it while
-/// the pointer goes elsewhere.
-const HOVER_DELAY = 300;          // the peek's: the pointer resting, not sweeping the grid
-const HOVER_GAP = 12;             // between the cell and the player, and from the window's edges
-const HOVER_WIDTH = 480;
-const HOVER_HEIGHT = 270;         // 16:9; another shape keeps its own proportions inside it
-const HOVER_CLOSE = 250;          // the time the pointer has to cross the gap into the player
-const HOVER_LOOP_UNDER = 60;      // seconds: a clip short enough to watch whole loops, a long one doesn't restart
+/// Taken from Imagus (`Imagus-Mass-Download-Mod/src-mv3-overlay`, `content/content.js`): 300 ms of stillness, the
+/// pop-up's corner at the cursor growing into the free side (`placement: 0`, `fullspace`), never bigger than the
+/// source, and hidden by a `pointerover` outside it or its card - not by leave timers. The video keeps the window's own
+/// controls (the side pane's player); only Pin, Save frame and the close button float above them, always visible so
+/// they never race the controls' own hiding.
+const HOVER_DELAY = 300;       // idle, not travel: the timer restarts on every move, so a sweep opens nothing
+const HOVER_GAP = 12;          // from the results area's edges
+const HOVER_LOOP_UNDER = 60;   // seconds
 
 const $hover = element("div", "hover-play");
 $hover.hidden = true;
-$hover.tabIndex = 0;
 $hover.setAttribute("role", "dialog");
 $hover.setAttribute("aria-label", "Video preview");
-const $hoverHead = element("div", "hp-head");
-const $hoverName = element("div", "hp-name");
-const $hoverPin = element("button", "hp-button", "Pin");
-$hoverPin.type = "button";
-const $hoverSave = element("button", "hp-button", "Save frame");
-$hoverSave.type = "button";
-$hoverSave.title = "Save the frame on screen";
-const $hoverClose = element("button", "hp-button hp-close", "×");
-$hoverClose.type = "button";
-$hoverClose.setAttribute("aria-label", "Close the player");
-$hoverHead.append($hoverName, $hoverPin, $hoverSave, $hoverClose);
-// No native controls: the row below is ours, which keeps the player one height whatever the video's.
 const $hoverVideo = element("video", "hp-video");
 $hoverVideo.muted = true;
 $hoverVideo.playsInline = true;
 $hoverVideo.preload = "metadata";
-const $hoverControls = element("div", "hp-controls");
-const $hoverPlay = element("button", "hp-button hp-play");
-$hoverPlay.type = "button";
-$hoverPlay.innerHTML = ICONS.play;
-$hoverPlay.setAttribute("aria-label", "Play");
-const $hoverSeek = element("input", "hp-seek");
-$hoverSeek.type = "range";
-$hoverSeek.min = "0";
-$hoverSeek.max = "1000";
-$hoverSeek.step = "1";
-$hoverSeek.value = "0";
-$hoverSeek.setAttribute("aria-label", "Where in the video");
-const $hoverTime = element("span", "hp-time", "0:00 / 0:00");
-const $hoverVolume = element("input", "hp-volume");
-$hoverVolume.type = "range";
-$hoverVolume.min = "0";
-$hoverVolume.max = "1";
-$hoverVolume.step = "0.01";
-$hoverVolume.setAttribute("aria-label", "Volume");
-const $hoverMute = element("button", "hp-button", "Unmute");
-$hoverMute.type = "button";
-$hoverControls.append($hoverPlay, $hoverSeek, $hoverTime, $hoverVolume, $hoverMute);
-// What a codec WebView2 can't play leaves: the helper's frame and the two things still worth doing.
+$hoverVideo.controls = true;   // the side pane's player: auto-hiding controls, standard icons, the volume wheel
+const $hoverChip = element("div", "hp-chip");
+const $hoverPin = element("button", "hp-button", "Pin");
+$hoverPin.type = "button";
+const $hoverSave = element("button", "hp-button", "Save frame");
+$hoverSave.type = "button";
+const $hoverClose = element("button", "hp-button hp-close", "×");
+$hoverClose.type = "button";
+$hoverClose.setAttribute("aria-label", "Close the player");
+$hoverChip.append($hoverPin, $hoverSave, $hoverClose);
 const $hoverFallback = element("div", "hp-fallback");
 $hoverFallback.hidden = true;
 const $hoverFrame = element("img");
@@ -3306,83 +3277,83 @@ const $hoverWhy = element("div", "hp-why", "Windows can't play this format.");
 const $hoverOpen = element("button", "hp-button", "Open");
 $hoverOpen.type = "button";
 $hoverFallback.append($hoverFrame, $hoverWhy, $hoverOpen);
-$hover.append($hoverHead, $hoverVideo, $hoverControls, $hoverFallback);
+$hover.append($hoverVideo, $hoverChip, $hoverFallback);
 document.body.append($hover);
 
 let hoverHit = null;              // the result on screen
-let hoverCell = null;             // its cell: the player opens beside this one
-let hoverTimer = 0;               // the 300 ms before it opens
-let hoverCloseTimer = 0;          // the 250 ms the pointer has to cross the gap
-let hoverPinned = false;          // stays when the pointer leaves (a long right-click or Pin)
-let hoverPress = 0;               // the long right-click's 450 ms
-let hoverDrag = null;             // where the header was grabbed, while it is being dragged
-// The volume remembered from the last time, 25 % on a first run; a hover itself never makes noise.
+let hoverCell = null;             // its card: a pointerover on it keeps the player
+let hoverPoint = { x: 0, y: 0 };  // where the pointer rested: the pop-up's corner
+let hoverTimer = 0;               // the 300 ms of stillness before it opens
+let hoverPinned = false;          // the Pin button's state
+let hoverNatural = null;          // the source's own size, so the pop-up is never stretched past it
 const hoverSaved = localStorage.getItem("hoverVolume");
 let hoverVolume = hoverSaved === null ? 0.25 : Math.min(1, Math.max(0, Number(hoverSaved) || 0));
 const hoverFailed = new Set();    // a format Windows can't play: the frame stands in, without a second try
 
-/// A cell's pointer rests on it: the player opens after the peek's 300 ms and closes when the pointer leaves it or the
-/// player (unless pinned).
+/// A card's pointer rests on it: 300 ms of stillness open the player; every move restarts the timer.
 function hoverVideoOn(cell, hit) {
   cell.addEventListener("pointermove", (event) => {
-    if (event.buttons) { closeHover(true); return; }             // a drag: nobody is watching it
-    if (hoverHit === hit) { clearTimeout(hoverCloseTimer); return; }   // open, or the timer is already running
+    if (event.buttons) return;                      // a drag, a selection: not a hover
+    if (hoverHit === hit) return;                   // already open, or the timer is running for this one
+    hoverPoint = { x: event.clientX, y: event.clientY };
     clearTimeout(hoverTimer);
-    clearTimeout(hoverCloseTimer);
     hoverTimer = setTimeout(() => openHover(hit, cell), HOVER_DELAY);
   });
-  cell.addEventListener("pointerleave", () => {
-    clearTimeout(hoverTimer);
-    if (hoverHit === hit) scheduleHoverClose();
-  });
+  // The pointer left before the 300 ms ran out: nothing opens (the open player's own rule is the pointerover below).
+  cell.addEventListener("pointerleave", () => clearTimeout(hoverTimer));
 }
 
 function openHover(hit, cell) {
   if (!hit || hit.kind !== "video" || !cell.isConnected) return;
   hoverHit = hit;
   hoverCell = cell;
-  clearTimeout(hoverCloseTimer);
-  // One decoder: whatever else in the window was playing (the side pane, the big view) stops now.
-  stopPlaying();
+  clearTimeout(hoverTimer);
+  stopPlaying();   // one decoder in the window
   for (const video of document.querySelectorAll("video")) if (video !== $hoverVideo) video.pause();
-  $hoverName.textContent = nameOf(hit.path);
-  $hoverName.title = `${nameOf(hit.path)}\n${details(hit)}`;
   const failed = hoverFailed.has(hit.path);
+  hoverNatural = sourceSize(hit);
   $hover.classList.toggle("failed", failed);
   $hoverFallback.hidden = !failed;
   $hoverVideo.hidden = failed;
-  $hoverControls.hidden = failed;
   // Whatever was playing goes now: a switched-to file that can't play must not leave the last one running behind a
   // hidden element (its sound included).
+  $hoverVideo.pause();
   if (failed) {
-    $hoverVideo.pause();
     $hoverVideo.removeAttribute("src");
     $hoverVideo.load();
   }
   $hover.hidden = false;
+  sizeHover();
   placeHover();
-  // Every hover starts silent, at the volume remembered last time; the label follows what the element really is.
-  $hoverVideo.muted = true;
+  $hoverVideo.muted = true;                // a hover never makes noise; the native button turns it on
   $hoverVideo.volume = hoverVolume;
-  $hoverVolume.value = String(hoverVolume);
-  syncHoverSound();
   if (failed) showHoverFrame(hit);
   else startHoverVideo(hit);
 }
 
+/// The source's own pixels: what the index knows (else the video's metadata once it arrives).
+function sourceSize(hit) {
+  const width = Number(hit?.info?.width) || 0;
+  const height = Number(hit?.info?.height) || 0;
+  return width > 0 && height > 0 ? { width, height } : null;
+}
+
 function startHoverVideo(hit) {
-  syncHoverPlay();
-  $hoverVideo.loop = false;   // the last video's looping must not outlive its src
+  $hoverVideo.loop = false;
   const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   $hoverVideo.onloadedmetadata = () => {
     if (hoverHit !== hit) return;
-    // The matched moment with two seconds of lead-in; a name hit has no moment, so it starts at the start.
+    if ($hoverVideo.videoWidth > 0 && $hoverVideo.videoHeight > 0) {
+      hoverNatural = { width: $hoverVideo.videoWidth, height: $hoverVideo.videoHeight };
+      sizeHover();
+      placeHover();
+    }
+    // The matched moment with two seconds of lead-in; a name hit has none, so it starts at the start.
     const start = Math.max(0, (hit.loc ?? 0) - 2);
     if (Number.isFinite($hoverVideo.duration) && start < $hoverVideo.duration) $hoverVideo.currentTime = start;
     $hoverVideo.loop = $hoverVideo.duration > 0 && $hoverVideo.duration < HOVER_LOOP_UNDER;
-    showHoverTime();
-    // A person who asked the system for less motion gets the frame, not playback; Play is right there.
-    if (!still) $hoverVideo.play().catch(() => {});   // muted: allowed to start by itself; if not, Play is right there
+    // A person who asked the system for less motion gets the frame; Play is in the controls.
+    if (!still) $hoverVideo.play().catch(() => {});
   };
   $hoverVideo.onerror = () => {
     if (hoverHit !== hit) return;
@@ -3390,90 +3361,65 @@ function startHoverVideo(hit) {
     $hover.classList.add("failed");
     $hoverFallback.hidden = false;
     $hoverVideo.hidden = true;
-    $hoverControls.hidden = true;
     $hoverVideo.pause();
     $hoverVideo.removeAttribute("src");
     showHoverFrame(hit);
   };
-  $hoverVideo.onplay = syncHoverPlay;
-  $hoverVideo.onpause = syncHoverPlay;
-  $hoverVideo.onended = syncHoverPlay;
-  $hoverVideo.ontimeupdate = showHoverTime;
   $hoverVideo.src = fileURL(hit.path);
   $hoverVideo.load();
 }
 
-/// The frame at the matched moment through the helper, the way the side pane shows a video before it plays.
+/// The frame at the matched moment through the helper, for a format Windows can't play.
 function showHoverFrame(hit) {
-  const pixels = Math.round(HOVER_WIDTH * (window.devicePixelRatio || 1) * 2);
+  const pixels = Math.round(1024 * (window.devicePixelRatio || 1));
   rendered(hit.path, "video", hit.loc ?? 0.5, pixels).then((file) => {
     if (hoverHit !== hit) return;
     $hoverFrame.src = fileURL(file);
-    $hoverFrame.onload = placeHover;
+    $hoverFrame.onload = () => {
+      if (!hoverNatural && $hoverFrame.naturalWidth && $hoverFrame.naturalHeight) {
+        hoverNatural = { width: $hoverFrame.naturalWidth, height: $hoverFrame.naturalHeight };
+        sizeHover();
+        placeHover();
+      }
+    };
   }).catch(() => {});   // no frame either: the line under it still says what this is
 }
 
-function showHoverTime() {
-  const duration = $hoverVideo.duration;
-  if (Number.isFinite(duration) && duration > 0) {
-    $hoverSeek.value = String(Math.round(1000 * $hoverVideo.currentTime / duration));
-    $hoverTime.textContent = `${clock($hoverVideo.currentTime)} / ${clock(duration)}`;
-  } else {
-    $hoverTime.textContent = `${clock($hoverVideo.currentTime)} / 0:00`;
-  }
-}
-
-function syncHoverPlay() {
-  const playing = !$hoverVideo.paused && !$hoverVideo.ended;
-  $hoverPlay.innerHTML = playing ? ICONS.pause : ICONS.play;
-  $hoverPlay.setAttribute("aria-label", playing ? "Pause" : "Play");
-}
-
-function syncHoverSound() {
-  const silent = $hoverVideo.muted || $hoverVideo.volume === 0;
-  $hoverMute.textContent = silent ? "Unmute" : "Mute";
-  $hoverMute.setAttribute("aria-label", silent ? "Turn the sound on" : "Mute the sound");
-}
-
-/// Beside the cell: to the right with the gap, to the left when the right has no room, and - when neither side has it
-/// (a narrow results area) - below the card or above it. Everything stays inside the results area, so the side pane and
-/// the batch bar are never covered, and the card itself is not covered while there is anywhere else to go.
-function placeHover() {
-  if (!hoverCell || !hoverCell.isConnected) return;
-  const box = hoverCell.getBoundingClientRect();
+/// The box: the source's own size, shrunk to the results area if it doesn't fit - never stretched past the source.
+function sizeHover() {
   const area = $content.getBoundingClientRect();
-  const width = $hover.offsetWidth || HOVER_WIDTH;
-  const height = $hover.offsetHeight || HOVER_HEIGHT;
-  const minLeft = area.left + HOVER_GAP, maxLeft = area.right - HOVER_GAP - width;
-  const minTop = area.top + HOVER_GAP, maxTop = area.bottom - HOVER_GAP - height;
-  let left = box.right + HOVER_GAP;
-  if (left > maxLeft) left = box.left - HOVER_GAP - width;
-  if (left < minLeft) {
-    left = Math.max(minLeft, Math.min(maxLeft, box.left));
-    let top = box.bottom + HOVER_GAP;
-    if (top > maxTop) top = box.top - HOVER_GAP - height;
-    $hover.style.left = `${Math.round(left)}px`;
-    $hover.style.top = `${Math.round(Math.max(minTop, Math.min(maxTop, top)))}px`;
-    return;
-  }
-  const top = Math.max(minTop, Math.min(maxTop, box.top));
+  const maxWidth = Math.max(16, area.width - HOVER_GAP * 2);
+  const maxHeight = Math.max(9, area.height - HOVER_GAP * 2);
+  const natural = hoverNatural ?? { width: maxWidth, height: Math.round(maxWidth * 9 / 16) };
+  const scale = Math.min(1, maxWidth / natural.width, maxHeight / natural.height);
+  const width = Math.max(1, Math.round(natural.width * scale));
+  const height = Math.max(1, Math.round(natural.height * scale));
+  $hover.style.width = `${width}px`;
+  $hover.style.height = `${height}px`;
+}
+
+/// Imagus's placement 0: the corner at the cursor, growing into the free side; clamped inside the results area.
+function placeHover() {
+  if (!hoverCell || !hoverCell.isConnected || $hover.hidden) return;
+  const area = $content.getBoundingClientRect();
+  const width = $hover.offsetWidth, height = $hover.offsetHeight;
+  const minLeft = area.left + HOVER_GAP, minTop = area.top + HOVER_GAP;
+  const maxLeft = Math.max(minLeft, area.right - HOVER_GAP - width);
+  const maxTop = Math.max(minTop, area.bottom - HOVER_GAP - height);
+  let left = hoverPoint.x, top = hoverPoint.y;
+  if (left + width > area.right - HOVER_GAP) left = hoverPoint.x - width;
+  if (top + height > area.bottom - HOVER_GAP) top = hoverPoint.y - height;
+  left = Math.max(minLeft, Math.min(maxLeft, left));
+  top = Math.max(minTop, Math.min(maxTop, top));
   $hover.style.left = `${Math.round(left)}px`;
   $hover.style.top = `${Math.round(top)}px`;
-}
-
-function scheduleHoverClose() {
-  clearTimeout(hoverCloseTimer);
-  if (hoverPinned) return;
-  hoverCloseTimer = setTimeout(() => { if (!hoverPinned) closeHover(); }, HOVER_CLOSE);
 }
 
 function closeHover(force = false) {
   if (!force && hoverPinned) return;
   clearTimeout(hoverTimer);
-  clearTimeout(hoverCloseTimer);
   hoverHit = null;
   hoverCell = null;
-  hoverDrag = null;
   setHoverPinned(false);
   $hoverVideo.onloadedmetadata = null;
   $hoverVideo.onerror = null;
@@ -3489,21 +3435,17 @@ function closeHover(force = false) {
 function setHoverPinned(on) {
   hoverPinned = on;
   $hoverPin.setAttribute("aria-pressed", String(on));
-  $hoverPin.title = on ? "Pinned: stays when the pointer leaves (a long right-click unpins)"
-                       : "Keep the player while the pointer goes elsewhere (a long right-click does the same)";
+  $hoverPin.title = on ? "Pinned: stays when the pointer leaves (click to unpin)"
+                       : "Keep the player while the pointer moves away";
 }
 setHoverPinned(false);
 
-/// The volume the pointer last left it at; 0 is silence, and turning it up turns the sound on - the pointer on the
-/// slider is a click by waiting.
-function setHoverVolume(value) {
-  hoverVolume = Math.min(1, Math.max(0, Math.round(value * 100) / 100));
-  $hoverVolume.value = String(hoverVolume);
-  $hoverVideo.volume = hoverVolume;
-  $hoverVideo.muted = hoverVolume === 0;
+/// Where the window's own controls last left the volume; muted is per show, so it isn't stored.
+$hoverVideo.addEventListener("volumechange", () => {
+  if ($hoverVideo.muted) return;
+  hoverVolume = Math.min(1, Math.max(0, $hoverVideo.volume));
   localStorage.setItem("hoverVolume", String(hoverVolume));
-  syncHoverSound();
-}
+});
 
 /// The moment on screen, for Save frame: where playback is, or the moment matched when nothing plays.
 function hoverMoment() {
@@ -3511,104 +3453,38 @@ function hoverMoment() {
   return Number.isFinite(time) && time > 0 ? time : (hoverHit?.loc ?? 0);
 }
 
-$hoverPlay.onclick = () => {
-  if ($hoverVideo.paused) $hoverVideo.play().catch(() => {});
-  else $hoverVideo.pause();
-};
-$hoverSeek.oninput = () => {
-  const duration = $hoverVideo.duration;
-  if (!Number.isFinite(duration) || duration <= 0) return;
-  $hoverVideo.currentTime = duration * Number($hoverSeek.value) / 1000;
-};
-$hoverVolume.oninput = () => setHoverVolume(Number($hoverVolume.value));
-$hoverMute.onclick = () => {
-  if ($hoverVideo.muted || $hoverVideo.volume === 0) {
-    setHoverVolume(hoverVolume || 0.25);
-    $hoverVideo.muted = false;
-  } else {
-    $hoverVideo.muted = true;
-  }
-  syncHoverSound();
-};
-$hoverSave.onclick = () => {
-  if (hoverHit) saveFrame(hoverHit.path, "video", hoverMoment());
-};
+$hoverSave.onclick = () => { if (hoverHit) saveFrame(hoverHit.path, "video", hoverMoment()); };
 $hoverOpen.onclick = () => { if (hoverHit) open(hoverHit); };
 $hoverClose.onclick = () => closeHover(true);
 $hoverPin.onclick = () => setHoverPinned(!hoverPinned);
 
-// The pointer in the player cancels the close behind it; leaving it closes it, unless pinned.
-$hover.addEventListener("pointerenter", () => clearTimeout(hoverCloseTimer));
-$hover.addEventListener("pointerleave", () => { if (!hoverDrag) scheduleHoverClose(); });
+// Imagus's hide rule: any pointerover outside the player and its card hides it at once - no leave timers, so a grid
+// full of videos cannot keep an old player playing while the pointer travels across it.
+document.addEventListener("pointerover", (event) => {
+  if ($hover.hidden || hoverPinned) return;
+  const target = event.target;
+  if (target instanceof Element
+      && (target.closest(".hover-play") || (hoverCell && target.closest("[data-path]") === hoverCell))) return;
+  closeHover(true);
+}, true);
 
-// Pinning by a long right-click on the player already on screen: the 450 ms must run out while the button is down, and
-// pressing it does not open the file's menu. Releasing early cancels; releasing after it ran changes nothing.
-$hover.addEventListener("pointerdown", (event) => {
-  if (event.button !== 2) return;
-  clearTimeout(hoverPress);
-  hoverPress = setTimeout(() => setHoverPinned(!hoverPinned), 450);
-});
-$hover.addEventListener("pointerup", (event) => {
-  if (event.button === 2) clearTimeout(hoverPress);
-});
-$hover.addEventListener("pointercancel", () => clearTimeout(hoverPress));
-$hover.addEventListener("contextmenu", (event) => event.preventDefault());
+// The pointer left the page, or the window went to the background: an unpinned player goes; a pinned one only stops.
+document.documentElement.addEventListener("mouseleave", () => { if (!hoverPinned) closeHover(true); });
+window.addEventListener("blur", () => { if (hoverPinned) $hoverVideo.pause(); else closeHover(true); });
 
-// The header drags the player: a pinned one is often in the way where it opened.
-$hoverHead.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button"))) return;
-  const box = $hover.getBoundingClientRect();
-  hoverDrag = { x: event.clientX - box.left, y: event.clientY - box.top };
-  $hoverHead.setPointerCapture(event.pointerId);
-  event.preventDefault();
-});
-$hoverHead.addEventListener("pointermove", (event) => {
-  if (!hoverDrag) return;
-  const width = $hover.offsetWidth, height = $hover.offsetHeight;
-  const left = Math.max(0, Math.min(innerWidth - width, event.clientX - hoverDrag.x));
-  const top = Math.max(0, Math.min(innerHeight - height, event.clientY - hoverDrag.y));
-  $hover.style.left = `${Math.round(left)}px`;
-  $hover.style.top = `${Math.round(top)}px`;
-});
-$hoverHead.addEventListener("pointerup", (event) => {
-  hoverDrag = null;
-  if ($hoverHead.hasPointerCapture(event.pointerId)) $hoverHead.releasePointerCapture(event.pointerId);
-});
-$hoverHead.addEventListener("pointercancel", () => { hoverDrag = null; });
-
-// Keys work while the player has the focus (a click on it): it never takes the focus by itself, so a hover cannot steal
-// Space from the big preview or the typing in the field. Tab does not reach it either (the window's Tab moves between
-// the field and the results), so the keyboard's preview stays Space.
+// Keys: the native controls answer Space and the arrows while the player has the focus; ours is Esc.
 $hover.addEventListener("keydown", (event) => {
-  if (event.target instanceof HTMLInputElement) return;   // the sliders answer the arrows themselves
-  const jump = event.shiftKey ? 15 : 5;
-  switch (event.key) {
-    case " ": event.preventDefault(); event.stopPropagation(); $hoverPlay.click(); break;
-    case "ArrowLeft":
-      event.preventDefault(); event.stopPropagation();
-      $hoverVideo.currentTime = Math.max(0, $hoverVideo.currentTime - jump);
-      break;
-    case "ArrowRight":
-      event.preventDefault(); event.stopPropagation();
-      $hoverVideo.currentTime = Math.min($hoverVideo.duration || Infinity, $hoverVideo.currentTime + jump);
-      break;
-    case "ArrowUp": event.preventDefault(); event.stopPropagation(); setHoverVolume(hoverVolume + 0.05); break;
-    case "ArrowDown": event.preventDefault(); event.stopPropagation(); setHoverVolume(hoverVolume - 0.05); break;
-    case "m":
-    case "M": event.preventDefault(); event.stopPropagation(); $hoverMute.click(); break;
-    case "Escape": event.preventDefault(); event.stopPropagation(); closeHover(true); break;
-  }
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeHover(true);
 });
 
-$content.addEventListener("scroll", () => {
-  // The results moved under a player anchored to a cell: it opens again on the next hover.
-  if (!hoverPinned) closeHover();
-}, { passive: true });
-// The player doesn't scroll the list under it: the pointer is on the player, not on the results.
+// The player doesn't scroll the list under it; the native volume slider's own wheel still runs (this only takes the
+// page's scroll away).
 $hover.addEventListener("wheel", (event) => event.preventDefault(), { passive: false });
-// The window went to the background (another app, or Save frame's own dialog over it): playback stops, the frame stays.
-window.addEventListener("blur", () => $hoverVideo.pause());
-window.addEventListener("resize", () => { if (!hoverPinned) closeHover(); });
+$content.addEventListener("scroll", () => { if (!hoverPinned) closeHover(true); }, { passive: true });
+window.addEventListener("resize", () => { if (!hoverPinned) closeHover(true); });
 
 /// Where a moment sits in a recording: a track with the matched stretch lit (and where playback is).
 function momentBar(start, end, duration, playhead) {
