@@ -1110,6 +1110,58 @@ svg { display: block; }
 .big .view.text { align-items: stretch; justify-content: stretch; overflow: auto; }
 .big .view.text > * { flex: 1; max-height: none; font-size: 14px; }
 .big .view .placeholder svg { width: 96px; height: 96px; opacity: 0.5; }
+.big .title .dims { flex: none; font-size: 12px; color: var(--secondary); font-variant-numeric: tabular-nums; }
+.big .title .dims b { color: var(--text); font-weight: 600; }
+
+/* The picture's tools, in the big preview: a real button each, not a line of text. */
+.big .edit-bar {
+  position: relative; flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--surface);
+}
+.big .edit-bar .grow { flex: 1; }
+.edit-button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-width: 34px; height: 32px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text);
+  font-size: 12.5px; cursor: pointer;
+}
+.edit-button:hover:not(:disabled) { background: var(--tile); border-color: color-mix(in srgb, var(--text) 25%, var(--line)); }
+.edit-button:disabled { opacity: 0.38; cursor: default; }
+.edit-button.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.edit-button svg {
+  width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.big .edit-bar button.text {
+  padding: 6px 15px; font-size: 12.5px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--text); cursor: pointer;
+}
+.big .edit-bar button.text.primary { background: var(--accent); color: white; border-color: transparent; }
+.big .edit-bar button.text:disabled { opacity: 0.45; cursor: default; }
+.big .edit-stage {
+  flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  padding: 16px; overflow: hidden; background: var(--pane);
+}
+.big .edit-stage canvas { max-width: 100%; max-height: 100%; box-shadow: 0 4px 22px rgba(0, 0, 0, 0.28); }
+
+/* Resize: the pixels on either side, a chain for the ratio, and what the picture is and will be. */
+.size-pop {
+  position: absolute; top: calc(100% + 6px); left: 12px; z-index: 5;
+  display: grid; gap: 8px; align-items: center; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.35); font-size: 12.5px;
+}
+.size-pop[hidden] { display: none; }
+.size-pop .row { display: flex; align-items: center; gap: 8px; }
+.size-pop .row span:first-child { width: 52px; color: var(--secondary); }
+.size-pop .unit { color: var(--secondary); }
+.size-pop input {
+  width: 92px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--pane); color: var(--text); font: inherit; font-variant-numeric: tabular-nums;
+}
+.size-pop .lock { grid-row: 1 / span 2; grid-column: 3; align-self: center; }
+.size-pop .summary { grid-column: 1 / -1; color: var(--secondary); font-variant-numeric: tabular-nums; }
+.size-pop .summary b { color: var(--text); }
 
 /* The peek (hover a picture): under the pointer, over whatever is there, and never in the way of a click. */
 .peek {

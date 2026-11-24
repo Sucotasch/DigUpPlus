@@ -32,11 +32,12 @@ pub struct Crop {
     pub height: u32,
 }
 
-/// Shrink (or grow) to a long side, or by a percentage.
+/// To a long side, by a percentage, or to the exact pixel size the person typed (aspect ratio kept by the window).
 #[derive(Debug, Clone, Copy)]
 pub enum Resize {
     LongSide(u32),
     Percent(u32),
+    Exact { width: u32, height: u32 },
 }
 
 /// What the file should be when the edit is done: its own format, JPEG or PNG.
@@ -185,6 +186,7 @@ pub fn edit_picture(path: &Path, ops: Edit) -> Result<Outcome, String> {
                 let scale = f64::from(percent) / 100.0;
                 ((f64::from(width) * scale).round() as u32, (f64::from(height) * scale).round() as u32)
             }
+            Resize::Exact { width, height } => (width.clamp(1, 16384), height.clamp(1, 16384)),
         };
         let (target_width, target_height) = (target_width.max(1), target_height.max(1));
         if (target_width, target_height) != (width, height) {
@@ -700,6 +702,33 @@ mod tests {
         edit(&path, 0, Some(Flip::Horizontal)).unwrap();
         let after = image::open(&path).unwrap().to_rgba8();
         assert_eq!(after.get_pixel(3, 0), &image::Rgba([0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn resizes_to_the_pixels_the_person_typed() {
+        let _serial = serial();
+        let dir = folder();
+        let path = dir.path().join("exact.png");
+        image::RgbaImage::from_pixel(640, 480, image::Rgba([9, 9, 9, 255])).save(&path).unwrap();
+        let outcome = edit_picture(&path, Edit {
+            resize: Some(Resize::Exact { width: 320, height: 240 }), ..Edit::default()
+        }).unwrap();
+        assert_eq!((outcome.width, outcome.height), (320, 240));
+        assert_eq!(image::image_dimensions(&path).unwrap(), (320, 240));
+    }
+
+    #[test]
+    fn a_turn_a_flip_and_a_size_are_one_write() {
+        let _serial = serial();
+        let dir = folder();
+        let path = dir.path().join("combo.png");
+        image::RgbaImage::from_pixel(64, 48, image::Rgba([40, 80, 120, 255])).save(&path).unwrap();
+        let outcome = edit_picture(&path, Edit {
+            rotate: 90, flip: Some(Flip::Horizontal),
+            resize: Some(Resize::Exact { width: 24, height: 32 }), ..Edit::default()
+        }).unwrap();
+        assert_eq!((outcome.width, outcome.height), (24, 32));
+        assert_eq!(image::image_dimensions(&path).unwrap(), (24, 32));
     }
 
     #[test]

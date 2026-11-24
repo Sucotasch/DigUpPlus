@@ -1271,7 +1271,8 @@ async fn rotate_image(path: String, degrees: i64, flip: Option<String>) -> Resul
 /// watcher indexes the new file.
 #[tauri::command]
 async fn edit_picture(shell: State<'_, Arc<Shell>>, path: String, crop: Option<Value>, resize: Option<Value>,
-                      format: Option<String>, quality: Option<u8>) -> Result<Value, String> {
+                      rotate: Option<i64>, flip: Option<String>, format: Option<String>,
+                      quality: Option<u8>) -> Result<Value, String> {
     let shell = shell.inner().clone();
     let original = path.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<image_edit::Outcome, String> {
@@ -1280,19 +1281,29 @@ async fn edit_picture(shell: State<'_, Arc<Shell>>, path: String, crop: Option<V
             Some(image_edit::Crop { x: number("x")?, y: number("y")?, width: number("width")?, height: number("height")? })
         });
         let resize = resize.and_then(|value| {
+            if let (Some(width), Some(height)) = (value.get("width").and_then(Value::as_u64),
+                                                 value.get("height").and_then(Value::as_u64)) {
+                return Some(image_edit::Resize::Exact { width: width as u32, height: height as u32 });
+            }
             if let Some(long) = value.get("longSide").and_then(Value::as_u64) {
                 Some(image_edit::Resize::LongSide(long as u32))
             } else {
                 value.get("percent").and_then(Value::as_u64).map(|percent| image_edit::Resize::Percent(percent as u32))
             }
         });
+        let flip = match flip.as_deref() {
+            Some("horizontal") => Some(image_edit::Flip::Horizontal),
+            Some("vertical") => Some(image_edit::Flip::Vertical),
+            _ => None,
+        };
         let target = match format.as_deref() {
             Some("jpeg") => image_edit::Target::Jpeg,
             Some("png") => image_edit::Target::Png,
             _ => image_edit::Target::Keep,
         };
         image_edit::edit_picture(Path::new(&original), image_edit::Edit {
-            crop, resize, target, quality: quality.unwrap_or(92), ..image_edit::Edit::default()
+            crop, resize, rotate: rotate.unwrap_or(0) as i32, flip, target,
+            quality: quality.unwrap_or(92),
         })
     })
     .await
