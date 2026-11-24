@@ -91,7 +91,10 @@ echo "HELPER SHA256: $helper_sha"
 if [[ "${SHELL_ONLY:-0}" == "1" ]]; then
   small="$PWD/.build/DigUpPlus-$version-shell-only.zip"
   rm -f "$small"
-  (cd "$release" && powershell -NoProfile -Command "Compress-Archive -Path 'DigUpPlus.exe','portable.txt','THIRD-PARTY-NOTICES.txt' -DestinationPath '$small' -Force")
+  # PowerShell doesn't read Git Bash's /d/... paths: hand it a Windows one.
+  small_arg="$small"
+  if command -v cygpath > /dev/null; then small_arg=$(cygpath -w "$small"); fi
+  (cd "$release" && powershell -NoProfile -Command "Compress-Archive -Path 'DigUpPlus.exe','portable.txt','THIRD-PARTY-NOTICES.txt' -DestinationPath '$small_arg' -Force")
   echo "SHELL-ONLY ZIP: $small"
 fi
 ls -la "$exe" "$release/helper" "$release/portable.txt" "$release/THIRD-PARTY-NOTICES.txt"

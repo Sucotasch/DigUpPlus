@@ -2524,7 +2524,13 @@ function previewPicture(hit) {
     frame.append(marks);
   }
   if (hit.kind === "video") {
-    // ▶ plays it here from the moment that matched.
+    // The matched frame is worth keeping before playing too: the button saves the moment, and ▶ plays from it.
+    const wrap = element("div", "video-preview");
+    const actions = element("div", "media-actions");
+    const save = element("button", "", "Save frame");
+    save.title = `Save the frame at ${clock(hit.loc ?? 0)}`;
+    save.onclick = () => saveFrame(hit.path, "video", hit.loc ?? 0);
+    actions.append(save);
     const play = element("button", "play");
     play.innerHTML = ICONS.play;
     play.title = `Play from ${clock(hit.loc ?? 0)}`;
@@ -2534,13 +2540,18 @@ function previewPicture(hit) {
       video.controls = true;
       video.autoplay = true;
       // The frame on screen, not only the moment that matched: the person can stop anywhere and take this one.
-      const actions = element("div", "media-actions");
-      const save = element("button", "", "Save frame");
-      save.onclick = () => saveFrame(hit.path, "video", video.currentTime);
-      actions.append(save);
-      box.replaceChildren(video, actions);
+      const playing = element("div", "media-actions");
+      const take = element("button", "", "Save frame");
+      take.onclick = () => saveFrame(hit.path, "video", video.currentTime);
+      playing.append(take);
+      const player = element("div", "video-preview");
+      player.append(video, playing);
+      box.replaceChildren(player);
     };
     frame.append(play);
+    wrap.append(frame, actions);
+    box.append(wrap);
+    return box;
   }
   box.append(frame);
   return box;
