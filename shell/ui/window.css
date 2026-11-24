@@ -1053,6 +1053,28 @@ svg { display: block; }
 .modal-actions button:disabled { opacity: 0.5; }
 .modal-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* Frames… / Contact sheet…: a few fields, the common case already filled in. */
+.frames-sheet .sheet-about { color: var(--secondary); font-size: 12px; margin-top: 4px; }
+.frames-sheet .fields { display: grid; gap: 8px; margin: 14px 0 8px; }
+.frames-sheet .field { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.frames-sheet .field input,
+.frames-sheet .field select {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  min-width: 150px;
+}
+.frames-sheet .field input[type="number"] { width: 84px; min-width: 84px; }
+.frames-sheet .field input:focus-visible,
+.frames-sheet .field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.frames-sheet .sheet-note { color: var(--secondary); font-size: 12px; line-height: 1.4; }
+.frames-sheet .sheet-error { color: #d7443e; font-size: 12px; margin-top: 6px; }
+.frames-sheet .sheet-error[hidden] { display: none; }
+
 /* The big preview (Space): the selected result over the window, as big as it allows. */
 .big { position: fixed; inset: 0; z-index: 20; display: flex; padding: 24px; background: rgba(0, 0, 0, 0.45); }
 .big[hidden] { display: none; }

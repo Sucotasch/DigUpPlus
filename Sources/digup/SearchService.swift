@@ -43,6 +43,12 @@ import Foundation
 ///                                               one) and kept in <index>/previews until the next start; `full` keeps a
 ///                                               video frame at the file's own size (saving it), and ignores `pixels`;
 ///                                               `data` adds the JPEG's bytes inline (a copy to the clipboard)
+///   {"op":"frames","path":…,"mode":"sequence|sheet","start":s,"count":n,"step":"second|evenly","pixels":n,"out":…}
+///                                             → {"files":[…],"times":[s…],"frames":n,"ms":n}: stills for a person, on
+///                                               their own lane (a second request while one runs is refused): a
+///                                               sequence of `0001.jpg…` into `out`, or one contact sheet there.
+///                                               "second" stops after the count; "evenly" spans the clip (reads it
+///                                               all). Formats the web view can't play are fine — ffmpeg reads.
 ///   {"op":"visual_groups","paths":[…],"difference":6} → {"groups":[[path…],…],"computed":n,"pending":n}: Find similar's
 ///                                               look-alike groups (Phash256; `difference` is a percentage of the 256
 ///                                               bits). A few missing fingerprints are computed per call and kept.
@@ -103,6 +109,10 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     private var renderedOrder: [String] = []
     private let renderLock = NSLock()
     private let renderSlots = DispatchSemaphore(value: 2)
+    /// One extraction (`frames`) at a time: the same disk and the same ffmpeg serve previews, and two runs would only
+    /// fight each other.
+    private let extractionLock = NSLock()
+    private var extracting = false
     /// The most previews kept on disk. A page is ~100 KB, so this is ~50 MB: a 5,000-page book flipped through at the
     /// wheel must not leave half a gigabyte behind until the helper restarts. An evicted picture is rendered again when
     /// it is asked for, which costs what it cost the first time.
@@ -159,6 +169,32 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                         do { reply = try render(request.value) } catch {
                             reply = ["ok": false, "error": String("\(error)".prefix(500))]
                         }
+                        reply["id"] = request.value["id"] ?? NSNull()
+                        write(reply)
+                    }
+                    continue
+                }
+                if op == "frames" {
+                    // Stills can take minutes on a long clip: its own lane, or every search and preview would queue behind
+                    // it. One at a time - two extractions would fight for the same disk and the same ffmpeg.
+                    let claimed = extractionLock.withLock { () -> Bool in
+                        if extracting { return false }
+                        extracting = true
+                        return true
+                    }
+                    guard claimed else {
+                        var busy: [String: Any] = ["ok": false, "error": "an extraction is already running"]
+                        busy["id"] = id
+                        write(busy)
+                        continue
+                    }
+                    let request = UncheckedSendable(request)
+                    Thread.detachNewThread { [self] in
+                        var reply: [String: Any]
+                        do { reply = try extractFrames(request.value) } catch {
+                            reply = ["ok": false, "error": String("\(error)".prefix(500))]
+                        }
+                        extractionLock.withLock { extracting = false }
                         reply["id"] = request.value["id"] ?? NSNull()
                         write(reply)
                     }
@@ -529,6 +565,42 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     }
 
     // MARK: Previews
+
+    /// Stills a person asked for: a sequence of JPEGs into `out`, or one contact sheet there. ffmpeg does the reading,
+    /// so a format the web view can't play is no obstacle. The Mac app keeps its own path; this helper's op is the
+    /// portable one.
+    private func extractFrames(_ request: [String: Any]) throws -> [String: Any] {
+        #if canImport(AVFoundation)
+        throw CLIError("frame extraction isn't available on this system yet")
+        #else
+        guard let path = request["path"] as? String, !path.isEmpty else { throw CLIError("which file?") }
+        guard let out = request["out"] as? String, !out.isEmpty else { throw CLIError("where should the frames go?") }
+        let sheet = request["mode"] as? String == "sheet"
+        let url = URL(fileURLWithPath: path)
+        let count = min(max(request["count"] as? Int ?? 12, 1), sheet ? 24 : 120)
+        let start = max(0, (request["start"] as? NSNumber)?.doubleValue ?? 0)
+        let pixels = max(0, request["pixels"] as? Int ?? 0)
+        let spread = (request["step"] as? String) == "evenly"
+        let folder = URL(fileURLWithPath: out)
+        let started = Date()
+        var reply: [String: Any] = ["ok": true]
+        if sheet {
+            let file = folder.appendingPathComponent("sheet.jpg")
+            let frames = try VideoExtractor.sheet(of: url, start: start, count: count, spread: spread,
+                                                  pixels: pixels > 0 ? pixels : 480, columns: 4,
+                                                  to: file, scratch: folder.appendingPathComponent("frames"))
+            reply["files"] = [file.path]
+            reply["frames"] = frames
+        } else {
+            let frames = try VideoExtractor.stills(of: url, start: start, count: count, spread: spread,
+                                                   pixels: pixels, to: folder)
+            reply["files"] = frames.map(\.url.path)
+            reply["times"] = frames.map(\.at)
+        }
+        reply["ms"] = Int(Date().timeIntervalSince(started) * 1000)
+        return reply
+        #endif
+    }
 
     private func render(_ request: [String: Any]) throws -> [String: Any] {
         guard let path = request["path"] as? String else { throw CLIError("which file?") }

@@ -57,7 +57,7 @@ import Testing
     /// MPEG-TS works because ffmpeg reads it, which is the point (formats the web view can't play still give stills).
     @Test func aSequenceTakesOneStillPerStep() async throws {
         let out = folder.appendingPathComponent("sequence")
-        let frames = try await VideoExtractor.sequence(of: Self.shots, start: 0, count: 3, step: 4, pixels: 320,
+        let frames = try VideoExtractor.stills(of: Self.shots, start: 0, count: 3, spread: true, pixels: 320,
                                                        to: out)
         #expect(frames.map(\.url.lastPathComponent) == ["0001.jpg", "0002.jpg", "0003.jpg"])
         #expect(try frames.map { try ImageTests.decode($0.url.path).quadrants[0] } == ["R", "G", "B"])
@@ -68,7 +68,7 @@ import Testing
     @Test func aContactSheetIsOnePicture() async throws {
         let out = folder.appendingPathComponent("sheet.jpg")
         let scratch = folder.appendingPathComponent("sheet-frames")
-        let used = try await VideoExtractor.contactSheet(of: Self.shots, start: 0, count: 3, step: 4, pixels: 160,
+        let used = try VideoExtractor.sheet(of: Self.shots, start: 0, count: 3, spread: false, pixels: 160,
                                                          columns: 4, to: out, scratch: scratch)
         #expect(used == 3)
         let sheet = try ImageTests.decode(out.path)
@@ -80,7 +80,7 @@ import Testing
     /// rows of four.
     @Test func aShortClipPadsTheLastRow() async throws {
         let out = folder.appendingPathComponent("five.jpg")
-        let used = try await VideoExtractor.contactSheet(of: Self.shots, start: 0, count: 5, step: 1.6, pixels: 80,
+        let used = try VideoExtractor.sheet(of: Self.shots, start: 0, count: 5, spread: false, pixels: 80,
                                                          columns: 4, to: out,
                                                          scratch: folder.appendingPathComponent("five-frames"))
         #expect(used == 5)

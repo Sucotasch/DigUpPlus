@@ -216,15 +216,25 @@ extension VideoExtractor {
         }
     }
 
-    /// Stills for a person, not for the model: `count` frames from `start`, one every `step` seconds, each at most
-    /// `pixels` on its long side (0: the source's own size, never upscaled), as `0001.jpg…` in `folder` - with the
-    /// moment each one shows. One ffmpeg pass, and `-frames:v` stops it after the count: "every second" does not decode
-    /// a whole film, while a step that reaches across the clip does (no way to ask for a frame ten minutes in without
-    /// reading to it). An MPEG-TS has no index, so the same lead-in as `frame(at:)` is used. A format the web view
-    /// can't play is no obstacle: ffmpeg does the reading.
-    static func sequence(of url: URL, start: Double, count: Int, step: Double, pixels: Int,
-                         to folder: URL) async throws -> [(url: URL, at: Double)] {
+    /// Stills for a person, not for the model: `count` frames from `start`, one every second (or spread across the
+    /// clip when `spread`), each at most `pixels` on its long side (0: the source's own size, never upscaled), as
+    /// `0001.jpg…` in `folder` - with the moment each one shows. One ffmpeg pass, and `-frames:v` stops it after the
+    /// count: "every second" does not decode a whole film, while a spread step does (no way to ask for a frame ten
+    /// minutes in without reading to it). An MPEG-TS has no index, so the same lead-in as `frame(at:)` is used. A
+    /// format the web view can't play is no obstacle: ffmpeg does the reading.
+    public static func stills(of url: URL, start: Double, count: Int, spread: Bool, pixels: Int,
+                              to folder: URL) throws -> [(url: URL, at: Double)] {
         guard count > 0 else { throw ExtractError.unreadable("no frames asked for") }
+        guard MediaInfo.streams(of: url).video else { throw ExtractError.unreadable("no video in this file") }
+        let step: Double
+        if spread {
+            guard let duration = MediaInfo.duration(of: url), duration > 0 else {
+                throw ExtractError.unreadable("the clip's length couldn't be read, so the frames can't be spread")
+            }
+            step = duration / Double(count)
+        } else {
+            step = 1
+        }
         guard step > 0, step.isFinite else { throw ExtractError.unreadable("no frame step") }
         let first = max(0, start)
         let lead = Rules.isMPEGTransportStream(url) ? min(first, 12) : 0
@@ -251,9 +261,9 @@ extension VideoExtractor {
     /// The frames are read back from disk, so a clip shorter than `count` gives a sheet partial in its last row. No
     /// `tile` filter: the vendored ffmpeg is a small build (34 filters, see `scripts/build-ffmpeg.sh`) and has
     /// `hstack`/`vstack`/`pad` instead - which also keeps ffmpeg the writer, so a path outside ASCII is its problem.
-    static func contactSheet(of url: URL, start: Double, count: Int, step: Double, pixels: Int, columns: Int,
-                             to out: URL, scratch: URL) async throws -> Int {
-        let frames = try await sequence(of: url, start: start, count: count, step: step, pixels: pixels, to: scratch)
+    public static func sheet(of url: URL, start: Double, count: Int, spread: Bool, pixels: Int, columns: Int,
+                             to out: URL, scratch: URL) throws -> Int {
+        let frames = try stills(of: url, start: start, count: count, spread: spread, pixels: pixels, to: scratch)
         defer { try? FileManager.default.removeItem(at: scratch) }
         guard let first = frames.first else { throw ExtractError.unreadable("no frames for the sheet") }
         // The tiles are the frames as ffmpeg scaled them; ffprobe says their size without decoding them again.

@@ -49,8 +49,9 @@ enum AudioExtractor {
 }
 
 /// Video for the model: a keyframe per shot (`keyframes`: AVFoundation on macOS, ffmpeg elsewhere); the soundtrack goes
-/// through `AudioExtractor`.
-enum VideoExtractor {}
+/// through `AudioExtractor`. Public for the stills a person asks for (`stills`/`sheet`): those signatures are plain
+/// paths and numbers, and the helper's `frames` op calls them.
+public enum VideoExtractor {}
 
 /// Durations from the files themselves (`duration`), for when the file system's metadata hasn't got them.
 enum MediaInfo {}

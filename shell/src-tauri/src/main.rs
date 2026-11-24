@@ -1118,16 +1118,132 @@ fn copy_text(window: tauri::WebviewWindow, text: String) -> Result<(), String> {
 /// The name a saved frame gets: the video's own, the moment, and `.jpg` — `Name — 00-12-34.jpg`. Characters Windows
 /// doesn't allow in a name become '-' (a name is what a person sees, not a path), and trailing dots and spaces go.
 fn frame_name(path: &Path, at: f64) -> String {
+    let clean = safe_stem(path);
+    let total = at.max(0.0).trunc() as i64;
+    let (hours, minutes, seconds) = (total / 3600, (total % 3600) / 60, total % 60);
+    format!("{clean} — {hours:02}-{minutes:02}-{seconds:02}.jpg")
+}
+
+/// The file's own name, safe to put in a path the index will walk: the characters Windows refuses become '-', and
+/// trailing dots and spaces (Windows drops them silently) go.
+fn safe_stem(path: &Path) -> String {
     let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("frame");
     let clean: String = stem
         .chars()
         .map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '-' } else { c })
         .collect();
     let clean = clean.trim_matches([' ', '.']);
-    let clean = if clean.is_empty() { "frame" } else { clean };
-    let total = at.max(0.0).trunc() as i64;
-    let (hours, minutes, seconds) = (total / 3600, (total % 3600) / 60, total % 60);
-    format!("{clean} — {hours:02}-{minutes:02}-{seconds:02}.jpg")
+    if clean.is_empty() { "frame".to_string() } else { clean.to_string() }
+}
+
+/// Where a new file or folder can go without taking a name that is already there: `name`, else `name (2)`, `(3)`…
+/// Windows' own habit, and the reason a second extraction never overwrites the first.
+fn available_path(parent: &Path, name: &str, extension: Option<&str>) -> Option<PathBuf> {
+    for number in 1..=100 {
+        let stem = if number == 1 { name.to_string() } else { format!("{name} ({number})") };
+        let candidate = match extension {
+            Some(ext) => parent.join(format!("{stem}.{ext}")),
+            None => parent.join(stem),
+        };
+        if !candidate.exists() { return Some(candidate); }
+    }
+    None
+}
+
+/// Frames… and Contact sheet…: the helper extracts stills into a hidden folder the shell just made (inside the video's
+/// own folder, so the rename that follows stays on one volume and copies nothing), and the shell gives them the name
+/// it reserved - `<video> — frames/0001.jpg…` or `<video> — sheet.jpg`. Nothing is overwritten: a taken name becomes
+/// `(2)`. The helper never chooses a name and never writes outside the folder it was handed.
+#[tauri::command]
+async fn extract_frames(shell: State<'_, Arc<Shell>>, path: String, mode: String, start: f64, count: i64,
+                        step: String, pixels: i64) -> Result<Value, String> {
+    let shell = shell.inner().clone();
+    let source = PathBuf::from(&path);
+    let parent = source.parent().ok_or("the video has no folder")?.to_path_buf();
+    let stem = safe_stem(&source);
+    let sheet = mode == "sheet";
+    let count = count.clamp(1, if sheet { 24 } else { 120 });
+    let answer = json!({
+        "op": "frames", "path": path, "mode": mode, "start": start.max(0.0), "count": count,
+        "step": if step == "evenly" { "evenly" } else { "second" },
+        "pixels": pixels.max(0), "out": null,
+    });
+
+    // The temp folder's name is the shell's, unique per call: two extractions never meet.
+    static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = parent.join(format!(".digup-{}-{serial}", std::process::id()));
+    let finish = |error: String| -> Result<Value, String> {
+        let _ = std::fs::remove_dir_all(&temp);
+        Err(error)
+    };
+    std::fs::create_dir_all(&temp).map_err(|error| format!("the frames' folder couldn't be made: {error}"))?;
+    let mut request = answer;
+    request["out"] = json!(temp.display().to_string());
+
+    if sheet {
+        let Some(file) = available_path(&parent, &format!("{stem} — sheet"), Some("jpg")) else {
+            let _ = std::fs::remove_dir_all(&temp);
+            return Err("there are too many sheets beside this video already".into());
+        };
+        // A placeholder holds the name while the helper works; the sheet is renamed over it (same folder).
+        std::fs::OpenOptions::new().write(true).create_new(true).open(&file)
+            .map_err(|error| format!("the sheet's name couldn't be reserved: {error}"))?;
+        let reply = match shell.search.ask(request.clone()).await {
+            Ok(reply) if reply["ok"].as_bool() == Some(true) => reply,
+            Ok(reply) => {
+                let _ = std::fs::remove_file(&file);
+                return finish(reply["error"].as_str().unwrap_or("the sheet couldn't be made").to_string());
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&file);
+                return finish(error);
+            }
+        };
+        let made = PathBuf::from(reply["files"][0].as_str().unwrap_or_default());
+        if let Err(error) = std::fs::rename(&made, &file) {
+            let _ = std::fs::remove_file(&file);
+            return finish(format!("the sheet couldn't be put in place: {error}"));
+        }
+        let _ = std::fs::remove_dir_all(&temp);
+        return Ok(json!({ "file": file.display().to_string(), "frames": reply["frames"] }));
+    }
+
+    let Some(folder) = available_path(&parent, &format!("{stem} — frames"), None) else {
+        let _ = std::fs::remove_dir_all(&temp);
+        return Err("there are too many frame folders beside this video already".into());
+    };
+    if let Err(error) = std::fs::create_dir(&folder) {
+        return finish(format!("the frames' folder couldn't be made: {error}"));
+    }
+    let reply = match shell.search.ask(request.clone()).await {
+        Ok(reply) if reply["ok"].as_bool() == Some(true) => reply,
+        Ok(reply) => {
+            let _ = std::fs::remove_dir(&folder);
+            return finish(reply["error"].as_str().unwrap_or("the frames couldn't be made").to_string());
+        }
+        Err(error) => {
+            let _ = std::fs::remove_dir(&folder);
+            return finish(error);
+        }
+    };
+    let mut saved = Vec::new();
+    for file in reply["files"].as_array().cloned().unwrap_or_default() {
+        let from = PathBuf::from(file.as_str().unwrap_or_default());
+        let Some(name) = from.file_name() else { continue };
+        let to = folder.join(name);
+        if let Err(error) = std::fs::rename(&from, &to) {
+            let _ = std::fs::remove_dir_all(&folder);
+            return finish(format!("a frame couldn't be put in place: {error}"));
+        }
+        saved.push(to.display().to_string());
+    }
+    if saved.is_empty() {
+        let _ = std::fs::remove_dir_all(&folder);
+        return finish("the helper made no frames".into());
+    }
+    let _ = std::fs::remove_dir_all(&temp);
+    Ok(json!({ "folder": folder.display().to_string(), "files": saved }))
 }
 
 /// Save Frame…: the helper renders the frame at `loc` at the video's own size (not the preview's 2048 px), and the
@@ -1538,6 +1654,7 @@ fn main() {
             remove_folder, set_skipped, set_skip_types, set_tag_types, set_root_rule, list_subfolders, set_search_settings, rescan_folder, reread_folder, repick_preview, repick_apply, forget_folder, set_index_hours, mcp_config, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, copy_text,
             save_frame,
+            extract_frames,
             drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases, pick_totalcmd, set_totalcmd_new_tab, open_in_totalcmd,
             set_lookalike,

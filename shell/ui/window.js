@@ -1403,6 +1403,11 @@ function wire(item, hit) {
         [`Save Frame at ${clock(hit.loc)}…`, () => saveFrame(hit.path, "video", hit.loc)],
         ["Copy Frame", () => copyFrame(hit.path, "video", hit.loc)]);
     }
+    if (hit.kind === "video") {
+      // Two separate things (a sequence of stills, or one contact sheet), both beside the video and neither overwriting.
+      items.push(["Extract frames…", () => framesDialog(hit, "sequence")],
+                 ["Contact sheet…", () => framesDialog(hit, "sheet")]);
+    }
     if (MEDIA.has(hit.kind)) items.push(null, ["Find similar", () => findSimilar(hit)]);
     if (fileTargets.length) {
       items.push(null, ["Move To…", () => moveOrCopy("move", fileTargets)],
@@ -2532,7 +2537,13 @@ function previewPicture(hit) {
     const save = element("button", "", "Save frame");
     save.title = `Save the frame at ${clock(hit.loc ?? 0)}`;
     save.onclick = () => saveFrame(hit.path, "video", hit.loc ?? 0);
-    actions.append(save);
+    const frames = element("button", "", "Frames…");
+    frames.title = "Stills from this video, as JPEGs in a folder beside it";
+    frames.onclick = () => framesDialog(hit, "sequence");
+    const sheet = element("button", "", "Sheet…");
+    sheet.title = "One contact sheet of this video's stills";
+    sheet.onclick = () => framesDialog(hit, "sheet");
+    actions.append(save, frames, sheet);
     const play = element("button", "play");
     play.innerHTML = ICONS.play;
     play.title = `Play from ${clock(hit.loc ?? 0)}`;
@@ -2613,6 +2624,121 @@ async function copyFrame(path, kind, at) {
   } catch (error) {
     failed(`The frame couldn't be copied: ${error}`);
   }
+}
+
+/// Frames… and Contact sheet…: the helper reads the stills (ffmpeg does, so a format the web view can't play is fine)
+/// and the shell puts them beside the video under a name it reserved - nothing is overwritten. The sheet asks only what
+/// a person would change: how many, from where, how often, how big.
+function framesDialog(hit, mode) {
+  if (!hit || hit.kind !== "video" || !$modal.hidden) return;
+  const sheet = mode === "sheet";
+  const duration = Number(hit.info?.duration || 0);
+  const box = element("div", "frames-sheet");
+  box.append(element("h2", "", sheet ? "Contact sheet" : "Extract frames"));
+  box.append(element("div", "sheet-about",
+    `${nameOf(hit.path)}${duration > 0 ? ` · ${clock(duration)}` : ""}`));
+
+  const fields = element("div", "fields");
+  const countField = element("label", "field");
+  countField.append(element("span", "", sheet ? "Frames (up to 24)" : "How many (up to 120)"));
+  const count = element("input");
+  count.type = "number";
+  count.min = "1";
+  count.max = sheet ? "24" : "120";
+  count.value = "12";
+  countField.append(count);
+  fields.append(countField);
+
+  let from = null, stepSelect = null, sizeSelect = null;
+  if (!sheet) {
+    const fromField = element("label", "field");
+    fromField.append(element("span", "", "From (seconds)"));
+    from = element("input");
+    from.type = "number";
+    from.min = "0";
+    from.step = "1";
+    from.value = String(Math.floor(hit.loc ?? 0));
+    fromField.append(from);
+    fields.append(fromField);
+
+    const stepField = element("label", "field");
+    stepField.append(element("span", "", "Every"));
+    stepSelect = element("select");
+    for (const [value, label] of [["second", "1 second"], ["evenly", "Evenly across the clip"]]) {
+      const option = element("option", "", label);
+      option.value = value;
+      stepSelect.append(option);
+    }
+    stepField.append(stepSelect);
+    fields.append(stepField);
+
+    const sizeField = element("label", "field");
+    sizeField.append(element("span", "", "Size"));
+    sizeSelect = element("select");
+    for (const [value, label] of [["0", "Original size"], ["1280", "1280 px (long side)"]]) {
+      const option = element("option", "", label);
+      option.value = value;
+      sizeSelect.append(option);
+    }
+    sizeField.append(sizeSelect);
+    fields.append(sizeField);
+  }
+
+  const note = element("div", "sheet-note");
+  const updateNote = () => {
+    if (sheet) note.textContent = "One JPEG, four tiles across, beside the video. Nothing is overwritten.";
+    else if (stepSelect.value === "evenly" && duration > 600) {
+      note.textContent = "Evenly reads the whole clip: minutes on a video this long.";
+    } else {
+      note.textContent = "JPEGs in a folder beside the video. Nothing is overwritten.";
+    }
+  };
+  updateNote();
+  stepSelect?.addEventListener("change", updateNote);
+  const error = element("div", "sheet-error");
+  error.hidden = true;
+
+  // Escape must not hide the sheet while the extraction runs: the work goes on, and a closed sheet would read as a
+  // cancel. The note reports the result when it lands.
+  let running = false;
+  box.addEventListener("keydown", (event) => {
+    if (running && event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
+
+  const actions = element("div", "modal-actions");
+  const cancel = element("button", "", "Cancel");
+  cancel.onclick = closeModal;
+  const go = element("button", "primary", sheet ? "Make sheet" : "Extract");
+  go.onclick = async () => {
+    const asked = Math.round(Number(count.value));
+    if (!Number.isFinite(asked) || asked < 1) { count.focus(); return; }
+    const controls = [count, from, stepSelect, sizeSelect, go, cancel].filter(Boolean);
+    for (const control of controls) control.disabled = true;
+    running = true;
+    error.hidden = true;
+    go.textContent = sheet ? "Making…" : "Extracting…";
+    try {
+      const reply = await invoke("extract_frames", {
+        path: hit.path, mode, start: from ? Math.max(0, Number(from.value)) : 0, count: asked,
+        step: stepSelect ? stepSelect.value : "second", pixels: sizeSelect ? Number(sizeSelect.value) : 0,
+      });
+      closeModal();
+      if (reply?.folder) setNote(`Saved ${countOf(reply.files?.length ?? 0, "frame")} in ${reply.folder}`);
+      else if (reply?.file) setNote(`Saved ${reply.file.split(/[\\/]/).pop()}`);
+    } catch (failure) {
+      running = false;
+      for (const control of controls) control.disabled = false;
+      go.textContent = sheet ? "Make sheet" : "Extract";
+      error.textContent = String(failure);
+      error.hidden = false;
+    }
+  };
+  actions.append(cancel, go);
+  box.append(fields, note, error, actions);
+  showModal(box);
 }
 
 let ocrToken = 0;   // the preview whose words are being fetched: a late reply for an older one is dropped
