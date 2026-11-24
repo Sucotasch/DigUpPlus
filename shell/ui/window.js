@@ -1414,7 +1414,8 @@ function wire(item, hit) {
         ["Rotate left", () => rotatePicture(hit, 270)],
         ["Rotate right", () => rotatePicture(hit, 90)],
         ["Flip horizontally", () => rotatePicture(hit, 0, "horizontal")],
-        ["Flip vertically", () => rotatePicture(hit, 0, "vertical")]);
+        ["Flip vertically", () => rotatePicture(hit, 0, "vertical")],
+        ["Edit…", () => editDialog(hit)]);
     }
     if (MEDIA.has(hit.kind)) items.push(null, ["Find similar", () => findSimilar(hit)]);
     if (fileTargets.length) {
@@ -2574,6 +2575,23 @@ function previewPicture(hit) {
     box.append(wrap);
     return box;
   }
+  if (hit.kind === "image" || hit.kind === "screenshot") {
+    // The picture itself is edited here too: it turns in place, and Ctrl+Z puts it back.
+    const actions = element("div", "media-actions");
+    const left = element("button", "", "Rotate left");
+    left.title = "Turn the picture itself left; Ctrl+Z undoes it";
+    left.onclick = () => rotatePicture(hit, 270);
+    const right = element("button", "", "Rotate right");
+    right.onclick = () => rotatePicture(hit, 90);
+    const edit = element("button", "", "Edit…");
+    edit.title = "Crop, resize or change the format";
+    edit.onclick = () => editDialog(hit);
+    actions.append(left, right, edit);
+    const wrap = element("div", "video-preview");
+    wrap.append(frame, actions);
+    box.append(wrap);
+    return box;
+  }
   box.append(frame);
   return box;
 }
@@ -2787,6 +2805,149 @@ function refreshPicture(path) {
       (file) => { if (cell.isConnected) cell.dataset.thumb = file; }, () => {});
   }
   if (state.selection === path) renderSide();
+}
+
+let editCropper = null;   // the open Edit sheet's crop box; destroyed whenever the sheet goes
+
+function destroyEditCropper() {
+  if (!editCropper) return;
+  try { editCropper.destroy(); } catch {}
+  editCropper = null;
+}
+
+/// Edit…: crop on the rendered preview, resize, and a format change - one write for all of it. Rotate and flip are the
+/// menu's own entries; a crop box stays meaningful without them, and Image Sorter keeps them apart the same way.
+function editDialog(hit) {
+  if (!hit || !["image", "screenshot"].includes(hit.kind) || !$modal.hidden) return;
+  destroyEditCropper();
+  const box = element("div", "modal-box frames-sheet edit-sheet");
+  box.append(element("h2", "", "Edit the picture"));
+  box.append(element("div", "sheet-about", `${nameOf(hit.path)} · the file itself changes; Ctrl+Z undoes it`));
+  const stage = element("div", "edit-stage");
+  const image = element("img");
+  image.alt = "";
+  stage.append(image);
+  const fields = element("div", "fields");
+
+  const resizeField = element("label", "field");
+  resizeField.append(element("span", "", "Resize"));
+  const resizeMode = element("select");
+  for (const [value, label] of [["keep", "Keep size"], ["long", "Long side…"], ["percent", "Percent…"]]) {
+    const option = element("option", "", label);
+    option.value = value;
+    resizeMode.append(option);
+  }
+  const resizeValue = element("input");
+  resizeValue.type = "number";
+  resizeValue.min = "1";
+  resizeValue.value = "1280";
+  resizeValue.hidden = true;
+  resizeField.append(resizeMode, resizeValue);
+  fields.append(resizeField);
+  resizeMode.onchange = () => {
+    resizeValue.hidden = resizeMode.value === "keep";
+    resizeValue.max = resizeMode.value === "percent" ? "400" : "16384";
+    resizeValue.value = resizeMode.value === "percent" ? "50" : "1280";
+  };
+
+  const formatField = element("label", "field");
+  formatField.append(element("span", "", "Format"));
+  const format = element("select");
+  for (const [value, label] of [["keep", "Keep format"], ["jpeg", "JPEG"], ["png", "PNG"]]) {
+    const option = element("option", "", label);
+    option.value = value;
+    format.append(option);
+  }
+  const quality = element("input");
+  quality.type = "number";
+  quality.min = "60";
+  quality.max = "100";
+  quality.value = "92";
+  quality.title = "JPEG quality";
+  formatField.append(format, quality);
+  fields.append(formatField);
+  const syncQuality = () => {
+    quality.hidden = !(format.value === "jpeg"
+      || (format.value === "keep" && /\.(jpe?g|jpe|jfif|jfi|jif)$/i.test(hit.path)));
+  };
+  format.onchange = syncQuality;
+  syncQuality();
+
+  const note = element("div", "sheet-note",
+    "Drag on the picture to crop it; leave it untouched to keep the whole picture.");
+  const error = element("div", "sheet-error");
+  error.hidden = true;
+
+  const actions = element("div", "modal-actions");
+  const cancel = element("button", "", "Cancel");
+  cancel.onclick = () => { destroyEditCropper(); closeModal(); };
+  const go = element("button", "primary", "Apply");
+  go.onclick = async () => {
+    const crop = editCrop(hit, image);
+    const resize = resizeMode.value === "keep" ? null
+      : resizeMode.value === "percent" ? { percent: Math.round(Number(resizeValue.value)) }
+      : { longSide: Math.round(Number(resizeValue.value)) };
+    const target = format.value === "keep" ? null : format.value;
+    const controls = [resizeMode, resizeValue, format, quality, go, cancel].filter(Boolean);
+    for (const control of controls) control.disabled = true;
+    error.hidden = true;
+    go.textContent = "Applying…";
+    try {
+      const reply = await invoke("edit_picture", {
+        path: hit.path, crop, resize, format: target, quality: Math.round(Number(quality.value)),
+      });
+      destroyEditCropper();
+      closeModal();
+      if (reply?.converted) {
+        setNote(`Converted to ${nameOf(reply.path)} (${reply.width}×${reply.height})`);
+        // The old row is gone; the watcher indexes the new file, and a search then shows it.
+        setTimeout(() => { if (state.hasResults && !state.busy) setQuery(state.text); }, 2500);
+      } else if (reply?.path) {
+        setNote(`Edited ${nameOf(reply.path)} (${reply.width}×${reply.height})`);
+        refreshPicture(reply.path);
+      }
+    } catch (failure) {
+      for (const control of controls) control.disabled = false;
+      go.textContent = "Apply";
+      error.textContent = String(failure);
+      error.hidden = false;
+    }
+  };
+  actions.append(cancel, go);
+  box.append(stage, fields, note, error, actions);
+  showModal(box);
+
+  ask({ op: "render", kind: "image", path: hit.path, pixels: 1800, data: true }).then((reply) => {
+    if (!reply?.data) throw new Error("the helper sent no picture");
+    image.onload = () => {
+      if (!box.isConnected) return;
+      // Nothing is cropped until the person draws a box.
+      editCropper = new window.Cropper(image, { viewMode: 1, autoCrop: false, background: false, responsive: true,
+                                                guides: false, toggleDragModeOnDblclick: false, checkOrientation: false });
+    };
+    image.src = `data:image/jpeg;base64,${reply.data}`;
+  }).catch((failure) => {
+    error.textContent = String(failure);
+    error.hidden = false;
+  });
+}
+
+/// The crop box in the source's own pixels: the preview is the helper's render, so its natural size is scaled back to
+/// what the index says the file is.
+function editCrop(hit, preview) {
+  if (!editCropper) return null;
+  const data = editCropper.getData(true);
+  if (!data || data.width < 2 || data.height < 2) return null;
+  const sourceWidth = Number(hit.info?.width) || preview.naturalWidth;
+  const sourceHeight = Number(hit.info?.height) || preview.naturalHeight;
+  if (!sourceWidth || !sourceHeight || !preview.naturalWidth || !preview.naturalHeight) return null;
+  const scaleX = sourceWidth / preview.naturalWidth;
+  const scaleY = sourceHeight / preview.naturalHeight;
+  const x = Math.max(0, Math.round(data.x * scaleX));
+  const y = Math.max(0, Math.round(data.y * scaleY));
+  const width = Math.min(sourceWidth - x, Math.round(data.width * scaleX));
+  const height = Math.min(sourceHeight - y, Math.round(data.height * scaleY));
+  return width >= 1 && height >= 1 ? { x, y, width, height } : null;
 }
 
 let ocrToken = 0;   // the preview whose words are being fetched: a late reply for an older one is dropped

@@ -767,6 +767,12 @@ fn trash(_: &Path) -> Result<(), String> {
     Err("moving files to the Recycle Bin is Windows only for now".into())
 }
 
+/// The Recycle Bin, for another module that replaces a file (the image tools' format conversion): the original isn't
+/// deleted, it goes where the owner can get it back.
+pub(crate) fn recycle(path: &Path) -> Result<(), String> {
+    trash(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

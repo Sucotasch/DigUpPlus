@@ -1075,6 +1075,21 @@ svg { display: block; }
 .frames-sheet .sheet-error { color: #d7443e; font-size: 12px; margin-top: 6px; }
 .frames-sheet .sheet-error[hidden] { display: none; }
 
+/* The Edit sheet: the picture with Cropper.js over it, then the choices (the field rows are the frame sheet's). */
+.edit-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 140px;
+  margin: 12px 0;
+  border-radius: 8px;
+  background: var(--tile);
+  overflow: hidden;
+}
+.edit-stage img { display: block; max-width: 100%; max-height: 46vh; }
+.edit-sheet { width: min(760px, 94vw); }
+
 /* The big preview (Space): the selected result over the window, as big as it allows. */
 .big { position: fixed; inset: 0; z-index: 20; display: flex; padding: 24px; background: rgba(0, 0, 0, 0.45); }
 .big[hidden] { display: none; }

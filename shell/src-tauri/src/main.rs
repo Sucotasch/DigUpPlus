@@ -1266,6 +1266,49 @@ async fn rotate_image(path: String, degrees: i64, flip: Option<String>) -> Resul
     .map_err(|error| error.to_string())?
 }
 
+/// The Edit sheet: crop, resize and a format change in one pass (rotate and flip are their own menu entries). A format
+/// change writes the new file and puts the original in the Recycle Bin; the old row is dropped here at once, and the
+/// watcher indexes the new file.
+#[tauri::command]
+async fn edit_picture(shell: State<'_, Arc<Shell>>, path: String, crop: Option<Value>, resize: Option<Value>,
+                      format: Option<String>, quality: Option<u8>) -> Result<Value, String> {
+    let shell = shell.inner().clone();
+    let original = path.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<image_edit::Outcome, String> {
+        let crop = crop.and_then(|value| {
+            let number = |key: &str| value.get(key).and_then(Value::as_u64).map(|number| number as u32);
+            Some(image_edit::Crop { x: number("x")?, y: number("y")?, width: number("width")?, height: number("height")? })
+        });
+        let resize = resize.and_then(|value| {
+            if let Some(long) = value.get("longSide").and_then(Value::as_u64) {
+                Some(image_edit::Resize::LongSide(long as u32))
+            } else {
+                value.get("percent").and_then(Value::as_u64).map(|percent| image_edit::Resize::Percent(percent as u32))
+            }
+        });
+        let target = match format.as_deref() {
+            Some("jpeg") => image_edit::Target::Jpeg,
+            Some("png") => image_edit::Target::Png,
+            _ => image_edit::Target::Keep,
+        };
+        image_edit::edit_picture(Path::new(&original), image_edit::Edit {
+            crop, resize, target, quality: quality.unwrap_or(92), ..image_edit::Edit::default()
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    if outcome.converted {
+        // The old path is gone from disk (Recycle Bin); its result must go now rather than after a rescan.
+        let _ = shell.search.ask(json!({"op": "file_op", "kind": "delete", "items": [{"from": path}]})).await;
+    }
+    Ok(json!({
+        "path": outcome.path.display().to_string(),
+        "width": outcome.width, "height": outcome.height,
+        "before": outcome.bytes_before, "after": outcome.bytes_after,
+        "converted": outcome.converted,
+    }))
+}
+
 /// Puts the last edited picture back (Ctrl+Z in the window); `path` is null when there is nothing to undo.
 #[tauri::command]
 async fn undo_image_edit() -> Result<Value, String> {
@@ -1686,7 +1729,7 @@ fn main() {
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, copy_text,
             save_frame,
             extract_frames,
-            rotate_image, undo_image_edit,
+            rotate_image, undo_image_edit, edit_picture,
             drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases, pick_totalcmd, set_totalcmd_new_tab, open_in_totalcmd,
             set_lookalike,

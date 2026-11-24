@@ -194,6 +194,8 @@ def main():
                 "legal notice, here is a blessing: May you do good and not evil. May you find forgiveness for yourself "
                 "and forgive others. May you share freely, never taking more than you give.\""),
         section("stb (https://github.com/nothings/stb), reads and writes pictures", stb_license()),
+        section("Cropper.js 1.7 (https://github.com/fengyuanchen/cropperjs), draws the crop box in the picture editor",
+                need(ROOT / "shell" / "ui" / "vendor" / "cropper.LICENSE")),
         section("miniz (https://github.com/richgel999/miniz), reads docx and odt files", miniz_license()),
         section("Swift's runtime, Foundation and libdispatch (https://swift.org), which DigUp's helper is written with",
                 swift_license()),
