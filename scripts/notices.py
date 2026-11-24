@@ -196,6 +196,11 @@ def main():
         section("stb (https://github.com/nothings/stb), reads and writes pictures", stb_license()),
         section("Cropper.js 1.7 (https://github.com/fengyuanchen/cropperjs), draws the crop box in the picture editor",
                 need(ROOT / "shell" / "ui" / "vendor" / "cropper.LICENSE")),
+        section("libjpeg-turbo (https://libjpeg-turbo.org), linked into the app for lossless JPEG rotation",
+                "The copy is the one the turbojpeg-sys 1.2.0 crate carries (Cargo.lock); it is built without its SIMD "
+                "parts, so the zlib license below does not apply to this build. The IJG license follows its README.",
+                need(ROOT / "scripts" / "licenses" / "libjpeg-turbo-LICENSE.md"),
+                need(ROOT / "scripts" / "licenses" / "libjpeg-turbo-README.ijg")),
         section("miniz (https://github.com/richgel999/miniz), reads docx and odt files", miniz_license()),
         section("Swift's runtime, Foundation and libdispatch (https://swift.org), which DigUp's helper is written with",
                 swift_license()),

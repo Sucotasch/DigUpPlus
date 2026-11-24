@@ -75,6 +75,8 @@ pub struct Outcome {
     pub bytes_after: u64,
     /// The file grew a new name (PNG to JPG or back); the old one is in the Recycle Bin.
     pub converted: bool,
+    /// The pixels were not decoded: a JPEG rotation/flip went through libjpeg-turbo's DCT transform.
+    pub lossless: bool,
 }
 
 struct UndoEntry {
@@ -108,6 +110,39 @@ pub fn edit_picture(path: &Path, ops: Edit) -> Result<Outcome, String> {
     let before = bytes.len() as u64;
     let source = format_of(path)?;
     let orientation = exif_orientation(&bytes);
+    let target_format = match ops.target {
+        Target::Keep => source,
+        Target::Jpeg => image::ImageFormat::Jpeg,
+        Target::Png => image::ImageFormat::Png,
+    };
+    let rotated = ops.rotate.rem_euclid(360);
+    // Nothing asked for and nothing to normalize: the file is not touched (and not re-encoded).
+    if ops.crop.is_none() && ops.resize.is_none() && target_format == source
+        && rotated == 0 && ops.flip.is_none() && orientation == 1 {
+        let (width, height) = image::image_dimensions(path)
+            .map_err(|error| format!("the picture's size couldn't be read: {error}"))?;
+        return Ok(Outcome { path: path.to_path_buf(), width, height, bytes_before: before, bytes_after: before,
+                            converted: false, lossless: true });
+    }
+    // A JPEG turned or flipped with no crop, resize or format change: the DCT coefficients are transposed, so not one
+    // pixel is decoded or re-encoded. The camera's orientation is baked by the same lossless transform, then the tag is
+    // set to 1. `perfect` refuses pictures whose sides aren't whole MCU blocks; those take the pixel path below.
+    if source == image::ImageFormat::Jpeg && target_format == image::ImageFormat::Jpeg
+        && ops.crop.is_none() && ops.resize.is_none() {
+        if let Some(encoded) = lossless_jpeg(&bytes, orientation, rotated, ops.flip) {
+            let header = turbojpeg::read_header(&encoded)
+                .map_err(|error| format!("the turned picture couldn't be read back: {error}"))?;
+            let saved = backup(path)?;
+            if let Err(error) = write_atomic(path, &encoded) {
+                let _ = std::fs::remove_file(&saved);
+                return Err(error);
+            }
+            remember(path, saved, None);
+            return Ok(Outcome { path: path.to_path_buf(), width: header.width as u32, height: header.height as u32,
+                                bytes_before: before, bytes_after: encoded.len() as u64, converted: false,
+                                lossless: true });
+        }
+    }
     let mut image = image::load_from_memory_with_format(&bytes, source)
         .map_err(|error| format!("the picture couldn't be decoded: {error}"))?;
     image.apply_orientation(
@@ -157,11 +192,6 @@ pub fn edit_picture(path: &Path, ops: Edit) -> Result<Outcome, String> {
         }
     }
     let (width, height) = image.dimensions();
-    let target_format = match ops.target {
-        Target::Keep => source,
-        Target::Jpeg => image::ImageFormat::Jpeg,
-        Target::Png => image::ImageFormat::Png,
-    };
     let encoded = encode(&image, source, target_format, &bytes, path, ops.quality)?;
     let converted = target_format != source;
     let target_path = if converted {
@@ -193,7 +223,101 @@ pub fn edit_picture(path: &Path, ops: Edit) -> Result<Outcome, String> {
         }
         remember(path, saved, None);
     }
-    Ok(Outcome { path: target_path, width, height, bytes_before: before, bytes_after: encoded.len() as u64, converted })
+    Ok(Outcome { path: target_path, width, height, bytes_before: before, bytes_after: encoded.len() as u64,
+                 converted, lossless: false })
+}
+
+/// The DCT coefficients of a JPEG are transposed instead of the pixels: lossless, and `perfect` refuses a picture whose
+/// sides aren't whole MCU blocks (the caller then re-encodes). The camera's orientation and the person's turn are two
+/// transforms rather than one: both are lossless, and the orientation tag is reset to 1 either way.
+fn lossless_jpeg(original: &[u8], orientation: u8, degrees: i32, flip: Option<Flip>) -> Option<Vec<u8>> {
+    use turbojpeg::TransformOp;
+    let mut current = original.to_vec();
+    let mut changed = false;
+    if let Some(op) = match orientation {
+        2 => Some(TransformOp::Hflip),
+        3 => Some(TransformOp::Rot180),
+        4 => Some(TransformOp::Vflip),
+        5 => Some(TransformOp::Transpose),
+        6 => Some(TransformOp::Rot90),
+        7 => Some(TransformOp::Transverse),
+        8 => Some(TransformOp::Rot270),
+        _ => None,
+    } {
+        current = turbo_transform(op, &current)?;
+        changed = true;
+    }
+    let mut ops = Vec::new();
+    match degrees {
+        90 => ops.push(TransformOp::Rot90),
+        180 => ops.push(TransformOp::Rot180),
+        270 => ops.push(TransformOp::Rot270),
+        _ => {}
+    }
+    match flip {
+        Some(Flip::Horizontal) => ops.push(TransformOp::Hflip),
+        Some(Flip::Vertical) => ops.push(TransformOp::Vflip),
+        None => {}
+    }
+    for op in ops {
+        current = turbo_transform(op, &current)?;
+        changed = true;
+    }
+    if !changed {
+        return None;
+    }
+    patch_orientation_in_jpeg(&mut current);
+    let segments = reset_orientation(jpeg_meta::extract_segments(original));
+    Some(jpeg_meta::merge_missing_segments(&current, &segments))
+}
+
+fn turbo_transform(op: turbojpeg::TransformOp, input: &[u8]) -> Option<Vec<u8>> {
+    let mut transform = turbojpeg::Transform::op(op);
+    transform.perfect = true;
+    turbojpeg::transform(&transform, input).ok().map(|turned| turned.to_vec())
+}
+
+/// Rewrites the orientation of the "Exif\0\0" APP1 in the file's own bytes to 1 (turbojpeg copies the markers across).
+fn patch_orientation_in_jpeg(jpeg: &mut [u8]) {
+    let mut at = if jpeg.starts_with(&[0xFF, 0xD8]) { 2 } else { 0 };
+    while at + 1 < jpeg.len() {
+        while at < jpeg.len() && jpeg[at] == 0xFF {
+            at += 1;
+        }
+        if at >= jpeg.len() {
+            break;
+        }
+        let marker = jpeg[at];
+        at += 1;
+        match marker {
+            0xD8 => {}
+            0x01 | 0xD0..=0xD7 => {}
+            0xD9 | 0xDA => break,
+            0xE0..=0xEF | 0xFE => {
+                if at + 1 >= jpeg.len() {
+                    break;
+                }
+                let len = ((jpeg[at] as usize) << 8) | jpeg[at + 1] as usize;
+                if len < 2 || at + len > jpeg.len() {
+                    break;
+                }
+                if marker == 0xE1 && &jpeg[at + 2..at + 6] == b"Exif" {
+                    set_orientation_one(&mut jpeg[at + 2..at + len]);
+                }
+                at += len;
+            }
+            _ => {
+                if at + 1 >= jpeg.len() {
+                    break;
+                }
+                let len = ((jpeg[at] as usize) << 8) | jpeg[at + 1] as usize;
+                if len < 2 || at + len > jpeg.len() {
+                    break;
+                }
+                at += len;
+            }
+        }
+    }
 }
 
 /// Puts the last edited picture back, exactly as it was; a converted edit also takes its new file away. None when there
@@ -437,6 +561,13 @@ mod tests {
 
     fn folder() -> tempfile::TempDir { tempfile::tempdir().unwrap() }
 
+    /// The undo stack is one per process, so tests that edit must not overlap: another test's `undo` would pop this
+    /// test's entry, whose temp folder may already be gone.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
     fn jpeg_with_orientation(path: &Path, width: u32, height: u32, orientation: u16) {
         let image = image::RgbImage::from_pixel(width, height, image::Rgb([120, 60, 30]));
         let mut encoded = Vec::new();
@@ -469,8 +600,70 @@ mod tests {
         std::fs::write(path, bytes).unwrap();
     }
 
+    /// All DQT payloads joined in order: the same bytes mean the file was not quantised again (turbojpeg may split or
+    /// join DQT segments, so only the joined tables are compared).
+    fn quantisation(jpeg: &[u8]) -> Vec<u8> {
+        let mut tables = Vec::new();
+        let mut at = 2;
+        while at + 4 <= jpeg.len() {
+            if jpeg[at] != 0xFF { at += 1; continue; }
+            let marker = jpeg[at + 1];
+            if marker == 0xDA { break; }
+            let len = ((jpeg[at + 2] as usize) << 8) | jpeg[at + 3] as usize;
+            if len < 2 { break; }
+            if marker == 0xDB { tables.extend_from_slice(&jpeg[at + 4..(at + 2 + len).min(jpeg.len())]); }
+            at += 2 + len;
+        }
+        tables
+    }
+
+    #[test]
+    fn rotates_losslessly_when_the_blocks_align() {
+        let _serial = serial();
+        let dir = folder();
+        let path = dir.path().join("aligned.jpg");
+        let image = image::GrayImage::from_fn(64, 48, |x, y| image::Luma([((x * 5 + y * 3) % 251) as u8]));
+        image.save_with_format(&path, image::ImageFormat::Jpeg).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let outcome = edit(&path, 90, None).unwrap();
+        assert!(outcome.lossless, "a 64x48 JPEG is whole MCU blocks: no pixel was decoded");
+        assert_eq!((outcome.width, outcome.height), (48, 64));
+        let turned = std::fs::read(&path).unwrap();
+        assert_eq!(exif_orientation(&turned), 1, "the tag must not turn it again");
+        // No re-encode: the pixel path at q95 would replace the quantization tables; the lossless path keeps them.
+        // No re-encode: a q95 pixel path writes a whole new table, while the lossless turn only reorders the same 64
+        // divisors (TurboJPEG transposes the quantization table along with the coefficients), so the values are compared
+        // as a set.
+        let (mut before, mut after) = (quantisation(&original), quantisation(&turned));
+        assert!(!before.is_empty(), "no quantization table was found");
+        before.sort_unstable();
+        after.sort_unstable();
+        assert_eq!(before, after, "the quantization values changed - that is a re-encode");        // Direction, and nothing lost beyond the decoder's rounding: `image`'s zune IDCT lands one LSB away on a few
+        // blocks of a transposed table (libjpeg-turbo's own decode of both is the exact same picture).
+        let expected = image::load_from_memory_with_format(&original, image::ImageFormat::Jpeg)
+            .unwrap().rotate90().to_luma8();
+        let after = image::load_from_memory_with_format(&turned, image::ImageFormat::Jpeg).unwrap().to_luma8();
+        assert_eq!(after.dimensions(), (48, 64));
+        let worst = expected.as_raw().iter().zip(after.as_raw()).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+        assert!(worst <= 1, "not the original turned clockwise: a pixel differs by {worst}");
+    }
+
+    #[test]
+    fn falls_back_when_the_blocks_do_not_align() {
+        let _serial = serial();
+        let dir = folder();
+        let path = dir.path().join("odd.jpg");
+        let image = image::GrayImage::from_fn(17, 9, |x, y| image::Luma([((x * 7 + y * 11) % 251) as u8]));
+        image.save_with_format(&path, image::ImageFormat::Jpeg).unwrap();
+        let outcome = edit(&path, 90, None).unwrap();
+        assert!(!outcome.lossless, "17x9 has partial MCU blocks: the transform must refuse");
+        assert_eq!((outcome.width, outcome.height), (9, 17));
+        assert_eq!(exif_orientation(&std::fs::read(&path).unwrap()), 1);
+    }
+
     #[test]
     fn rotates_and_keeps_the_format() {
+        let _serial = serial();
         let dir = folder();
         let path = dir.path().join("photo.jpg");
         jpeg_with_orientation(&path, 64, 48, 1);
@@ -484,6 +677,7 @@ mod tests {
 
     #[test]
     fn bakes_the_camera_orientation_and_resets_the_tag() {
+        let _serial = serial();
         let dir = folder();
         let path = dir.path().join("turned.jpg");
         jpeg_with_orientation(&path, 64, 48, 6);      // stored 64x48, shown 48x64
@@ -495,6 +689,7 @@ mod tests {
 
     #[test]
     fn flips_horizontally() {
+        let _serial = serial();
         let dir = folder();
         let path = dir.path().join("flip.png");
         let mut image = image::RgbaImage::from_pixel(4, 2, image::Rgba([255, 255, 255, 255]));
@@ -509,6 +704,7 @@ mod tests {
 
     #[test]
     fn crops_then_resizes() {
+        let _serial = serial();
         let dir = folder();
         let path = dir.path().join("crop.png");
         image::RgbaImage::from_pixel(64, 48, image::Rgba([9, 9, 9, 255])).save(&path).unwrap();
@@ -523,6 +719,7 @@ mod tests {
 
     #[test]
     fn crop_outside_the_picture_is_refused() {
+        let _serial = serial();
         let dir = folder();
         let path = dir.path().join("crop.png");
         image::RgbaImage::from_pixel(16, 16, image::Rgba([1, 2, 3, 255])).save(&path).unwrap();
@@ -537,6 +734,7 @@ mod tests {
 
     #[test]
     fn png_text_survives_a_rotation() {
+        let _serial = serial();
         let dir = folder();
         let path = dir.path().join("prompt.png");
         png_with_chunks(&path, 4, 2, &[("parameters", "a dog")]);
@@ -550,6 +748,7 @@ mod tests {
 
     #[test]
     fn undo_puts_the_bytes_back() {
+        let _serial = serial();
         let dir = folder();
         let path = dir.path().join("undo.jpg");
         jpeg_with_orientation(&path, 16, 8, 1);
@@ -564,6 +763,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn converts_png_to_jpg_with_its_prompts() {
+        let _serial = serial();
         let dir = folder();
         let path = dir.path().join("comfy.png");
         png_with_chunks(&path, 4, 4, &[
@@ -589,6 +789,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn conversion_refuses_an_existing_target() {
+        let _serial = serial();
         let dir = folder();
         let path = dir.path().join("taken.png");
         png_with_chunks(&path, 4, 4, &[]);
@@ -603,6 +804,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn undo_takes_a_converted_file_away() {
+        let _serial = serial();
         let dir = folder();
         let path = dir.path().join("back.png");
         png_with_chunks(&path, 4, 4, &[("prompt", "{}")]);

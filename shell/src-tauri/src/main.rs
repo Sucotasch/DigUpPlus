@@ -1259,7 +1259,7 @@ async fn rotate_image(path: String, degrees: i64, flip: Option<String>) -> Resul
             _ => None,
         };
         let outcome = image_edit::edit(Path::new(&path), degrees as i32, flip)?;
-        Ok(json!({ "width": outcome.width, "height": outcome.height,
+        Ok(json!({ "width": outcome.width, "height": outcome.height, "lossless": outcome.lossless,
                    "before": outcome.bytes_before, "after": outcome.bytes_after }))
     })
     .await
@@ -1304,7 +1304,7 @@ async fn edit_picture(shell: State<'_, Arc<Shell>>, path: String, crop: Option<V
     Ok(json!({
         "path": outcome.path.display().to_string(),
         "width": outcome.width, "height": outcome.height,
-        "before": outcome.bytes_before, "after": outcome.bytes_after,
+        "before": outcome.bytes_before, "after": outcome.bytes_after, "lossless": outcome.lossless,
         "converted": outcome.converted,
     }))
 }

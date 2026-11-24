@@ -23,6 +23,9 @@ tokio = { version = "1", features = ["sync"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 png = "0.17"
 kamadak-exif = "0.5"
+# Lossless JPEG rotation: the same libjpeg-turbo Image Sorter uses (turbojpeg-sys builds it statically through CMake;
+# no DLL beside the exe). SIMD (and NASM) is left out: a rotate is a click, not a batch, and the C path builds anywhere.
+turbojpeg = { version = "1.5", default-features = false, features = ["cmake"] }
 
 [dev-dependencies]
 tempfile = "3"

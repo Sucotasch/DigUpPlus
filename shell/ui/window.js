@@ -2773,7 +2773,9 @@ async function rotatePicture(hit, degrees, flip = null) {
   try {
     const reply = await invoke("rotate_image", { path: hit.path, degrees, flip });
     const what = flip ? "Flipped" : degrees === 180 ? "Turned" : "Rotated";
-    setNote(`${what} ${nameOf(hit.path)} — Ctrl+Z to undo (${reply.width}×${reply.height})`);
+    // A JPEG whose blocks align is turned by moving its DCT coefficients: said out loud, since it costs no generation.
+    const how = reply.lossless ? " (lossless)" : "";
+    setNote(`${what} ${nameOf(hit.path)} — Ctrl+Z to undo (${reply.width}×${reply.height})${how}`);
     refreshPicture(hit.path);
   } catch (error) {
     failed(`The picture couldn't be edited: ${error}`);

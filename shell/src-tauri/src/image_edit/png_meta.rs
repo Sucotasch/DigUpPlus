@@ -74,6 +74,8 @@ pub fn extract_text_chunks(path: &str) -> Result<Vec<PngTextChunk>, String> {
 /// The PNG is fully encoded in memory first and only written to `path` after
 /// it is complete: an encoding failure (e.g. an over-long chunk keyword) can
 /// never leave the caller's file truncated or corrupt.
+/// Only the tests here write a PNG by path; the app encodes through `encode_png_with_text` and its own temp file.
+#[cfg(test)]
 pub fn write_png_with_text(
     path: &str,
     width: u32,
