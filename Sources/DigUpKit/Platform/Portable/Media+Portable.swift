@@ -28,7 +28,8 @@ enum FFmpeg {
         process.arguments = arguments
         let output = Pipe()
         process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
+        let errors = Pipe()
+        process.standardError = errors
         process.standardInput = FileHandle.nullDevice
         try process.run()
         let reader = output.fileHandleForReading
@@ -39,7 +40,12 @@ enum FFmpeg {
         }
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            throw ExtractError.unreadable("\((tool as NSString).lastPathComponent) failed (\(process.terminationStatus))")
+            // What the tool said about it: a dialog can only show a reason if there is one to show.
+            let text = errors.fileHandleForReading.readDataToEndOfFile()
+            let note = String(decoding: text, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            let flat = note.replacingOccurrences(of: "\n", with: " | ")
+            let reason = flat.isEmpty ? "" : ": \(flat.suffix(1500))"
+            throw ExtractError.unreadable("\((tool as NSString).lastPathComponent) failed (\(process.terminationStatus))\(reason)")
         }
     }
 
@@ -208,6 +214,93 @@ extension VideoExtractor {
         guard FileManager.default.fileExists(atPath: out.path) else {
             throw ExtractError.unreadable("no frame at \(seconds) s")
         }
+    }
+
+    /// Stills for a person, not for the model: `count` frames from `start`, one every `step` seconds, each at most
+    /// `pixels` on its long side (0: the source's own size, never upscaled), as `0001.jpg…` in `folder` - with the
+    /// moment each one shows. One ffmpeg pass, and `-frames:v` stops it after the count: "every second" does not decode
+    /// a whole film, while a step that reaches across the clip does (no way to ask for a frame ten minutes in without
+    /// reading to it). An MPEG-TS has no index, so the same lead-in as `frame(at:)` is used. A format the web view
+    /// can't play is no obstacle: ffmpeg does the reading.
+    static func sequence(of url: URL, start: Double, count: Int, step: Double, pixels: Int,
+                         to folder: URL) async throws -> [(url: URL, at: Double)] {
+        guard count > 0 else { throw ExtractError.unreadable("no frames asked for") }
+        guard step > 0, step.isFinite else { throw ExtractError.unreadable("no frame step") }
+        let first = max(0, start)
+        let lead = Rules.isMPEGTransportStream(url) ? min(first, 12) : 0
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var filters = ["fps=fps=\(1 / step):start_time=0:round=up"]
+        if pixels > 0 {
+            filters.append("scale='min(iw,\(pixels))':'min(ih,\(pixels))':force_original_aspect_ratio=decrease")
+        }
+        var arguments = ["-v", "error", "-nostdin", "-ss", String(first - lead), "-i", url.path]
+        if lead > 0 { arguments += ["-ss", String(lead)] }
+        arguments += ["-an", "-vf", filters.joined(separator: ","), "-frames:v", String(count), "-q:v", "3",
+                      "-y", "\(folder.path)/%04d.jpg"]
+        // The frames on disk are the answer, even when ffmpeg exits crossly about the ones it skipped on the way.
+        _ = try? FFmpeg.run(FFmpeg.ffmpeg, arguments) { _ in }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?
+            .filter { $0.hasSuffix(".jpg") }.sorted() ?? []
+        guard !names.isEmpty else { throw ExtractError.unreadable("ffmpeg made no frames") }
+        return names.enumerated().map { index, name in
+            (folder.appendingPathComponent(name), first + Double(index) * step)
+        }
+    }
+
+    /// A contact sheet: one JPEG of the same stills, `pixels` a tile, `columns` to a row, the last row padded black.
+    /// The frames are read back from disk, so a clip shorter than `count` gives a sheet partial in its last row. No
+    /// `tile` filter: the vendored ffmpeg is a small build (34 filters, see `scripts/build-ffmpeg.sh`) and has
+    /// `hstack`/`vstack`/`pad` instead - which also keeps ffmpeg the writer, so a path outside ASCII is its problem.
+    static func contactSheet(of url: URL, start: Double, count: Int, step: Double, pixels: Int, columns: Int,
+                             to out: URL, scratch: URL) async throws -> Int {
+        let frames = try await sequence(of: url, start: start, count: count, step: step, pixels: pixels, to: scratch)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        guard let first = frames.first else { throw ExtractError.unreadable("no frames for the sheet") }
+        // The tiles are the frames as ffmpeg scaled them; ffprobe says their size without decoding them again.
+        let text = try? FFmpeg.output(FFmpeg.ffprobe, ["-v", "error", "-select_streams", "v:0", "-show_entries",
+                                                       "stream=width,height", "-of", "csv=p=0", first.url.path])
+        let size = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: ",").compactMap { Int($0) }
+        guard size.count == 2, size[0] > 0, size[1] > 0 else {
+            throw ExtractError.unreadable("the frames' size couldn't be read")
+        }
+        let (tileWidth, tileHeight) = (size[0], size[1])
+        let cols = max(1, min(columns, frames.count))
+        let rows = (frames.count + cols - 1) / cols
+        var rowFiles: [URL] = []
+        for row in 0..<rows {
+            let slice = Array(frames[(row * cols)..<min(frames.count, (row + 1) * cols)])
+            let file = scratch.appendingPathComponent(String(format: "row-%02d.jpg", row))
+            if slice.count == 1, cols == 1 {
+                try FileManager.default.copyItem(at: slice[0].url, to: file)
+                rowFiles.append(file)
+                continue
+            }
+            var arguments = ["-v", "error", "-nostdin"]
+            for frame in slice { arguments += ["-i", frame.url.path] }
+            var graph = (0..<slice.count).map { "[\($0):v]" }.joined()
+            if slice.count > 1 { graph += "hstack=inputs=\(slice.count)" }
+            if slice.count < cols {
+                graph += (slice.count > 1 ? "," : "") + "pad=width=\(tileWidth * cols):height=\(tileHeight):x=0:y=0:color=black"
+            }
+            arguments += ["-filter_complex", graph, "-frames:v", "1", "-q:v", "3", "-y", file.path]
+            try FFmpeg.run(FFmpeg.ffmpeg, arguments) { _ in }
+            rowFiles.append(file)
+        }
+        if rows == 1 {
+            try? FileManager.default.removeItem(at: out)
+            try FileManager.default.moveItem(at: rowFiles[0], to: out)
+            return frames.count
+        }
+        var arguments = ["-v", "error", "-nostdin"]
+        for file in rowFiles { arguments += ["-i", file.path] }
+        arguments += ["-filter_complex", (0..<rows).map { "[\($0):v]" }.joined() + "vstack=inputs=\(rows)",
+                      "-frames:v", "1", "-q:v", "3", "-y", out.path]
+        try FFmpeg.run(FFmpeg.ffmpeg, arguments) { _ in }
+        guard FileManager.default.fileExists(atPath: out.path) else {
+            throw ExtractError.unreadable("the contact sheet wasn't written")
+        }
+        return frames.count
     }
 }
 #endif

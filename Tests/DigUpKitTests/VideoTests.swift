@@ -52,4 +52,39 @@ import Testing
         try await VideoExtractor.frame(at: 5, of: Self.shots, pixels: 200, to: small)
         #expect(try ImageTests.decode(small.path).width == 200)
     }
+
+    /// A sequence for a person, not for the model: one file per step, in order, each with the moment it shows - and an
+    /// MPEG-TS works because ffmpeg reads it, which is the point (formats the web view can't play still give stills).
+    @Test func aSequenceTakesOneStillPerStep() async throws {
+        let out = folder.appendingPathComponent("sequence")
+        let frames = try await VideoExtractor.sequence(of: Self.shots, start: 0, count: 3, step: 4, pixels: 320,
+                                                       to: out)
+        #expect(frames.map(\.url.lastPathComponent) == ["0001.jpg", "0002.jpg", "0003.jpg"])
+        #expect(try frames.map { try ImageTests.decode($0.url.path).quadrants[0] } == ["R", "G", "B"])
+        #expect(frames.map(\.at) == [0, 4, 8])
+    }
+
+    /// The sheet is one JPEG of the same stills, three across for three, and the scratch folder is gone with it.
+    @Test func aContactSheetIsOnePicture() async throws {
+        let out = folder.appendingPathComponent("sheet.jpg")
+        let scratch = folder.appendingPathComponent("sheet-frames")
+        let used = try await VideoExtractor.contactSheet(of: Self.shots, start: 0, count: 3, step: 4, pixels: 160,
+                                                         columns: 4, to: out, scratch: scratch)
+        #expect(used == 3)
+        let sheet = try ImageTests.decode(out.path)
+        #expect(sheet.width == 480 && sheet.height == 96)   // three 160x96 tiles in one row
+        #expect(!FileManager.default.fileExists(atPath: scratch.path))
+    }
+
+    /// A clip shorter than the grid leaves black tiles in the last row rather than failing: five 80x48 tiles make two
+    /// rows of four.
+    @Test func aShortClipPadsTheLastRow() async throws {
+        let out = folder.appendingPathComponent("five.jpg")
+        let used = try await VideoExtractor.contactSheet(of: Self.shots, start: 0, count: 5, step: 1.6, pixels: 80,
+                                                         columns: 4, to: out,
+                                                         scratch: folder.appendingPathComponent("five-frames"))
+        #expect(used == 5)
+        let sheet = try ImageTests.decode(out.path)
+        #expect(sheet.width == 320 && sheet.height == 96)   // 4 x 80 wide, two rows of 48-high tiles
+    }
 }
