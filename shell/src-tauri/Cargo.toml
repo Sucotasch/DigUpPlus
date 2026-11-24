@@ -19,6 +19,13 @@ notify = "8.2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["sync"] }
+# The edit tools: Image Sorter's modules, ported. Pure Rust - no CMake, no DLL beside the exe.
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+png = "0.17"
+kamadak-exif = "0.5"
+
+[dev-dependencies]
+tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

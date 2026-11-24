@@ -13,6 +13,7 @@ mod file_ops;
 mod helper;
 mod hotkey;
 mod hours;
+mod image_edit;
 mod index_folder;
 mod models;
 mod moments;
@@ -1246,6 +1247,36 @@ async fn extract_frames(shell: State<'_, Arc<Shell>>, path: String, mode: String
     Ok(json!({ "folder": folder.display().to_string(), "files": saved }))
 }
 
+/// Rotate left/right (90/270 clockwise) or flip a picture where it lies. `image_edit` does the pixels: camera
+/// orientation baked in and reset, metadata kept, the file replaced through a temp file, the original copied aside for
+/// an undo. The window shows the new size in its note.
+#[tauri::command]
+async fn rotate_image(path: String, degrees: i64, flip: Option<String>) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Value, String> {
+        let flip = match flip.as_deref() {
+            Some("horizontal") => Some(image_edit::Flip::Horizontal),
+            Some("vertical") => Some(image_edit::Flip::Vertical),
+            _ => None,
+        };
+        let outcome = image_edit::edit(Path::new(&path), degrees as i32, flip)?;
+        Ok(json!({ "width": outcome.width, "height": outcome.height,
+                   "before": outcome.bytes_before, "after": outcome.bytes_after }))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Puts the last edited picture back (Ctrl+Z in the window); `path` is null when there is nothing to undo.
+#[tauri::command]
+async fn undo_image_edit() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Value, String> {
+        let path = image_edit::undo()?;
+        Ok(json!({ "path": path.map(|path| path.display().to_string()) }))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// Save Frame…: the helper renders the frame at `loc` at the video's own size (not the preview's 2048 px), and the
 /// chosen path gets a copy. The dialog starts in the folder the last frame went to (`default_dir`, remembered by the
 /// window), else beside the video.
@@ -1655,6 +1686,7 @@ fn main() {
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, copy_text,
             save_frame,
             extract_frames,
+            rotate_image, undo_image_edit,
             drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases, pick_totalcmd, set_totalcmd_new_tab, open_in_totalcmd,
             set_lookalike,

@@ -1408,6 +1408,14 @@ function wire(item, hit) {
       items.push(["Extract frames…", () => framesDialog(hit, "sequence")],
                  ["Contact sheet…", () => framesDialog(hit, "sheet")]);
     }
+    if (hit.kind === "image" || hit.kind === "screenshot") {
+      // The picture itself changes - no edited copy - and Ctrl+Z in the window puts it back.
+      items.push(null,
+        ["Rotate left", () => rotatePicture(hit, 270)],
+        ["Rotate right", () => rotatePicture(hit, 90)],
+        ["Flip horizontally", () => rotatePicture(hit, 0, "horizontal")],
+        ["Flip vertically", () => rotatePicture(hit, 0, "vertical")]);
+    }
     if (MEDIA.has(hit.kind)) items.push(null, ["Find similar", () => findSimilar(hit)]);
     if (fileTargets.length) {
       items.push(null, ["Move To…", () => moveOrCopy("move", fileTargets)],
@@ -2741,6 +2749,46 @@ function framesDialog(hit, mode) {
   showModal(box);
 }
 
+/// Rotate or flip the picture itself (the menu's entries), then show it again as it now is. The index follows on its
+/// own: the watcher sees the new size and time.
+async function rotatePicture(hit, degrees, flip = null) {
+  try {
+    const reply = await invoke("rotate_image", { path: hit.path, degrees, flip });
+    const what = flip ? "Flipped" : degrees === 180 ? "Turned" : "Rotated";
+    setNote(`${what} ${nameOf(hit.path)} — Ctrl+Z to undo (${reply.width}×${reply.height})`);
+    refreshPicture(hit.path);
+  } catch (error) {
+    failed(`The picture couldn't be edited: ${error}`);
+  }
+}
+
+/// Puts the last edited picture back.
+async function undoPicture() {
+  try {
+    const reply = await invoke("undo_image_edit");
+    if (!reply?.path) { setNote("Nothing to undo"); return; }
+    setNote(`Edit undone: ${nameOf(reply.path)}`);
+    refreshPicture(reply.path);
+  } catch (error) {
+    failed(`The edit couldn't be undone: ${error}`);
+  }
+}
+
+/// The edited file's previews are stale (the page caches renders by path): forget them, ask again, and set what is on
+/// screen - the side pane and any visible card of that file.
+function refreshPicture(path) {
+  forgetRendersOf(path);
+  for (const cell of $content.querySelectorAll("[data-path]")) {
+    if (cell.dataset.path !== path) continue;
+    const image = cell.querySelector("img[data-render]");
+    if (!image) continue;
+    const [kind, loc, pixels] = JSON.parse(image.dataset.render);
+    loadRenderedImage(image, path, kind, loc, pixels,
+      (file) => { if (cell.isConnected) cell.dataset.thumb = file; }, () => {});
+  }
+  if (state.selection === path) renderSide();
+}
+
 let ocrToken = 0;   // the preview whose words are being fetched: a late reply for an older one is dropped
 
 /// The recognized text of a result, under its facts in the side pane. Open in the OCR filter (that mode is about the
@@ -3457,8 +3505,7 @@ function hoverMoment() {
 }
 
 $hoverSave.onclick = () => { if (hoverHit) saveFrame(hoverHit.path, "video", hoverMoment()); };
-$hoverFrames.onclick = () => { if (hoverHit) framesDialog(hoverHit, "sequence"); };
-$hoverOpen.onclick = () => { if (hoverHit) open(hoverHit); };
+$hoverFrames.onclick = () => { if (hoverHit) framesDialog(hoverHit, "sequence"); };$hoverOpen.onclick = () => { if (hoverHit) open(hoverHit); };
 $hoverClose.onclick = () => closeHover(true);
 $hoverPin.onclick = () => setHoverPinned(!hoverPinned);
 
@@ -3930,6 +3977,13 @@ document.addEventListener("keydown", (event) => {
         $query.focus();
         $query.select();
         state.navigated = false;
+        return;
+      case "z":
+        // The last picture edited (the menu's Rotate/Flip): undone only outside the field, where Ctrl+Z is the text's.
+        if (document.activeElement instanceof HTMLElement
+            && (document.activeElement.matches("input, textarea, select") || document.activeElement.isContentEditable)) return;
+        event.preventDefault();
+        undoPicture();
         return;
     }
   }

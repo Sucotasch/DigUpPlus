@@ -273,6 +273,12 @@ function forgetRender(path, kind, loc, pixels) {
   renders.delete(renderKey(path, kind, loc, pixels));
 }
 
+/// Every preview of a file: after it was edited (rotated, flipped) the cached renders show the old picture.
+function forgetRendersOf(path) {
+  const prefix = `${path}|`;
+  for (const key of [...renders.keys()]) if (key.startsWith(prefix)) renders.delete(key);
+}
+
 function rendered(path, kind, loc, pixels) {
   const key = renderKey(path, kind, loc, pixels);
   if (!renders.has(key)) {
