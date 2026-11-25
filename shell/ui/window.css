@@ -1122,7 +1122,37 @@ svg { display: block; }
   flex: 1; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center;
   padding: 16px; overflow: hidden; background: var(--pane);
 }
-.big .edit-stage canvas { max-width: 100%; max-height: 100%; box-shadow: 0 4px 22px rgba(0, 0, 0, 0.28); }
+/* The picture's own box: the canvas and Cropper's container share it, so entering a crop does not move the picture. */
+.big .edit-frame { position: relative; display: inline-block; max-width: 100%; max-height: 100%; line-height: 0; }
+.big .edit-frame canvas { max-width: 100%; max-height: 100%; box-shadow: 0 4px 22px rgba(0, 0, 0, 0.28); }
+
+/* The question before a loss or a mode switch: a line of its own, not a second window. */
+.edit-confirm {
+  flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+.edit-confirm[hidden] { display: none; }
+.edit-confirm .confirm-title { margin-right: auto; font-size: 12.5px; }
+.edit-confirm button {
+  padding: 5px 12px; font-size: 12.5px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--surface); color: var(--text); cursor: pointer;
+}
+.edit-confirm button.primary { background: var(--accent); color: white; border-color: transparent; }
+
+/* Done/Cancel inside a panel. */
+.size-pop .panel-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
+.size-pop .panel-actions button {
+  padding: 5px 12px; font-size: 12.5px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--surface); color: var(--text); cursor: pointer;
+}
+.size-pop .panel-actions button.primary { background: var(--accent); color: white; border-color: transparent; }
+
+/* Cropper's own colours give way to the window's: the dimming and the box are ours. */
+.big .cropper-modal { background-color: rgba(0, 0, 0, 0.45); }
+.big .cropper-view-box { outline: 1px solid var(--accent); outline-color: var(--accent); }
+.big .cropper-line, .big .cropper-point { background-color: var(--accent); }
+.big .cropper-dashed { border-color: rgba(255, 255, 255, 0.7); }
 
 /* Resize and Format: panels beside the rail, with the pixels on either side and a chain for the ratio. */
 .size-pop {

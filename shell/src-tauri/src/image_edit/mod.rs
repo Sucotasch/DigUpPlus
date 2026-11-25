@@ -324,8 +324,12 @@ fn patch_orientation_in_jpeg(jpeg: &mut [u8]) {
 
 /// Puts the last edited picture back, exactly as it was; a converted edit also takes its new file away. None when there
 /// is nothing to undo.
-pub fn undo() -> Result<Option<PathBuf>, String> {
-    let Some(entry) = UNDO.lock().unwrap().pop() else { return Ok(None) };
+/// How many edits can still be undone: the window asks so the button is not lit over an empty stack.
+pub fn undo_count() -> usize {
+    UNDO.lock().unwrap().len()
+}
+
+pub fn undo() -> Result<Option<PathBuf>, String> {    let Some(entry) = UNDO.lock().unwrap().pop() else { return Ok(None) };
     let bytes = match std::fs::read(&entry.backup) {
         Ok(bytes) => bytes,
         Err(error) => return Err(format!("the undo copy couldn't be read: {error}")),

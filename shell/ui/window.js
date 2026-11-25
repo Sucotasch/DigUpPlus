@@ -137,7 +137,10 @@ function run(immediate = false) {
   state.note = null;       // a search's count is what matters now, not the last operation's line; its report stays
   state.loadingMore = false;
   state.pageError = null;
+  const wasChosen = state.selected.size;
   clearSelection(false);   // a new query or filter starts with nothing chosen
+  // Ticks belong to what is visible: a new search may hide them in weak or hidden results, so they go - said out loud.
+  if (wasChosen) setNote(`Selection cleared: ${countOf(wasChosen, "file")} chosen, and the search changed`);
   // Find similar's look-alike groups belong to the query that is going; a new one starts them fresh.
   clearGroups();
   state.groupOpen.clear();
@@ -2779,6 +2782,11 @@ async function undoPicture() {
     if (!reply?.path) { setNote("Nothing to undo"); return; }
     setNote(`Edit undone: ${nameOf(reply.path)}`);
     rememberSize(reply.path, reply.width, reply.height);
+    if (bigOverride) {
+      closeBig();           // a converted file has a new name, so what was on screen is gone
+      afterConversion();    // and the list still shows the name that no longer exists
+      return;
+    }
     refreshPicture(reply.path);   // and the big preview re-reads the file it is showing
   } catch (error) {
     failed(`The edit couldn't be undone: ${error}`);
@@ -2798,7 +2806,7 @@ function refreshPicture(path) {  forgetRendersOf(path);
   }
   if (state.selection === path) renderSide();
   // The big preview, if it is showing this picture, shows it as it now is.
-  if (!$big.hidden && bigHit?.path === path) renderBig();
+  if (!$big.hidden && (bigHit?.path === path || bigOverride?.path === path)) renderBig();
 }
 
 /// The size this window just wrote: the row's `info` is the index's, and the index sees the write a little later, so
@@ -2898,14 +2906,6 @@ let bigHit = null;    // the result the sheet shows
 let bigAt = 0;        // its page or passage on screen
 let bigTotal = 0;     // how many it has
 let bigWheel = 0;     // wheel travel kept, so a touchpad's trickle is one turn
-let bigEditorState = null;   // the unsaved turn/flip/crop/size of the picture on screen; nothing is written until Save
-let bigCropper = null;       // Crop mode's box, on the big canvas itself
-
-function closeBigCropper() {
-  if (!bigCropper) return;
-  try { bigCropper.destroy(); } catch {}
-  bigCropper = null;
-}
 
 /// Space shows the selected result over the window, big; Space, Esc or a click beside it puts it away. The arrows move
 /// through the results under it, and ↩ opens the one shown.
@@ -2913,6 +2913,7 @@ function toggleBig() {
   if (!$big.hidden) return closeBig();
   stopPlaying();
   closeHover(true);   // the big preview is the one player while it is up
+  bigOverride = null;
   $big.hidden = false;
   renderBig();
 }
@@ -2926,15 +2927,69 @@ function closeBig() {
   bigTotal = 0;
   bigWheel = 0;
   bigEditorState = null;
+  bigOverride = null;
+  bigPendingTool = null;
+}
+
+/// The editor owns the keyboard while it is up: one Escape per level, Space leaves, Enter finishes the panel or the
+/// crop, Tab stays inside, and the window's own shortcuts (arrows, Enter, Delete, letters) do not run underneath.
+function bigKey(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  const field = target?.closest("input, select, textarea");
+  const editor = bigEditorState;
+  const modifier = isMac ? event.metaKey : event.ctrlKey;
+  if (modifier && !event.altKey && event.key.toLowerCase() === "z") {
+    event.preventDefault();
+    undoPicture();
+    return;
+  }
+  if (event.key === "Tab") {
+    const focusable = [...$big.querySelectorAll("button:not([disabled]):not([hidden]), input:not([hidden]), select")]
+      .filter((item) => item.offsetParent !== null);
+    if (!focusable.length) return;
+    event.preventDefault();
+    const at = focusable.indexOf(document.activeElement);
+    const next = event.shiftKey ? (at <= 0 ? focusable.length - 1 : at - 1) : (at + 1) % focusable.length;
+    focusable[next].focus();
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    if (!editor) return closeBig();
+    editor.onEscape();
+    return;
+  }
+  if (event.key === " ") {
+    // A space in a field is the field's (number fields ignore it); a question on screen takes no answer from it.
+    if (field) return;
+    event.preventDefault();
+    if (!editor) return closeBig();
+    editor.onSpace();
+    return;
+  }
+  if (event.key === "Enter") {
+    if (target?.closest("button")) return;   // a focused button answers Enter itself
+    if (!editor) return;
+    if (editor.confirm || editor.panel || editor.cropping || field) {
+      event.preventDefault();
+      editor.onEnter();
+    }
+    return;
+  }
+  if (event.key.startsWith("Arrow")) {
+    if (field) return;   // the field's own step; the results must not move
+    event.preventDefault();
+    return;
+  }
+  // Everything else belongs to the field, or to nothing while the editor is open.
 }
 
 function renderBig() {
-  const hit = state.hasResults && state.query.trim() ? selectedHit() : null;
+  const hit = bigOverride ?? (state.hasResults && state.query.trim() ? selectedHit() : null);
   if (!hit) return closeBig();
   // The index catching up, a watcher redraw or a click on the same result must not rebuild the sheet under the hands
   // of someone with unsaved changes or a crop box open.
   if (bigEditorState && bigHit?.path === hit.path && (bigEditorState.cropping || bigEditorState.isDirty())) {
-    bigHit = hit;
     return;
   }
   bigHit = hit;
@@ -2963,7 +3018,15 @@ function renderBig() {
   }
   head.append(opening, close);
   sheet.append(head);
-  if (editor) sheet.append(editor.body); else sheet.append(bigView(hit));
+  if (editor) {
+    sheet.append(editor.confirm, editor.body);
+    // A cross or a click beside the sheet asks the editor first, so closing never throws work away silently.
+    close.onclick = () => editor.headActions[0].click();
+    $big.onclick = (event) => { if (event.target === $big) editor.headActions[0].click(); };
+  } else {
+    sheet.append(bigView(hit));
+    $big.onclick = (event) => { if (event.target === $big) closeBig(); };
+  }
   $big.replaceChildren(sheet);
 }
 
@@ -3046,37 +3109,67 @@ function editButton(icon, title, text = "") {
   return button;
 }
 
+let bigEditorState = null;   // the operation on screen: at most one is pending; nothing is written until Save
+let bigCropper = null;       // Crop mode's box, on the big canvas itself
+let bigOverride = null;      // a converted file's own result, before the index has seen the new name
+let bigPendingTool = null;   // the tool clicked while a save stood in the way: opened once the saved file is back
+
+function closeBigCropper() {
+  if (!bigCropper) return;
+  try { bigCropper.destroy(); } catch {}
+  bigCropper = null;
+}
+
+/// After a conversion the row is new; the search that showed the old name is still up, so refresh it in a moment.
+function afterConversion() {
+  setTimeout(() => { if (state.hasResults && !state.busy) setQuery(state.text); }, 2500);
+}
+
 /// The big preview's picture tools, in a rail down the left side: a portrait picture leaves its room to the sides, so
-/// the picture keeps the window's height. Turning and flipping are on the canvas at once, Resize takes exact pixels,
-/// Crop draws its box on the same canvas, Format picks JPEG/PNG, and Save is the only thing that touches the file.
+/// the picture keeps the window's height. One operation at a time: turn/flip, crop, size or format - Save writes it,
+/// Discard drops it, and asking to leave or to use another tool while it is pending asks first.
 function bigEditor(hit, dims) {
   closeBigCropper();
   const state = {
     angle: 0, fx: false, fy: false,
     crop: null,                         // in the turned picture's own pixels: { x, y, width, height }
-    width: 0, height: 0,                // what Save writes; the crop's own size until Resize changes it
+    width: 0, height: 0,                // the size Save writes; the crop's own until Resize changes it
     format: "keep", quality: 92,
     sourceW: 0, sourceH: 0, ready: false, image: new Image(),
+    panel: null,                        // "resize" | "format"
+    cropping: false,
+    confirm: null,                      // the question on screen, if any
   };
   bigEditorState = state;
-  const body = element("div", "edit-body");  const rail = element("div", "edit-rail");
+
+  const body = element("div", "edit-body");
+  const rail = element("div", "edit-rail");
   const stage = element("div", "edit-stage");
+  const frame = element("div", "edit-frame");
   const canvas = element("canvas", "edit-canvas");
-  stage.append(canvas);
+  frame.append(canvas);
+  stage.append(frame);
+  const confirmBar = element("div", "edit-confirm");
+  confirmBar.hidden = true;
 
   const turned = () => state.angle % 180 !== 0;
   const base = () => turned() ? { width: state.sourceH, height: state.sourceW }
                               : { width: state.sourceW, height: state.sourceH };
   const uncropped = () => state.crop ? { width: state.crop.width, height: state.crop.height } : base();
   const target = () => state.width && state.height ? { width: state.width, height: state.height } : uncropped();
-  const dirty = () => {
-    if (!state.ready) return false;
+  const pendingKind = () => {
+    if (!state.ready) return null;
+    if (state.angle !== 0 || state.fx || state.fy) return "turn";
+    if (state.crop) return "crop";
     const own = uncropped();
     const now = target();
-    return state.angle !== 0 || state.fx || state.fy || !!state.crop
-      || now.width !== own.width || now.height !== own.height || state.format !== "keep";
+    if (now.width !== own.width || now.height !== own.height) return "size";
+    if (state.format !== "keep") return "format";
+    return null;
   };
-  state.isDirty = dirty;   // a redraw of the results must not throw away what is being edited
+  const dirty = () => pendingKind() !== null;
+  state.isDirty = dirty;
+  const KIND = { turn: "turn", crop: "crop", size: "size", format: "format" };
 
   // The turned, flipped picture at the preview's own resolution; the crop and the size are then cut out of it, so the
   // screen shows exactly what Save writes.
@@ -3146,86 +3239,87 @@ function bigEditor(hit, dims) {
   const flipV = editButton("flipV", "Flip vertically");
   flipV.onclick = () => flip("y");
   const sizeButton = editButton("resize", "Resize…");
+  sizeButton.onclick = () => { if (state.panel === "resize") donePanel(); else requestTool("resize"); };
   const cropButton = editButton("crop", "Crop…");
-  cropButton.onclick = startCrop;
+  cropButton.onclick = () => requestTool("crop");
   const formatButton = editButton("format", "Format…");
+  formatButton.onclick = () => { if (state.panel === "format") donePanel(); else requestTool("format"); };
   const resetButton = editButton("reset", "Discard the changes in this preview");
-  resetButton.onclick = reset;
+  resetButton.onclick = discardPending;
   const undoButton = editButton("undo", "Undo the last saved edit (Ctrl+Z)");
   undoButton.onclick = () => { undoPicture(); };
   const cancel = element("button", "", "Cancel");
-  cancel.onclick = closeBig;
+  cancel.onclick = () => requestClose();
   const save = element("button", "primary", "Save");
-  save.onclick = savePicture;
+  save.onclick = () => savePicture(null, false);
+  save.disabled = true;
+  undoButton.disabled = true;
 
   // Crop mode: the rail becomes Apply/Cancel, and the box is drawn on the same canvas, at the same size as the
   // picture - no second, smaller window to aim in.
   const cropApply = editButton("check", "Apply the crop");
-  cropApply.onclick = applyCrop;
+  cropApply.onclick = () => applyCrop();
   const cropCancel = editButton("cancel", "Leave the picture uncropped");
-  cropCancel.onclick = () => { endCrop(); draw(); };
-  let cropping = false;
+  cropCancel.onclick = () => cancelCrop();
+  const tools = [left, right, flipH, flipV, sizeButton, cropButton, formatButton, resetButton, undoButton];
 
-  function startCrop() {
-    if (!state.ready || cropping) return;
-    state.crop = null;
-    const own = base();
-    state.width = own.width;
-    state.height = own.height;
-    showSize();
-    draw();
-    cropping = true;
-    state.cropping = true;
-    save.hidden = true;      // while the box is being drawn, Save and Cancel belong to the box
-    cancel.hidden = true;
-    rail.replaceChildren(cropApply, cropCancel);
-    closeBigCropper();
-    bigCropper = new window.Cropper(canvas, {
-      viewMode: 1, autoCrop: true, autoCropArea: 0.85, background: false, responsive: true,
-      guides: false, toggleDragModeOnDblclick: false, checkOrientation: false,
-      crop: () => {
-        if (!bigCropper?.ready) return;
-        const data = bigCropper.getData(true);
-        if (!data.width || !data.height) return;
-        const own = base();
-        const factor = own.width / canvas.width;
-        dims.textContent = `${own.width} × ${own.height} → `;
-        dims.append(element("b", "",
-          `${Math.max(1, Math.round(data.width * factor))} × ${Math.max(1, Math.round(data.height * factor))}`));
-      },
+  function showCropRail(on) {
+    for (const button of tools) button.hidden = on;
+    cropApply.hidden = !on;
+    cropCancel.hidden = !on;
+    if (on) { sizePop.hidden = true; formatPop.hidden = true; }
+  }
+
+  // One question, used by both the tool switch and the exit: Save, Discard, or stay.
+  function askChoice({ title, saveLabel, discardLabel, onSave, onDiscard }) {
+    state.confirm = { onSave, onDiscard };
+    confirmBar.replaceChildren(element("span", "confirm-title", title));
+    const yes = element("button", "text primary", saveLabel);
+    yes.onclick = () => { hideConfirm(); onSave(); };
+    const no = element("button", "text", discardLabel);
+    no.onclick = () => { hideConfirm(); onDiscard(); };
+    const stay = element("button", "text", "Keep editing");
+    stay.onclick = hideConfirm;
+    confirmBar.append(yes, no, stay);
+    confirmBar.hidden = false;
+    yes.focus({ preventScroll: true });
+  }
+  function hideConfirm() {
+    state.confirm = null;
+    confirmBar.hidden = true;
+    confirmBar.replaceChildren();
+  }
+
+  function requestTool(tool) {
+    if (!state.ready || state.cropping) return;
+    const kind = pendingKind();
+    if (!kind) return beginTool(tool);
+    if (state.confirm) return;
+    askChoice({
+      title: `The ${KIND[kind]} isn't saved`,
+      saveLabel: "Save and continue",
+      discardLabel: "Discard and continue",
+      onSave: () => savePicture(tool, false),
+      onDiscard: () => { discardPending(); beginTool(tool); },
     });
   }
-
-  function applyCrop() {
-    if (!bigCropper) return;
-    const data = bigCropper.getData(true);
-    const own = base();
-    const factor = own.width / canvas.width;
-    if (data.width > 2 && data.height > 2) {
-      const x = Math.max(0, Math.min(own.width - 1, Math.round(data.x * factor)));
-      const y = Math.max(0, Math.min(own.height - 1, Math.round(data.y * factor)));
-      state.crop = {
-        x, y,
-        width: Math.max(1, Math.min(own.width - x, Math.round(data.width * factor))),
-        height: Math.max(1, Math.min(own.height - y, Math.round(data.height * factor))),
-      };
-      state.width = state.crop.width;
-      state.height = state.crop.height;
-    }
-    endCrop();
-    draw();
+  function beginTool(tool) {
+    if (tool === "crop") beginCrop();
+    else if (tool === "resize") openResize();
+    else if (tool === "format") openFormat();
   }
-
-  function endCrop() {
-    cropping = false;
-    state.cropping = false;
-    save.hidden = false;
-    cancel.hidden = false;
-    closeBigCropper();
-    rail.replaceChildren(left, right, flipH, flipV, sizeButton, cropButton, formatButton, resetButton, undoButton);
+  function requestClose() {
+    if (state.confirm) return hideConfirm();
+    if (!state.ready || !dirty()) return closeBig();
+    askChoice({
+      title: "Save changes?",
+      saveLabel: "Save",
+      discardLabel: "Don't save",
+      onSave: () => savePicture(null, true),
+      onDiscard: closeBig,
+    });
   }
-
-  function reset() {
+  function discardPending() {
     state.angle = 0;
     state.fx = state.fy = false;
     state.crop = null;
@@ -3233,16 +3327,17 @@ function bigEditor(hit, dims) {
     state.quality = 92;
     flipH.classList.remove("on");
     flipV.classList.remove("on");
-    formatSelect.value = "keep";
-    qualityInput.value = "92";
-    qualityInput.hidden = true;
+    if (formatSelect) { formatSelect.value = "keep"; qualityInput.value = "92"; qualityRow.hidden = true; }
     state.width = 0;
     state.height = 0;
+    state.panel = null;
+    sizePop.hidden = true;
+    formatPop.hidden = true;
     showSize();
     draw();
   }
 
-  // Resize: pixels on either side, the chain keeping the ratio, and the numbers of what the picture is and will be.
+  // Resize: pixels on either side, the chain keeping the ratio, Done keeps the size as the pending operation.
   const sizePop = element("div", "size-pop");
   sizePop.hidden = true;
   const widthRow = element("label", "row");
@@ -3262,12 +3357,14 @@ function bigEditor(hit, dims) {
   const lock = editButton("link", "Keep the aspect ratio");
   lock.classList.add("on", "lock");
   const summary = element("div", "summary");
-  sizePop.append(widthRow, heightRow, lock, summary);
-  sizeButton.onclick = () => {
-    sizePop.hidden = !sizePop.hidden;
-    formatPop.hidden = true;
-    if (!sizePop.hidden) showSize();
-  };
+  let resizeSnapshot = null;
+  const resizeActions = element("div", "panel-actions");
+  const resizeCancel = element("button", "text", "Cancel");
+  resizeCancel.onclick = () => cancelPanel();
+  const resizeDone = element("button", "text primary", "Done");
+  resizeDone.onclick = () => donePanel();
+  resizeActions.append(resizeCancel, resizeDone);
+  sizePop.append(widthRow, heightRow, lock, summary, resizeActions);
 
   let linked = true;
   lock.onclick = () => {
@@ -3326,7 +3423,14 @@ function bigEditor(hit, dims) {
   qualityInput.hidden = true;
   qualityRow.append(qualityInput);
   qualityRow.hidden = true;
-  formatPop.append(formatRow, qualityRow);
+  let formatSnapshot = null;
+  const formatActions = element("div", "panel-actions");
+  const formatCancel = element("button", "text", "Cancel");
+  formatCancel.onclick = () => cancelPanel();
+  const formatDone = element("button", "text primary", "Done");
+  formatDone.onclick = () => donePanel();
+  formatActions.append(formatCancel, formatDone);
+  formatPop.append(formatRow, qualityRow, formatActions);
   const syncFormat = () => {
     const jpeg = formatSelect.value === "jpeg"
       || (formatSelect.value === "keep" && /\.(jpe?g|jpe|jfif|jfi|jif)$/i.test(hit.path));
@@ -3338,18 +3442,128 @@ function bigEditor(hit, dims) {
   };
   formatSelect.onchange = syncFormat;
   qualityInput.oninput = syncFormat;
-  formatButton.onclick = () => {
-    formatPop.hidden = !formatPop.hidden;
+
+  function openResize() {
+    resizeSnapshot = { width: state.width, height: state.height };
+    state.panel = "resize";
+    sizePop.hidden = false;
+    formatPop.hidden = true;
+    showSize();
+    widthInput.focus({ preventScroll: true });
+    widthInput.select?.();
+  }
+  function openFormat() {
+    formatSnapshot = { format: state.format, quality: state.quality };
+    state.panel = "format";
+    formatPop.hidden = false;
     sizePop.hidden = true;
     syncFormat();
+    formatSelect.focus({ preventScroll: true });
+  }
+  function closePanel() {
+    state.panel = null;
+    // The focus must not stay in a field the panel took away: a hidden input would keep swallowing Space and Enter.
+    const active = document.activeElement;
+    if (active instanceof Element && (sizePop.contains(active) || formatPop.contains(active))) active.blur();
+    sizePop.hidden = true;
+    formatPop.hidden = true;
+  }
+  function cancelPanel() {
+    if (state.panel === "resize" && resizeSnapshot) {
+      state.width = resizeSnapshot.width;
+      state.height = resizeSnapshot.height;
+    } else if (state.panel === "format" && formatSnapshot) {
+      state.format = formatSnapshot.format;
+      state.quality = formatSnapshot.quality;
+      formatSelect.value = formatSnapshot.format;
+      qualityInput.value = String(formatSnapshot.quality);
+      syncFormat();
+    }
+    closePanel();
+    draw();
+  }
+  function donePanel() {
+    closePanel();
+    update();
+  }
+
+  function beginCrop() {
+    if (!state.ready || state.cropping) return;
+    closePanel();
+    state.crop = null;
+    const own = base();
+    state.width = own.width;
+    state.height = own.height;
+    showSize();
+    draw();
+    state.cropping = true;
+    showCropRail(true);
+    update();
+    closeBigCropper();
+    bigCropper = new window.Cropper(canvas, {
+      viewMode: 1, autoCrop: true, autoCropArea: 0.85, background: false, responsive: true,
+      guides: false, toggleDragModeOnDblclick: false, checkOrientation: false,
+      crop: () => {
+        if (!bigCropper?.ready) return;
+        const data = bigCropper.getData(true);
+        if (!data.width || !data.height) return;
+        const own = base();
+        const factor = own.width / canvas.width;
+        dims.textContent = `${own.width} × ${own.height} → `;
+        dims.append(element("b", "",
+          `${Math.max(1, Math.round(data.width * factor))} × ${Math.max(1, Math.round(data.height * factor))}`));
+      },
+    });
+  }
+  function applyCrop() {
+    if (!bigCropper) return;
+    const data = bigCropper.getData(true);
+    const own = base();
+    const factor = own.width / canvas.width;
+    if (data.width > 2 && data.height > 2) {
+      const x = Math.max(0, Math.min(own.width - 1, Math.round(data.x * factor)));
+      const y = Math.max(0, Math.min(own.height - 1, Math.round(data.y * factor)));
+      state.crop = {
+        x, y,
+        width: Math.max(1, Math.min(own.width - x, Math.round(data.width * factor))),
+        height: Math.max(1, Math.min(own.height - y, Math.round(data.height * factor))),
+      };
+      state.width = state.crop.width;
+      state.height = state.crop.height;
+    }
+    endCrop();
+    draw();
+  }
+  function cancelCrop() {
+    endCrop();
+    draw();
+  }
+  function endCrop() {
+    state.cropping = false;
+    showCropRail(false);
+    closeBigCropper();
+    update();
+  }
+
+  let undoCount = 0;
+  const syncUndo = () => { undoButton.disabled = !state.ready || dirty() || undoCount === 0; };
+  const refreshUndo = async () => {
+    try {
+      const reply = await invoke("undo_state");
+      undoCount = Number(reply?.count) || 0;
+    } catch {
+      undoCount = 0;
+    }
+    if (bigEditorState === state) syncUndo();
   };
 
   const update = () => {
     const now = target();
-    save.disabled = !dirty();
-    resetButton.disabled = !dirty();
-    undoButton.disabled = dirty();
-    cropButton.disabled = cropping;
+    save.disabled = !state.ready || !dirty();
+    resetButton.disabled = !state.ready || !dirty();
+    cropButton.disabled = state.cropping;
+    cancel.disabled = state.cropping;
+    syncUndo();
     // The head tells the whole story: what the picture is, and what Save will leave.
     const own = base();
     const changed = now.width !== own.width || now.height !== own.height;
@@ -3357,8 +3571,8 @@ function bigEditor(hit, dims) {
     if (changed) dims.append(element("b", "", `${now.width} × ${now.height}`));
   };
 
-  async function savePicture() {
-    if (!state.ready || cropping) return;
+  async function savePicture(then = null, closeAfter = false) {
+    if (!state.ready || state.cropping) return;
     const own = uncropped();
     const wanted = target();
     const resize = wanted.width === own.width && wanted.height === own.height
@@ -3377,17 +3591,23 @@ function bigEditor(hit, dims) {
         format: state.format === "keep" ? null : state.format,
         quality: Math.round(Number(qualityInput.value) || 92),
       });
+      rememberSize(reply.path, reply.width, reply.height);
+      bigEditorState = null;                 // what is on screen is the written picture now
       if (reply?.converted) {
         setNote(`Converted to ${nameOf(reply.path)} (${reply.width}×${reply.height})`);
-        closeBig();
-        // The old row is gone; the watcher indexes the new file, and a search then shows it.
-        setTimeout(() => { if (state.hasResults && !state.busy) setQuery(state.text); }, 2500);
+        afterConversion();
+        if (closeAfter) { closeBig(); return; }
+        // The index has not seen the new name yet: the editor opens on the answer's own path.
+        bigOverride = { ...hit, path: reply.path, info: { ...hit.info, width: reply.width, height: reply.height } };
+        bigPendingTool = then;
+        renderBig();
       } else {
         setNote(`Saved ${nameOf(reply.path)} (${reply.width}×${reply.height})${reply.lossless ? " (lossless)" : ""} — Ctrl+Z to undo`);
-        rememberSize(reply.path, reply.width, reply.height);
-        bigEditorState = null;        // the picture on screen is the written one now: the editor starts clean
-        refreshPicture(reply.path);   // and re-reads the file it just wrote
+        if (closeAfter) { closeBig(); return; }
+        bigPendingTool = then;
+        refreshPicture(reply.path);
       }
+      refreshUndo();
     } catch (failure) {
       save.disabled = false;
       save.textContent = "Save";
@@ -3395,8 +3615,32 @@ function bigEditor(hit, dims) {
     }
   }
 
+  // The editor owns the keyboard: Escape climbs one level, Space leaves when there is nothing pending, Enter finishes
+  // the panel or the crop, and the window's own shortcuts do not run underneath.
+  state.onEscape = () => {
+    if (state.confirm) return hideConfirm();
+    if (state.panel) return cancelPanel();
+    if (state.cropping) return cancelCrop();
+    requestClose();
+  };
+  state.onSpace = () => {
+    if (state.confirm || state.panel || state.cropping) return;
+    requestClose();
+  };
+  state.onEnter = () => {
+    if (state.confirm) {
+      const action = state.confirm.onSave;
+      hideConfirm();
+      return action();
+    }
+    if (state.panel) return donePanel();
+    if (state.cropping) return applyCrop();
+  };
+
   rail.append(left, right, flipH, flipV, sizeButton, cropButton, formatButton, resetButton, undoButton);
-  rail.append(sizePop, formatPop);
+  rail.append(cropApply, cropCancel, sizePop, formatPop);
+  cropApply.hidden = true;
+  cropCancel.hidden = true;
   body.append(rail, stage);
 
   state.image.onload = () => {
@@ -3407,6 +3651,12 @@ function bigEditor(hit, dims) {
     state.ready = true;
     showSize();
     draw();
+    refreshUndo();
+    if (bigPendingTool) {
+      const tool = bigPendingTool;
+      bigPendingTool = null;
+      requestTool(tool);
+    }
   };
   state.image.onerror = () => { dims.textContent = "the picture couldn't be read"; };
   // The helper's render is orientation-baked and keyed by the file's time, so the preview after a save is the picture
@@ -3415,7 +3665,7 @@ function bigEditor(hit, dims) {
     if (!reply?.data) throw new Error("the helper sent no picture");
     state.image.src = `data:image/jpeg;base64,${reply.data}`;
   }).catch((failure) => { dims.textContent = String(failure); });
-  return { body, headActions: [cancel, save] };
+  return { body, headActions: [cancel, save], confirm: confirmBar };
 }
 
 /// The result as big as the window allows: the picture or the page, the video or the recording from the moment, the
@@ -4378,6 +4628,19 @@ document.addEventListener("keydown", (event) => {
     hideMenu();
     return;
   }
+  // The picture editor owns the keyboard while it is up: its own Escape/Space/Enter/Tab, and no window shortcut
+  // underneath. The other big previews (a page, a video, a passage) keep the window's keys, as before.
+  if (!$big.hidden) {
+    if (bigEditorState) {
+      bigKey(event);
+      return;
+    }
+    if (event.key === "Escape" || event.key === " ") {
+      event.preventDefault();
+      closeBig();
+      return;
+    }
+  }
   // A button with the keyboard answers Enter and Space itself (a checkbox's tick, a sheet's, the bar's).
   if (event.target instanceof Element && event.target.closest("button") && (event.key === "Enter" || event.key === " ")) {
     return;
@@ -4559,24 +4822,10 @@ document.addEventListener("keydown", (event) => {
       return;
     }
     case "Escape":
-      if (state.selected.size) {
-        event.preventDefault();
-        clearSelection();
-        return;
-      }
-      if (!$big.hidden) {
-        event.preventDefault();
-        closeBig();
-        return;
-      }
-      if (!$query.value) {
-        // Nothing left to put away — the window itself goes to the tray (Ctrl+W does the same).
-        event.preventDefault();
-        invoke("hide_window").catch(() => {});
-        return;
-      }
+      // Escape puts the window away and touches nothing else: clearing the selection or the query is an explicit
+      // action (Deselect All, the field's cross), never a side effect of putting the window down.
       event.preventDefault();
-      setQuery("");
+      invoke("hide_window").catch(() => {});
       return;
   }
 });

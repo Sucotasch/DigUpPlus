@@ -1320,6 +1320,12 @@ async fn edit_picture(shell: State<'_, Arc<Shell>>, path: String, crop: Option<V
     }))
 }
 
+/// How many edits the window can still undo: an empty stack must leave its button dark (it used to look available).
+#[tauri::command]
+fn undo_state() -> Value {
+    json!({ "count": image_edit::undo_count() })
+}
+
 /// Puts the last edited picture back (Ctrl+Z in the window); `path` is null when there is nothing to undo.
 #[tauri::command]
 async fn undo_image_edit() -> Result<Value, String> {
@@ -1744,7 +1750,7 @@ fn main() {
             remove_code_folder, turn_off_code, set_code_editor, window_resized, preview_resized, copy_file, copy_text,
             save_frame,
             extract_frames,
-            rotate_image, undo_image_edit, edit_picture,
+            rotate_image, undo_image_edit, undo_state, edit_picture,
             drag_out, set_hotkey, hold_hotkey,
             set_tray_click, open_licenses, open_releases, pick_totalcmd, set_totalcmd_new_tab, open_in_totalcmd,
             set_lookalike,
