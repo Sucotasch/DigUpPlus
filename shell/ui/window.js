@@ -3958,7 +3958,8 @@ document.addEventListener("pointerdown", hidePeek, true);
 document.addEventListener("wheel", (event) => {
   if ($peek.hidden) return;
   const under = document.elementFromPoint(event.clientX, event.clientY);
-  const overIt = under instanceof Element && peekCell && under.closest(".cell") === peekCell;
+  // The card and the list's row are both "the element the peek was opened on"; a cell of the row is inside it.
+  const overIt = under instanceof Element && peekCell && peekCell.contains(under);
   if (!overIt || !event.deltaY) {
     hidePeek();
     return;
