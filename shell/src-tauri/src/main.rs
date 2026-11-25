@@ -96,8 +96,12 @@ struct Shell {
     tray_host: Mutex<Option<(bool, std::time::Instant)>>,
     /// When the search service last reloaded the index (while indexing, at most every few seconds).
     reloaded: Mutex<Instant>,
-    /// When the index helper's watchdog ended it lately (on a file whose reading ran away).
-    watchdog_stops: Mutex<Vec<Instant>>,
+    /// The file the last watchdog stop named (from `stopped-file.json`): the same path twice in a row means the note
+    /// didn't help, and one more restart would only stop on it again.
+    last_watchdog_path: Mutex<Option<String>>,
+    /// Helpers that ended without a note, one after another: a crash, not a stopped file. Three in a row stop indexing
+    /// until the app is started again.
+    crashes: AtomicUsize,
     /// The window's size inside its frame, as its page last reported it (GTK's own counts its title bar and shadow).
     window_inner: Mutex<Option<(f64, f64)>>,
     /// The preview pane's width as the window's page reports it (`preview_resized`): kept with the window's place.
@@ -1869,7 +1873,8 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         tray_look: Mutex::new(None),
         tray_host: Mutex::new(None),
         reloaded: Mutex::new(Instant::now()),
-        watchdog_stops: Mutex::default(),
+        last_watchdog_path: Mutex::default(),
+        crashes: AtomicUsize::new(0),
         window_inner: Mutex::new(None),
         preview_width: Mutex::new(None),
         window_search: Mutex::new(None),
@@ -3905,7 +3910,12 @@ fn index_event(app: &AppHandle, event: Value) {
     }
     app.state::<Arc<Shell>>().status.lock().unwrap().apply(&event);
     match event["event"].as_str().unwrap_or_default() {
-        "file" | "rest" => reload(app, false),
+        "file" => {
+            // Someone read a file since the last stop: the next stop of the same path is no longer "twice in a row".
+            app.state::<Arc<Shell>>().last_watchdog_path.lock().unwrap().take();
+            reload(app, false);
+        }
+        "rest" => reload(app, false),
         "idle" => {
             reload(app, true);
             // A debug run through setup searches once the first index is in.
@@ -3926,25 +3936,66 @@ fn index_event(app: &AppHandle, event: Value) {
 }
 
 /// The index helper ended by itself (helper.rs's "ended"). A sync asked of it as it was leaving (it exits a minute after
-/// it's done) still has to happen; its watchdog's exit (75: a file whose reading ran away, which the next helper skips)
-/// starts another, though not over and over if something else is wrong (as the Mac app's `Engine.helperExited`).
+/// it's done) still has to happen. Its watchdog's exit (75) names the file it stopped on in `stopped-file.json`: the next
+/// helper marks that file deferred and goes on, so a restart is progress — unless the same file stopped it twice in a row,
+/// which means the note didn't help and one more restart would only stop on it again. An exit with no note is a crash:
+/// 2 s, 10 s and 60 s between tries, then indexing stays stopped until the app is started again.
 fn index_ended(app: &AppHandle, event: &Value) {
     const STOPPED_ON_FILE: i64 = 75;
     let shell = app.state::<Arc<Shell>>().inner().clone();
-    let again = if event["status"].as_i64() == Some(STOPPED_ON_FILE) {
-        let mut stops = shell.watchdog_stops.lock().unwrap();
-        stops.retain(|stop| stop.elapsed() < Duration::from_secs(600));
-        stops.push(Instant::now());
-        if stops.len() > 3 {
-            eprintln!("digup-shell: indexing stopped on files 4 times in 10 min");
+    let status = event["status"].as_i64();
+    if status == Some(0) {
+        shell.crashes.store(0, Ordering::SeqCst);
+        if event["owed"] == true {
+            run_index(app);
         }
-        stops.len() <= 3
-    } else {
-        event["owed"] == true && event["status"].as_i64() == Some(0)
-    };
-    if again {
-        run_index(app);
+        return;
     }
+    if status == Some(STOPPED_ON_FILE) {
+        if let Some(path) = stopped_file_path(&shell) {
+            shell.crashes.store(0, Ordering::SeqCst);
+            let mut last = shell.last_watchdog_path.lock().unwrap();
+            if last.as_deref() == Some(path.as_str()) {
+                drop(last);
+                eprintln!("digup-shell: the same file stopped the helper twice: {path}");
+                set_failed(app, "Indexing stopped: a file keeps stopping the helper");
+                return;
+            }
+            *last = Some(path);
+            drop(last);
+            run_index(app);
+            return;
+        }
+    }
+    // No note (or none readable): the helper crashed rather than stopped on a file.
+    let crashes = shell.crashes.fetch_add(1, Ordering::SeqCst) + 1;
+    match [2u64, 10, 60].get(crashes - 1) {
+        Some(seconds) => {
+            set_failed(app, &format!("Indexing stopped; trying again in {seconds} seconds"));
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(*seconds));
+                run_index(&app);
+            });
+        }
+        None => {
+            eprintln!("digup-shell: the index helper crashed {crashes} times in a row");
+            set_failed(app, "Indexing stopped: the helper keeps failing");
+        }
+    }
+}
+
+/// The path in the watchdog's note, while it is still there (the next helper takes it at its start).
+fn stopped_file_path(shell: &Shell) -> Option<String> {
+    let text = std::fs::read_to_string(shell.index_folder()?.join("stopped-file.json")).ok()?;
+    let note: Value = serde_json::from_str(&text).ok()?;
+    note["path"].as_str().map(String::from)
+}
+
+/// The tray and the pages say indexing is stopped, and why.
+fn set_failed(app: &AppHandle, text: &str) {
+    app.state::<Arc<Shell>>().status.lock().unwrap().activity = status::Activity::Failed(text.into());
+    changed(app);
 }
 
 /// What the pages show about the model now, and a state event so setup and Settings follow.

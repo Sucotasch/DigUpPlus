@@ -165,7 +165,7 @@ public final class IndexStore {
                 mtime REAL NOT NULL,
                 inode INTEGER NOT NULL,
                 device INTEGER NOT NULL,
-                state TEXT NOT NULL DEFAULT 'pending',   -- pending | done | partial | skipped | failed
+                state TEXT NOT NULL DEFAULT 'pending',   -- pending | done | partial | skipped | failed | deferred
                 detail TEXT,                              -- why skipped/failed, or how far a long file has been read
                 info TEXT,                                -- JSON: pixels, pages, duration, date taken; read_to/read_end
                 indexed_at REAL,
@@ -650,25 +650,31 @@ public final class IndexStore {
         }
     }
 
-    /// Files waiting to be embedded, in indexing order; `only` narrows it to some files (just-added ones).
+    /// Files waiting to be embedded, in indexing order; `only` narrows it to some files (just-added ones). A stopped
+    /// file comes back once its `retry_after` has passed, after everything else: a file the watchdog had to stop on is
+    /// worth another try, but not ahead of work nobody has failed to read.
     public func pending(limit: Int?, only ids: Set<Int64>? = nil) throws -> [FileRecord] {
         var out: [FileRecord] = []
         if let ids, ids.isEmpty { return out }
         let join = try scopeJoin()
         let filter = ids.map { " AND id IN (\($0.map(String.init).joined(separator: ",")))" } ?? ""
         try db.query("""
-            SELECT \(Self.fileColumns) FROM files\(join) WHERE state = 'pending'\(filter)
-            ORDER BY \(FileKind.indexingOrderSQL), mtime DESC LIMIT ?
-            """, [.int(Int64(limit ?? -1))]) { out.append(Self.record($0)) }
+            SELECT \(Self.fileColumns) FROM files\(join)
+            WHERE (state = 'pending'
+                   OR (state = 'deferred' AND CAST(json_extract(info, '$.retry_after') AS REAL) <= ?))\(filter)
+            ORDER BY (state = 'deferred'), \(FileKind.indexingOrderSQL), mtime DESC LIMIT ?
+            """, [.double(Date().timeIntervalSince1970), .int(Int64(limit ?? -1))]) { out.append(Self.record($0)) }
         return out
     }
 
     public func pendingCount() throws -> Int {
-        var count = 0
         let join = try scopeJoin()
-        try db.query("SELECT COUNT(*) FROM files\(join) WHERE state = 'pending'") {
-            count = Int($0.int(0))
-        }
+        var count = 0
+        try db.query("SELECT COUNT(*) FROM files\(join) WHERE state = 'pending'") { count += Int($0.int(0)) }
+        try db.query("""
+            SELECT COUNT(*) FROM files\(join) WHERE state = 'deferred'
+                AND CAST(json_extract(info, '$.retry_after') AS REAL) <= ?
+            """, [.double(Date().timeIntervalSince1970)]) { count += Int($0.int(0)) }
         return count
     }
 
@@ -743,6 +749,12 @@ public final class IndexStore {
             flags.append("pictures_repacked")
         }
         #endif
+        // Stopped files used to be `failed`, and nothing read them again. A stop is `deferred` now and comes back by
+        // itself; only what an older version left failed gets one free retry.
+        if try meta("stopped_retried") == nil {
+            try db.query("SELECT id FROM files WHERE state = 'failed'") { files.insert($0.int(0)) }
+            flags.append("stopped_retried")
+        }
         guard !flags.isEmpty else { return 0 }
         try db.transaction {
             for file in files { try requeue(file) }
@@ -751,8 +763,10 @@ public final class IndexStore {
         return files.count
     }
 
-    /// A file the indexing helper had to stop on (reading it ran away): it isn't read again until it changes. A long
-    /// file that was being finished keeps what was read of it. False when no file has that path.
+    /// A file the indexing helper had to stop on (reading it ran away): it is tried again later, an hour from now and a
+    /// day after each further stop, and it comes after everything waiting. Not `failed`: a runaway read is usually the
+    /// reader's problem (or a bad patch of file), not a file that can never be read. A long file that was being finished
+    /// keeps what was read of it. False when no file has that path.
     @discardableResult
     public func markStopped(_ path: String, why: String) throws -> Bool {
         var found: (id: Int64, state: String)?
@@ -761,7 +775,9 @@ public final class IndexStore {
         if found.state == "partial" {
             try finish(found.id, state: "done", detail: "The rest couldn't be read: it \(why)")
         } else {
-            try finish(found.id, state: "failed", detail: "It \(why)")
+            let wait = found.state == "deferred" ? 24 * 60 * 60.0 : 60 * 60.0
+            try finish(found.id, state: "deferred", detail: "It \(why), so it will be tried again",
+                       info: ["retry_after": String(Int(Date().timeIntervalSince1970 + wait))])
         }
         return true
     }

@@ -187,18 +187,48 @@ import WinSDK
         #expect(try store.files(under: ["/b"]).count == 1)
     }
 
-    @Test func aFileTheHelperStoppedOnIsNotReadAgain() throws {
+    @Test func aFileTheHelperStoppedOnComesBackLater() throws {
         let store = try IndexStore(directory: folder)
-        try store.insert(file("/a/stuck.pdf", inode: 1))
+        let stuck = try store.insert(file("/a/stuck.pdf", inode: 1))
         let book = try store.insert(file("/a/book.pdf", inode: 2))
         try store.finish(book, state: "partial", info: ["read_to": "30", "read_end": "463"])
-        #expect(try store.markStopped("/a/stuck.pdf", why: "took more than 15 minutes to read"))
-        #expect(try store.markStopped("/a/book.pdf", why: "took more than 15 minutes to read"))
-        #expect(try !store.markStopped("/a/gone.pdf", why: "took more than 15 minutes to read"))
-        #expect(try store.pendingCount() == 0)
+        #expect(try store.markStopped("/a/stuck.pdf", why: "took more than 5 minutes to read"))
+        #expect(try store.markStopped("/a/book.pdf", why: "took more than 5 minutes to read"))
+        #expect(try !store.markStopped("/a/gone.pdf", why: "took more than 5 minutes to read"))
+        #expect(try store.pendingCount() == 0)   // an hour from now, not now
         #expect(try store.unfinishedCount().files == 0)   // the book keeps its first pages and isn't finished again
         let states = Dictionary(uniqueKeysWithValues: try store.files(under: ["/a"]).map { ($0.path, $0.state) })
-        #expect(states == ["/a/stuck.pdf": "failed", "/a/book.pdf": "done"])
+        #expect(states == ["/a/stuck.pdf": "deferred", "/a/book.pdf": "done"])
+
+        // Stopped twice: the second wait is a day, not an hour.
+        let first = try #require(try store.info(of: stuck)["retry_after"].flatMap(Int.init))
+        try store.markStopped("/a/stuck.pdf", why: "took more than 5 minutes to read")
+        let second = try #require(try store.info(of: stuck)["retry_after"].flatMap(Int.init))
+        #expect(second - first > 20 * 60 * 60)
+    }
+
+    @Test func aDeferredFileIsReadAfterEverythingElseOnceItsTimeComes() throws {
+        let store = try IndexStore(directory: folder)
+        try store.insert(file("/a/waiting.png", inode: 1))
+        let stopped = try store.insert(Candidate(path: "/a/stopped.png", kind: .image, size: 10, mtime: 99,
+                                                 inode: 2, device: 1))
+        try store.finish(stopped, state: "deferred", detail: "stopped", info: ["retry_after": "0"])
+        // Due now, but the newer mtime would put it first without the state: deferred waits for everything else.
+        #expect(try store.pendingCount() == 2)
+        #expect(try store.pending(limit: nil).map(\.path) == ["/a/waiting.png", "/a/stopped.png"])
+        // Not due yet: neither waiting nor in the way.
+        try store.finish(stopped, state: "deferred", detail: "stopped", info: ["retry_after": "99999999999"])
+        #expect(try store.pendingCount() == 1)
+        #expect(try store.pending(limit: nil).map(\.path) == ["/a/waiting.png"])
+    }
+
+    @Test func failedFilesGetOneMoreTryWhenTheReaderChanges() throws {
+        let store = try IndexStore(directory: folder)
+        let bad = try store.insert(file("/a/bad.png", inode: 1))
+        try store.finish(bad, state: "failed", detail: "damaged")
+        #expect(try store.readAgainOnce() == 1)
+        #expect(try store.file(bad)?.state == "pending")
+        #expect(try store.readAgainOnce() == 0)   // once per index
     }
 
     #if canImport(AppKit)

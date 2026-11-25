@@ -371,6 +371,7 @@ function folderRow(folder, summary, code = false) {
       summary.unfinished ? `${summary.unfinished.toLocaleString()} long ${summary.unfinished === 1 ? "file" : "files"} to finish` : null,
       summary.skipped ? `${summary.skipped.toLocaleString()} skipped` : null,
       summary.failed ? `${summary.failed.toLocaleString()} couldn't be read` : null,
+      summary.deferred ? `${summary.deferred.toLocaleString()} will be tried again` : null,
       notRead ? `${notRead.toLocaleString()} not read` : null,
     ].filter(Boolean).join(" · ");
     if (states) {
