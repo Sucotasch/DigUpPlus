@@ -523,10 +523,10 @@ public final class Indexer {
     private static let readingLock = NSLock()
 
     /// Marks `path` as being read by the calling thread until `finishReading` (each read has its own token).
-    private static func startReading(_ path: String, kind: FileKind) -> Int {
+    private static func startReading(_ path: String, kind: FileKind, lowPriority: Bool = false) -> Int {
         readingLock.withLock {
             nextRead += 1
-            reads[nextRead] = ActiveRead(path: path, kind: kind, started: Monotonic.now())
+            reads[nextRead] = ActiveRead(path: path, kind: kind, started: Monotonic.now(), lowPriority: lowPriority)
             return nextRead
         }
     }
@@ -561,7 +561,10 @@ public final class Indexer {
         let batch = job.files
         var prepared = Prepared(batch: batch, step: job.step, folder: folder)
         let url = URL(fileURLWithPath: batch[0].path)
-        var reading = startReading(batch[0].path, kind: batch[0].kind)
+        // One decision per file: someone at the computer now means this read's decoder gives way, and the watchdog
+        // allows its blocks twice the usual silence.
+        let lowPriority = options.userIsActive()
+        var reading = startReading(batch[0].path, kind: batch[0].kind, lowPriority: lowPriority)
         defer { finishReading(reading) }
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -574,7 +577,7 @@ public final class Indexer {
                     var texts: [String] = []
                     for file in batch {
                         finishReading(reading)
-                        reading = startReading(file.path, kind: file.kind)
+                        reading = startReading(file.path, kind: file.kind, lowPriority: lowPriority)
                         let reads = file.ocrPictures.readsWords(for: file.kind)
                         texts.append(reads ? OCR.readings(ofImageAt: URL(fileURLWithPath: file.path))
                             .joined(separator: "\n\n") : "")
@@ -585,7 +588,7 @@ public final class Indexer {
                     for (slot, file) in batch.enumerated() {
                         let url = URL(fileURLWithPath: file.path)
                         finishReading(reading)
-                        reading = startReading(file.path, kind: file.kind)
+                        reading = startReading(file.path, kind: file.kind, lowPriority: lowPriority)
                         do {
                             let image = try ImageExtractor.prepare(url, maxPixel: screenshot ? 1536 : 1024,
                                                                    minSide: options.minImageSide, to: folder,
@@ -639,6 +642,7 @@ public final class Indexer {
                 let token = reading
                 let (pieces, duration) = try runBlocking {
                     try await AudioExtractor.windows(of: url, window: window, hop: hop, to: folder,
+                                                     lowPriority: lowPriority,
                                                      progress: { moved in Indexer.signalReading(token, moved: moved) })
                 }
                 prepared.payload = .audio(pieces: pieces, duration: duration)
@@ -647,10 +651,12 @@ public final class Indexer {
                 let token = reading
                 let (frames, duration, hasAudio) = try runBlocking {
                     try await VideoExtractor.keyframes(of: url, every: interval, maxPixel: 1024, to: folder,
+                                                       lowPriority: lowPriority,
                                                        progress: { moved in Indexer.signalReading(token, moved: moved) })
                 }
                 let sound = hasAudio
                     ? try runBlocking { try await AudioExtractor.windows(of: url, window: window, hop: hop, to: folder,
+                                                                        lowPriority: lowPriority,
                                                                         progress: { moved in Indexer.signalReading(token, moved: moved) }) }
                         .pieces
                     : []

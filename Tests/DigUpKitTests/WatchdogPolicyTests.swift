@@ -23,8 +23,16 @@ struct WatchdogPolicyTests {
         #expect(policy.verdict(for: read, at: 75) == "made no progress for 20 seconds")
     }
 
-    @Test func movementIsSeparateFromLiveness() {
-        let read = ActiveRead(path: "/a.mp4", kind: .video, started: 0, lastSignal: 110, lastMove: 0)
+    /// With someone at the computer the decoder runs below normal: its blocks stretched to ~3.3 s on average under load
+    /// (measured), so the watchdog allows 40 s instead of 20 before calling it a hang.
+    @Test func aLowPriorityDecoderGetsTwiceTheSilence() {
+        let read = ActiveRead(path: "/a.mp4", kind: .video, started: 0, lastSignal: 100, lastMove: 100,
+                              lowPriority: true)
+        #expect(policy.verdict(for: read, at: 139) == nil)
+        #expect(policy.verdict(for: read, at: 141) == "made no progress for 40 seconds")
+    }
+
+    @Test func movementIsSeparateFromLiveness() {        let read = ActiveRead(path: "/a.mp4", kind: .video, started: 0, lastSignal: 110, lastMove: 0)
         #expect(policy.verdict(for: read, at: 110) == nil)
         #expect(policy.verdict(for: read, at: 121) == "stopped moving for 2 minutes")
     }

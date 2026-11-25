@@ -273,6 +273,8 @@ impl Shell {
         // The rest of long files waits for five minutes without keyboard or mouse input: that pass keeps the workers
         // on the graphics card at full tilt, and reading search results doesn't deserve the fans (a person reading is
         // still "idle" for the system, so the threshold is generous, and the pass runs at a third of its speed after).
+        // The same five minutes decide when a video's decoder may take every core again: while someone is at the
+        // machine it runs below normal, on one thread.
         args.push("--rest-when-idle".into());
         args.push("300".into());
         if self.prune.swap(false, Ordering::SeqCst) {

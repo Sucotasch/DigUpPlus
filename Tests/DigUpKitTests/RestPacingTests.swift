@@ -19,4 +19,13 @@ import Testing
         #expect(RestPacing.pause(after: 10, enabled: true) == RestPacing.slowCap)   // a long scanned page
         #expect(RestPacing.pause(after: 10, enabled: false) == 0)                   // a script's own pass
     }
+
+    @Test func mediaGivesWayOnlyWhileSomeoneIsAtTheMachine() {
+        #expect(RestPacing.atTheMachine(idle: 12, within: 300))
+        #expect(RestPacing.atTheMachine(idle: 299.9, within: 300))
+        #expect(!RestPacing.atTheMachine(idle: 300, within: 300))
+        // No gate, or no way to tell (Linux): full speed rather than a guess.
+        #expect(!RestPacing.atTheMachine(idle: 0, within: 0))
+        #expect(!RestPacing.atTheMachine(idle: nil, within: 300))
+    }
 }

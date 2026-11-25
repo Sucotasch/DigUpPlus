@@ -20,4 +20,12 @@ public enum RestPacing {
         guard enabled else { return 0 }
         return min(max(0, seconds) * slowFor, slowCap)
     }
+
+    /// Someone is at the computer: the last keyboard or mouse input was under `threshold` seconds ago. Then media reads
+    /// give way (a decoder below normal priority, one thread) instead of taking every core. `threshold` 0 turns the gate
+    /// off, and a system that can't say (`nil`) counts as away: nothing to give way to.
+    public static func atTheMachine(idle: Double?, within threshold: Double) -> Bool {
+        guard threshold > 0, let idle else { return false }
+        return idle < threshold
+    }
 }

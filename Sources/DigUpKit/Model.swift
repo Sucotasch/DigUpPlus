@@ -78,6 +78,9 @@ public struct IndexOptions: Sendable {
     /// A rule for each chosen folder that doesn't take everything under it (Settings → Folders → Rules). Not in the
     /// fingerprint: a rule changes what a walk leaves out, never a vector.
     public var rootRules: [RootRule] = []
+    /// Someone is using this computer right now (`RestPacing.atTheMachine`): a long media read then runs its decoder
+    /// below normal priority and on one thread, and the next read picks full speed again once the machine is idle.
+    public var userIsActive: @Sendable () -> Bool = { false }
 
     public init() {}
 

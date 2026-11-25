@@ -144,6 +144,10 @@ struct Arguments {
         options.rootRules = rootRules
         if let tokens = values["--shot-tokens"].flatMap(Int.init) { options.screenshotBudget = tokens }
         if let characters = values["--code-stretch"].flatMap(Int.init) { options.codeStretch = characters }
+        // The rest gate's notion of idle, per read: while someone is at the machine a decoder gives way (below normal,
+        // one thread); a script with no --rest-when-idle keeps full speed.
+        let idleGate = values["--rest-when-idle"].flatMap(Double.init) ?? 0
+        options.userIsActive = { RestPacing.atTheMachine(idle: Idle.seconds(), within: idleGate) }
         return options
     }
 

@@ -2,6 +2,11 @@
 // the helper, in $DIGUP_FFMPEG, then on PATH.
 #if !canImport(AVFoundation)
 import Foundation
+#if os(Windows)
+import WinSDK
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 enum FFmpeg {
     static let ffmpeg = find("ffmpeg")
@@ -20,8 +25,10 @@ enum FFmpeg {
     }
 
     /// Runs a tool and hands its standard output to `read` as it comes (a long decode never sits in memory whole).
-    /// Throws when the tool is missing or fails.
-    static func run(_ tool: String?, _ arguments: [String], read: (Data) throws -> Void) throws {
+    /// Throws when the tool is missing or fails. `lowPriority`: someone is at the computer, so the tool runs below this
+    /// helper's priority (see `lowerPriority`).
+    static func run(_ tool: String?, _ arguments: [String], lowPriority: Bool = false,
+                    read: (Data) throws -> Void) throws {
         guard let tool else { throw ExtractError.unreadable("ffmpeg isn't installed (audio and video need it)") }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)
@@ -32,6 +39,7 @@ enum FFmpeg {
         process.standardError = errors
         process.standardInput = FileHandle.nullDevice
         try process.run()
+        if lowPriority { lowerPriority(of: process) }
         let reader = output.fileHandleForReading
         while true {
             let data = reader.readData(ofLength: 1 << 16)
@@ -47,6 +55,21 @@ enum FFmpeg {
             let reason = flat.isEmpty ? "" : ": \(flat.suffix(1500))"
             throw ExtractError.unreadable("\((tool as NSString).lastPathComponent) failed (\(process.terminationStatus))\(reason)")
         }
+    }
+
+    /// The decode runs only while someone is at the machine, so it gives way to their work: below normal on Windows,
+    /// nice 10 elsewhere. The helper itself keeps its own priority (`nice` can't be raised back on POSIX), and the next
+    /// file makes the choice again.
+    private static func lowerPriority(of process: Process) {
+        let pid = process.processIdentifier
+        guard pid > 0 else { return }
+        #if os(Windows)
+        guard let handle = OpenProcess(DWORD(PROCESS_SET_INFORMATION), false, DWORD(pid)) else { return }
+        SetPriorityClass(handle, DWORD(BELOW_NORMAL_PRIORITY_CLASS))
+        CloseHandle(handle)
+        #else
+        setpriority(PRIO_PROCESS, id_t(pid), 10)
+        #endif
     }
 
     /// The whole standard output, as text.
@@ -105,7 +128,7 @@ extension AudioExtractor {
     /// pieces `hop` seconds apart, skipping silent ones; one model input ignores anything past 30 s, so windows stay
     /// ≤ 30 s. Streams: memory stays at one window, even for a 3-hour podcast.
     static func windows(of url: URL, window: Double, hop: Double, minimum: Double = 2, to folder: URL,
-                        progress: @escaping @Sendable (Bool) -> Void = { _ in }) async throws
+                        lowPriority: Bool = false, progress: @escaping @Sendable (Bool) -> Void = { _ in }) async throws
         -> (pieces: [MediaPiece], duration: Double) {
         guard MediaInfo.streams(of: url).audio else { return ([], 0) }
         let duration = MediaInfo.duration(of: url) ?? 0
@@ -122,8 +145,10 @@ extension AudioExtractor {
                                      end: Double(offset + count) / sampleRate))
         }
         var odd: UInt8?   // a byte left over when a read ends mid-sample
-        try FFmpeg.run(FFmpeg.ffmpeg, ["-v", "error", "-nostdin", "-i", url.path, "-vn", "-ac", "1", "-ar",
-                                       "\(Int(sampleRate))", "-f", "s16le", "-"]) { data in
+        let threads = lowPriority ? ["-threads", "1", "-filter_threads", "1"] : []
+        try FFmpeg.run(FFmpeg.ffmpeg, ["-v", "error", "-nostdin"] + threads + ["-i", url.path, "-vn", "-ac", "1",
+                                       "-ar", "\(Int(sampleRate))", "-f", "s16le", "-"],
+                       lowPriority: lowPriority) { data in
             var bytes: [UInt8] = []
             bytes.reserveCapacity(data.count + 1)
             if let first = odd { bytes.append(first); odd = nil }
@@ -153,7 +178,7 @@ extension VideoExtractor {
     /// Samples a frame every `interval` seconds through ffmpeg and keeps one per shot: a frame that looks like the
     /// previous kept one (8×8 average hash within 4 bits) only extends it.
     static func keyframes(of url: URL, every interval: Double, maxPixel: Int, maxFrames: Int = 1200, to folder: URL,
-                          progress: @escaping @Sendable (Bool) -> Void = { _ in })
+                          lowPriority: Bool = false, progress: @escaping @Sendable (Bool) -> Void = { _ in })
         async throws -> (frames: [MediaPiece], duration: Double, hasAudio: Bool) {
         let streams = MediaInfo.streams(of: url)
         let duration = MediaInfo.duration(of: url) ?? 0
@@ -167,11 +192,13 @@ extension VideoExtractor {
         // no index: a seek there lands past the keyframe, and nothing decodes until the next one.
         var pending = Data()
         var lastOut: Int64 = -1
-        try FFmpeg.run(FFmpeg.ffmpeg, ["-v", "error", "-nostdin", "-i", url.path, "-an", "-vf",
+        let threads = lowPriority ? ["-threads", "1", "-filter_threads", "1"] : []
+        try FFmpeg.run(FFmpeg.ffmpeg, ["-v", "error", "-nostdin"] + threads + ["-i", url.path, "-an", "-vf",
                                        "fps=fps=\(1 / step):start_time=\(first):round=up,"
                                        + "scale=\(maxPixel):\(maxPixel):force_original_aspect_ratio=decrease",
                                        "-q:v", "3", "-progress", "pipe:1", "-nostats", "-f", "image2",
-                                       folder.appendingPathComponent(prefix + "%06d.jpg").path]) { data in
+                                       folder.appendingPathComponent(prefix + "%06d.jpg").path],
+                       lowPriority: lowPriority) { data in
             // ffmpeg writes a block every ~0.5 s even while no new frame is out (measured): `progress=` is liveness,
             // `out_time_us` is real movement.
             pending.append(data)

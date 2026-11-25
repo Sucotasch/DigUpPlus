@@ -9,15 +9,19 @@ public struct ActiveRead: Sendable {
     public var lastSignal: TimeInterval
     public var lastMove: TimeInterval
     public var hasSignal: Bool
+    /// Someone was at the computer when this read started, so its decoder gives way (`IndexOptions.userIsActive`): its
+    /// progress blocks come further apart, and the watchdog allows twice as long.
+    public let lowPriority: Bool
 
     public init(path: String, kind: FileKind, started: TimeInterval,
-                lastSignal: TimeInterval? = nil, lastMove: TimeInterval? = nil) {
+                lastSignal: TimeInterval? = nil, lastMove: TimeInterval? = nil, lowPriority: Bool = false) {
         self.path = path
         self.kind = kind
         self.started = started
         self.lastSignal = lastSignal ?? started
         self.lastMove = lastMove ?? started
         self.hasSignal = lastSignal != nil
+        self.lowPriority = lowPriority
     }
 }
 
@@ -50,11 +54,14 @@ public struct WatchdogPolicy: Sendable {
     public func verdict(for read: ActiveRead, at now: TimeInterval) -> String? {
         let elapsed = now - read.started
         if read.kind == .audio || read.kind == .video {
+            // Busy with someone else's work, a low-priority decoder's blocks stretched to ~3.3 s on average (34 blocks
+            // in 113 s, measured): twice the normal silence budget leaves room without hiding a real hang.
+            let silence = read.lowPriority ? silenceLimit * 2 : silenceLimit
             if !read.hasSignal, elapsed > startLimit {
                 return "gave no sign for \(Self.span(startLimit))"
             }
-            if read.hasSignal, now - read.lastSignal > silenceLimit {
-                return "made no progress for \(Self.span(silenceLimit))"
+            if read.hasSignal, now - read.lastSignal > silence {
+                return "made no progress for \(Self.span(silence))"
             }
             if now - read.lastMove > moveLimit {
                 return "stopped moving for \(Self.span(moveLimit))"

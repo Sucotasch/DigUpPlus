@@ -8,9 +8,11 @@ import Foundation
 extension AudioExtractor {
     /// Decodes audio (a file, or a video's soundtrack) to 16 kHz mono and writes `window`-second WAV pieces `hop`
     /// seconds apart, skipping silent ones. One model input ignores anything past 30 s, so windows stay ≤ 30 s.
-    /// Streams: memory stays at one window, even for a 3-hour podcast.
+    /// Streams: memory stays at one window, even for a 3-hour podcast. `lowPriority` (someone is at the computer) is the
+    /// helper's business on Windows and Linux, where the decode is a child process we can lower; here it decodes in this
+    /// process, so the flag is accepted and changes nothing yet.
     static func windows(of url: URL, window: Double, hop: Double, minimum: Double = 2, to folder: URL,
-                        progress: @escaping @Sendable (Bool) -> Void = { _ in }) async throws
+                        lowPriority: Bool = false, progress: @escaping @Sendable (Bool) -> Void = { _ in }) async throws
         -> (pieces: [MediaPiece], duration: Double) {
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .audio).first else { return ([], 0) }
@@ -62,9 +64,10 @@ extension AudioExtractor {
 extension VideoExtractor {
     /// Samples a frame every `interval` seconds and keeps one per shot: a frame that looks like the previous kept one
     /// (8×8 average hash within 4 bits) only extends it. Screen recordings and lectures shrink a lot.
-    /// Google's Video Moments Finder also matches queries against per-frame vectors.
+    /// Google's Video Moments Finder also matches queries against per-frame vectors. `lowPriority` is accepted for the
+    /// shared call site; this decode is in-process, so only the child-process platforms can lower it.
     static func keyframes(of url: URL, every interval: Double, maxPixel: Int, maxFrames: Int = 1200, to folder: URL,
-                          progress: @escaping @Sendable (Bool) -> Void = { _ in })
+                          lowPriority: Bool = false, progress: @escaping @Sendable (Bool) -> Void = { _ in })
         async throws -> (frames: [MediaPiece], duration: Double, hasAudio: Bool) {
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
