@@ -478,8 +478,8 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
   снимается; занятое имя — отказ. `turbojpeg-sys` собирает libjpeg-turbo через CMake статически (SIMD/NASM выключены,
   DLL нет). Rust 114 тестов; гейты на пакетной паре: большой редактор 30/30, поворот из меню 9/9, регрессия хувера
   27/27 и кадров 12/12. Вход v1 — JPEG/PNG. helper изменился (версия): полный zip, HELPER SHA256
-  `2f4790c38931c5370aba9d046d8f827de86bc2d90303c70c7b49e6b893f7df1a`; zip `DigUpPlus-0.1.23-windows-x64.zip`
-  481 438 893 байта, SHA-256 `a631bdeca84487ed93a7bf48f97249f94cdc502ea3c68e91837f5d2db7da7665`;
+  `a2da297cbb895b84f08a2fb741d2a68727e29f71b38712c1bb948bb84993ac48`; zip `DigUpPlus-0.1.23-windows-x64.zip`
+  481 439 779 байт, SHA-256 `539f87966d823df2a3527641f27b3b7cf0b3f3c652c0cb742db3cb5c07319b00`;
 - на 2026-11-25: `python .build/swift_test.py` — 234 теста, 233 прошли (тот же symlink-тест), `cargo test --locked`
   — 114, все прошли;
 - на 2026-11-19: `python .build/swift_test.py` — 231 тест, 230 прошли (тот же symlink-тест), `cargo test --locked`
