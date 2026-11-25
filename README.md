@@ -62,8 +62,12 @@ here. What this fork changes is what surrounds the engine:
   click; the pointer alone decides, and moving on puts it away. On a **folded** look-alike group the wheel over that
   picture turns through the group's copies (`3 of 17`) without opening it; once the group is open, each copy is its own
   card and the wheel is the list's. A PDF comes up as its page and a book as its passage, and the wheel turns through
-  them (`Page 3 of 321`, `Part 35 of 576`); Space still shows the selected result over the whole window and turns the
-  same pages there.
+  them (`Page 3 of 321`, `Part 35 of 576`); a video peeks as a muted player at its matched moment, and the table's rows
+  peek the same way. Space shows the selected result over the whole window — on a picture it opens the editor instead.
+- **Pictures are edited where they are.** **Space** on a picture opens an editor: rotate left/right, flip, resize, crop
+  or switch JPEG/PNG on the rail, with **Reset**, **Undo**, **Cancel** and **Save**. A JPEG turn is lossless, and Save
+  writes the file in place. One operation at a time — asking for another asks Save / Discard / Keep editing; a format
+  change writes `<name>.<ext>` and sends the original to the Recycle Bin.
 - **The index and the model live where you point them.** Settings → Storage: use an index you already have in place
   (nothing is copied, and it is checked to open before it is chosen), move one to another disk, or point at model
   files you already downloaded.
@@ -142,7 +146,8 @@ meaning space for all of them, and the page opens in the preview.
 
 ![The Russian lease page in the big preview](docs/window-preview.png)
 
-**Space** shows the selected result over the window — the Russian page here, at its own size.
+**Space** shows the selected result over the window — the Russian page here, at its own size. On a picture it opens the
+editor instead; **Save** writes the change in place.
 
 ### Hover, selection, tags and rules
 
@@ -154,6 +159,11 @@ name, kind, date, size and folder — no click, and the selection stays where it
 ![The hover peek on a PDF page](docs/window-peek-pdf.jpg)
 
 On a PDF the peek is the page itself (`Page 1 of 44`), and the wheel turns through the pages.
+
+A video peeks as a muted player at its matched moment; the table's rows peek the same way — a picture, a video, a PDF
+page or a passage — without a click. A video can give you the frame itself too: the result menu's **Save Frame at …**
+(named for the moment) and **Copy Frame** take the matched one; the side pane's **Save frame** takes the matched moment
+before ▶ and the current one after; the big view saves the current frame.
 
 ![Four pictures ticked, the file operations bar below](docs/window-batch.png)
 
@@ -216,8 +226,8 @@ the full package.
 | Ctrl+Shift+Space | Opens the search panel from any app (you can change it) |
 | ↓ ↑ | Moves through the results, and takes the keyboard out of the search field with it (Tab or a click on the field brings the caret back) |
 | Enter | Opens the result: PDFs at the page, recordings and videos at the moment, code in your editor at the line |
-| Space | A big preview, at the page or moment (once you've moved to a result) |
-| Hovering a picture | A larger look at it — up to the window's size, without changing the selection or taking a click; on a PDF or a book the wheel turns pages or passages |
+| Space | A big preview on a page, a video or a book; on a picture, the editor (Save writes in place) |
+| Hovering a result | A larger look at it — up to the window's size, without changing the selection or taking a click; a video's matched moment in a muted player; the table's rows too; on a PDF or a book the wheel turns pages or passages |
 | Ctrl+Enter | Shows it in Explorer or your file manager |
 | Ctrl+C (⌘C on a Mac) | Copies the file, to paste anywhere |
 | Ctrl+O (⌘O on a Mac) | The same search in a bigger window, with a picture grid and filters |
