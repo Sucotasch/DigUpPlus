@@ -225,14 +225,17 @@ public final class Indexer {
     /// their first step (`IndexOptions.pdfStep` pages, `docStep` chunks) and stay `partial` for `finishLongFiles`.
     /// Per-file problems are recorded on the file; a dead worker or a settings mismatch stops the run (pending files stay
     /// pending, so the next run resumes). `shouldStop` is asked between batches: pausing, or new files that should go
-    /// first.
+    /// first. `fresh`: the ids the sync in this run just queued — someone is waiting for those, so media doesn't give
+    /// way for them.
     @discardableResult
-    public func run(limit: Int? = nil, only ids: Set<Int64>? = nil, shouldStop: () -> Bool = { false },
-                    onEvent: (Event) -> Void = { _ in }) throws -> [String: Int] {
+    public func run(limit: Int? = nil, only ids: Set<Int64>? = nil, fresh: Set<Int64> = [],
+                    shouldStop: () -> Bool = { false }, onEvent: (Event) -> Void = { _ in }) throws -> [String: Int] {
         let queue = try store.pending(limit: limit, only: ids)
         var states: [String: Int] = [:]
         var done = 0
-        try process(Self.batches(queue).map { Job(files: $0) }, shouldStop: shouldStop) { _, job, results, seconds in
+        try process(Self.batches(queue).map { batch in
+            Job(files: batch, queuedNow: !fresh.isEmpty && batch.allSatisfy { fresh.contains($0.id) })
+        }, shouldStop: shouldStop) { _, job, results, seconds in
             for (offset, file) in job.files.enumerated() {
                 let (state, note) = results[offset]
                 states[state, default: 0] += 1
@@ -390,6 +393,9 @@ public final class Indexer {
     struct Job: Sendable {
         let files: [FileRecord]
         var step: Range<Int>?
+        /// The sync in this helper's run queued these files (a new folder, the first launch): someone is waiting for
+        /// them, so media doesn't give way.
+        var queuedNow = false
     }
 
     /// Images and screenshots go to the model 8 at a time; other files one by one.
@@ -562,8 +568,9 @@ public final class Indexer {
         var prepared = Prepared(batch: batch, step: job.step, folder: folder)
         let url = URL(fileURLWithPath: batch[0].path)
         // One decision per file: someone at the computer now means this read's decoder gives way, and the watchdog
-        // allows its blocks twice the usual silence.
-        let lowPriority = options.userIsActive()
+        // allows its blocks twice the usual silence. Files a sync just queued go full speed: those are what the person
+        // is waiting for.
+        let lowPriority = !job.queuedNow && options.userIsActive()
         var reading = startReading(batch[0].path, kind: batch[0].kind, lowPriority: lowPriority)
         defer { finishReading(reading) }
         do {

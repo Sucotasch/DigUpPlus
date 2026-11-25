@@ -325,6 +325,12 @@ impl IndexService {
         Ok(())
     }
 
+    /// Whether a helper is running now (Index Now's hours override lasts only while it does).
+    pub fn is_running(&self) -> bool {
+        let mut running = self.running.lock().unwrap();
+        running.as_mut().is_some_and(|indexing| matches!(indexing.child.try_wait(), Ok(None)))
+    }
+
     /// Index Now: a running helper takes every thread from its next read and stops waiting for an idle machine
     /// (`speed full`); a helper that isn't running starts and gets the same right away. The mode lasts for that helper's
     /// run, so an idle machine and the hours are as they were afterwards.

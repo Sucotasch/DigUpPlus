@@ -59,6 +59,9 @@ final class IndexService: @unchecked Sendable {
     private var changedPaths: Set<String>?
     /// Folders asked to be read again (Settings → Folders → Re-read): their rows are queued before the next sync.
     private var rereadRequested: [String]?
+    /// Ids this helper's syncs queued (new or changed files): the person is waiting for them (a new folder, the first
+    /// launch), so their media reads go full speed while they are at the computer.
+    private var fresh: Set<Int64> = []
     private var codeSyncRequested = true
     private var codeChangedPaths: Set<String>?
     private var stopRequested = false
@@ -173,12 +176,12 @@ final class IndexService: @unchecked Sendable {
                 break
             }
             if !newFiles.isEmpty {
-                guard run(main, only: newFiles) else { break }
+                guard run(main, only: newFiles, fresh: fresh) else { break }
                 newFiles = left(main, of: newFiles)
                 continue
             }
             if (try? main.store.pendingCount()) ?? 0 > 0, lock.withLock({ backfillAllowed }) {
-                guard run(main, only: nil) else { break }
+                guard run(main, only: nil, fresh: fresh) else { break }
                 if lock.withLock({ syncRequested }) { continue }
             }
             // The code index once the main one has nothing waiting: its own sync (code changes come in a while after
@@ -292,6 +295,9 @@ final class IndexService: @unchecked Sendable {
                 emit(event)
             }
             if summary.queued.count <= newFilesLimit { newFiles.formUnion(summary.queued) }
+            // What this sync queued is what the person is waiting for (a folder just added, the first launch): those
+            // files read at full speed even while they are at the computer. It outlives the small `newFiles` batch.
+            if !part.code { fresh.formUnion(summary.queued) }
             emitCounts("sync", [
                 "code": part.code,
                 "new": newFiles.count,   // about to be indexed, whatever the power source
@@ -309,7 +315,7 @@ final class IndexService: @unchecked Sendable {
 
     /// Embeds a part's pending files (`only` some). False when indexing has to stop (the worker died, or the index was
     /// built with other settings).
-    private func run(_ part: Part, only ids: Set<Int64>?) -> Bool {
+    private func run(_ part: Part, only ids: Set<Int64>?, fresh: Set<Int64> = []) -> Bool {
         let started = Date()
         let isNew = ids != nil
         // Cumulative over the pass: what earlier runs did, plus everything pending now (what a sync just added too).
@@ -318,7 +324,7 @@ final class IndexService: @unchecked Sendable {
         var doneThisRun = 0
         defer { pass[part.code] = (done: soFar.done + doneThisRun, total: soFar.total) }
         do {
-            let states = try part.indexer.run(only: ids, shouldStop: { [self] in
+            let states = try part.indexer.run(only: ids, fresh: fresh, shouldStop: { [self] in
                 lock.withLock {
                     stopRequested || (!isNew && !backfillAllowed) || rereadRequested != nil
                         || Date() >= yieldAt && (syncRequested || part.code && codeSyncRequested)

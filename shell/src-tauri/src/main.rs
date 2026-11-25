@@ -102,6 +102,9 @@ struct Shell {
     /// Helpers that ended without a note, one after another: a crash, not a stopped file. Three in a row stop indexing
     /// until the app is started again.
     crashes: AtomicUsize,
+    /// Index Now asked for indexing at once: it runs while paused or outside the hours, until that helper ends (then the
+    /// schedule and Pause apply again).
+    manual_indexing: AtomicBool,
     /// The window's size inside its frame, as its page last reported it (GTK's own counts its title bar and shadow).
     window_inner: Mutex<Option<(f64, f64)>>,
     /// The preview pane's width as the window's page reports it (`preview_resized`): kept with the window's place.
@@ -1875,6 +1878,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         reloaded: Mutex::new(Instant::now()),
         last_watchdog_path: Mutex::default(),
         crashes: AtomicUsize::new(0),
+        manual_indexing: AtomicBool::new(false),
         window_inner: Mutex::new(None),
         preview_width: Mutex::new(None),
         window_search: Mutex::new(None),
@@ -2002,6 +2006,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
 /// After setup or a change of folders: the search service, the watcher and indexing follow the new folders.
 fn apply_folders(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>().inner().clone();
+    shell.manual_indexing.store(false, Ordering::SeqCst);   // a folder change is a new ask
     let folders = shell.folders();
     for folder in &folders {
         let _ = app.asset_protocol_scope().allow_directory(folder, true);
@@ -2078,8 +2083,9 @@ fn may_index(shell: &Shell) -> bool {
 }
 
 /// Index Now: indexing at once, giving way to nothing — every thread for the next media read and no wait for an idle
-/// machine (`helper::IndexService::index_now`). It runs while paused too, since the person asked for it, and clears the
-/// paused line; the hours window stays (an explicit schedule, and the watcher would stop the run anyway).
+/// machine (`helper::IndexService::index_now`). It runs while paused or outside the hours too, since the person asked;
+/// the schedule and Pause apply again once this helper ends. That is `manual_indexing`, which also keeps the hours
+/// watcher from stopping the run.
 fn start_index_now(app: &AppHandle) -> Result<(), String> {
     let shell = app.state::<Arc<Shell>>().inner().clone();
     if shell.folders().is_empty() && shell.code_folders().is_empty() {
@@ -2097,15 +2103,17 @@ fn start_index_now(app: &AppHandle) -> Result<(), String> {
     if shell.index_busy.load(Ordering::SeqCst) {
         return Err("The index is being moved; try again in a moment.".into());
     }
-    held_now(app);   // the hours as they are now, not as of the last half-minute tick
-    if let Some(start) = shell.status.lock().unwrap().held_until.clone() {
-        return Err(format!("Indexing is set to run from {start}; change that in Settings → Folders."));
-    }
+    shell.manual_indexing.store(true, Ordering::SeqCst);
     let _moving = shell.index_move.lock().unwrap_or_else(|error| error.into_inner());
     shell.index.index_now(&shell.index_launch())
         .map_err(|error| format!("Indexing couldn't start: {error}"))?;
-    // The person asked for it now: the paused line goes, and Settings' button says Pause again.
-    shell.status.lock().unwrap().paused = false;
+    // A half-minute hours tick can't cancel what was just started: this run is the ask, until it ends.
+    shell.manual_indexing.store(true, Ordering::SeqCst);
+    {
+        let mut status = shell.status.lock().unwrap();
+        status.paused = false;
+        status.held_until = None;
+    }
     changed(app);
     Ok(())
 }
@@ -2182,6 +2190,7 @@ fn stop_helpers(app: &AppHandle) {
 /// Stops everything that may hold a model file open: a folder change or a delete needs the files to itself.
 fn stop_model_helpers(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>();
+    shell.manual_indexing.store(false, Ordering::SeqCst);   // a model change ends an Index Now run
     shell.transfer.stop();
     shell.model.stop();
     shell.index.stop();
@@ -3602,6 +3611,7 @@ fn set_index_hours(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool, start
         settings.index_hours = hours::Hours { start: start % 1440, end: end % 1440 };
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
     }
+    shell.manual_indexing.store(false, Ordering::SeqCst);   // the new schedule applies now
     held_now(&app);
     Ok(())
 }
@@ -3819,6 +3829,13 @@ fn watch_hours(app: &AppHandle) {
 /// Brings the hold up to date with the clock and the setting.
 fn held_now(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>().inner().clone();
+    // Index Now's run is not stopped by the hours; once it ends (or nothing is running), the schedule applies again.
+    if shell.manual_indexing.load(Ordering::SeqCst) {
+        if shell.index.is_running() {
+            return;
+        }
+        shell.manual_indexing.store(false, Ordering::SeqCst);
+    }
     let held = {
         let settings = shell.settings.lock().unwrap();
         (settings.index_hours_on && !settings.index_hours.contains(hours::now())).then(|| hours::clock(settings.index_hours.start))
@@ -3843,6 +3860,8 @@ fn set_paused(app: &AppHandle, paused: bool) {
     let shell = app.state::<Arc<Shell>>().inner().clone();
     shell.status.lock().unwrap().paused = paused;
     if paused {
+        // Pause is as explicit as Index Now: the manual run ends with it.
+        shell.manual_indexing.store(false, Ordering::SeqCst);
         // It may take a moment to leave (up to two seconds): not on the main thread.
         let stopping = shell.clone();
         std::thread::spawn(move || stopping.index.stop());
@@ -3983,6 +4002,8 @@ fn index_ended(app: &AppHandle, event: &Value) {
     let status = event["status"].as_i64();
     if status == Some(0) {
         shell.crashes.store(0, Ordering::SeqCst);
+        // The helper Index Now asked is done: the hours and Pause apply again from the next run.
+        shell.manual_indexing.store(false, Ordering::SeqCst);
         if event["owed"] == true {
             run_index(app);
         }
@@ -4017,6 +4038,7 @@ fn index_ended(app: &AppHandle, event: &Value) {
         }
         None => {
             eprintln!("digup-shell: the index helper crashed {crashes} times in a row");
+            shell.manual_indexing.store(false, Ordering::SeqCst);
             set_failed(app, "Indexing stopped: the helper keeps failing");
         }
     }
