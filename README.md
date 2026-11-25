@@ -233,7 +233,9 @@ the full package.
 | F5 / F6 / F8 | Copy To… / Move To… / Delete the selected files (Windows) |
 
 DigUp Plus lives in the tray, where you can see how indexing is going,
-pause it, or open Settings. Opening it from the Start menu or your app list shows the search window, which opens on
+pause it, or open Settings. **Index Now** — in the tray, the window's menu and Settings → Folders — starts indexing at
+once and at full speed, even while paused or outside the hours set for it; that run keeps the full speed, then Pause or
+the schedule comes back. Opening it from the Start menu or your app list shows the search window, which opens on
 the **Images** view — the fork's home ground: the whole picture ranking in cosine layers, paged as deep as it goes.
 The **All files** view (the last chip, Ctrl+6) ranks everything by the mixed score and is where a query that mixes
 kinds — a receipt, a lease page, a photo — shows its best across all of them. Every chip carries its own number for the
@@ -334,7 +336,10 @@ processor otherwise; on a processor alone a picture takes a few seconds (about f
 large photo library can take hours, which is why setup shows the time first. After that, a new file is searchable a
 few seconds after it lands. The last pages of long books and PDFs are read in the background **only while the computer
 is idle** — five minutes without keyboard or mouse input — and stop as soon as you're back, so they never compete with
-your work; the status line says how many are left.
+your work; the status line says how many are left. While you are at the computer, video and audio decoding gives way —
+one thread instead of every core — but files you have just added (a new folder, the first run) read at full speed, and
+**Index Now** reads the rest now. A file whose reading runs away is set aside and tried again later (an hour, then a
+day after each further stop) instead of being marked broken; Settings → Folders says how many will be tried again.
 
 ## Code
 
