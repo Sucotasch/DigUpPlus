@@ -12,7 +12,7 @@ import WinSDK
 ///
 /// Protocol: one command per line on stdin, one JSON event per line on stdout.
 ///   stdin:  sync [JSON paths] | sync code [JSON paths] | reread [JSON paths] | stop | backfill on | backfill off
-///           (EOF = stop)
+///           | speed full | speed auto   (EOF = stop)
 ///   stdout: {"event": "missing" | "pruned" | "scanning" | "sync" | "file" | "rest" | "summary" | "waiting" | "idle" | "error" |
 ///            "exit", ...}; events about the code index say "code": true
 ///
@@ -66,6 +66,8 @@ final class IndexService: @unchecked Sendable {
     /// Seconds without keyboard or mouse input before the rest of long files may run (0: no gate). The shell asks for
     /// five minutes: a book's last pages aren't worth the fans while someone is reading their results.
     private let restWhenIdle: Double
+    /// Index Now's mode for this helper (`ManualIndexing`): while on, nothing waits for an idle machine.
+    private let speed: ManualIndexing
     /// A sync asked for while files are being indexed waits until then. A crawl of a big folder can take minutes, and
     /// a folder that keeps changing asks for the next one meanwhile: yielding at once, every pass went back to crawling
     /// before a single file was read. Indexing gets at least as long as the sync before it (2 s at the least).
@@ -73,7 +75,8 @@ final class IndexService: @unchecked Sendable {
     private let wake = DispatchSemaphore(value: 0)
 
     init(main: Part, code: Part?, folder: URL, model: SharedEmbedder, modelReady: @escaping () -> Bool,
-         backfill: Bool, newFilesLimit: Int, linger: Double, restWhenIdle: Double = 0) {
+         backfill: Bool, newFilesLimit: Int, linger: Double, restWhenIdle: Double = 0,
+         speed: ManualIndexing = ManualIndexing()) {
         self.main = main
         self.code = code
         self.folder = folder
@@ -83,9 +86,13 @@ final class IndexService: @unchecked Sendable {
         self.newFilesLimit = newFilesLimit
         self.linger = linger
         self.restWhenIdle = restWhenIdle
+        self.speed = speed
     }
 
     private var parts: [Part] { [main] + (code.map { [$0] } ?? []) }
+
+    /// How long the rest of long files waits for the computer to be idle, now: Index Now lifts the gate for this run.
+    private var idleWait: Double { speed.isForced ? 0 : restWhenIdle }
 
     func serve() -> Int32 {
         removeStaleScratchFolders()
@@ -202,7 +209,7 @@ final class IndexService: @unchecked Sendable {
             // deserve the fans. The loop comes back after its usual wait; nothing is lost, `read_to` holds the place.
             if lock.withLock({ backfillAllowed }), (try? main.store.pendingCount()) ?? 1 == 0,
                (try? code?.store.pendingCount() ?? 0) ?? 1 == 0, (try? main.store.unfinishedCount().files) ?? 0 > 0 {
-                if !RestPacing.mayStart(idle: Idle.seconds(), after: restWhenIdle) {
+                if !RestPacing.mayStart(idle: Idle.seconds(), after: idleWait) {
                     let left = (try? main.store.unfinishedCount()) ?? (files: 0, left: 0)
                     emit(["event": "rest", "waiting": true, "files": left.files, "left": left.left, "done": 0, "total": 0])
                     guard waitUntilIdle() else { break }
@@ -342,7 +349,7 @@ final class IndexService: @unchecked Sendable {
             let states = try main.indexer.finishLongFiles(shouldStop: { [self] in
                 lock.withLock {
                     stopRequested || !backfillAllowed
-                        || (restWhenIdle > 0 && !RestPacing.mayStart(idle: Idle.seconds(), after: restWhenIdle))
+                        || !RestPacing.mayStart(idle: Idle.seconds(), after: idleWait)
                         || Date() >= yieldAt && (syncRequested || codeSyncRequested && code != nil)
                 }
             }, onStep: { step in
@@ -350,7 +357,7 @@ final class IndexService: @unchecked Sendable {
                       "kind": step.kind.rawValue, "state": step.state, "seconds": step.seconds, "note": step.note ?? ""])
                 // A third of the speed: it still finishes, and someone who comes back mid-step doesn't wait for the
                 // fans to calm down. Only when the idle gate is on (a script's own pass stays as fast as it was).
-                let pause = RestPacing.pause(after: step.seconds, enabled: restWhenIdle > 0)
+                let pause = RestPacing.pause(after: step.seconds, enabled: idleWait > 0)
                 if pause > 0 { Thread.sleep(forTimeInterval: pause) }
             })
             if !states.isEmpty {
@@ -372,7 +379,7 @@ final class IndexService: @unchecked Sendable {
             if lock.withLock({ stopRequested }) { return false }
             if lock.withLock({ syncRequested || codeSyncRequested && code != nil }) { return true }
             if (try? main.store.unfinishedCount().files) ?? 0 == 0 { return true }
-            if RestPacing.mayStart(idle: Idle.seconds(), after: restWhenIdle) { return true }
+            if RestPacing.mayStart(idle: Idle.seconds(), after: idleWait) { return true }
             _ = wake.wait(timeout: .now() + 5)
         }
     }
@@ -427,6 +434,8 @@ final class IndexService: @unchecked Sendable {
                     case "stop": stopRequested = true
                     case "backfill on": backfillAllowed = true
                     case "backfill off": backfillAllowed = false
+                    case "speed full": speed.set(true)
+                    case "speed auto": speed.set(false)
                     default: break
                     }
                 }

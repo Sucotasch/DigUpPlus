@@ -34,11 +34,12 @@ let usage = """
       digup eval <queries.json> [-n 10]       recall of known answers (see evals/; "code: …" queries search code)
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
                           [--memory-limit MB] [--start-limit S] [--silence-limit S] [--move-limit S]
-                          [--time-limit S] [--rest-when-idle S]
+                          [--time-limit S] [--rest-when-idle S] [--full-speed]
                                               the app's indexing helper (JSON lines; see IndexService); it stops
                                               on a file whose reading runs away (see Watchdog: audio and video by
                                               start, silence and movement, the other kinds by --time-limit); the
-                                              rest of long files waits for S seconds without input
+                                              rest of long files waits for S seconds without input, and
+                                              --full-speed lifts that and the giving way (Index Now)
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
       digup search-service <folder>... [--code-root DIR]... [--encoder-idle S]
                                               the searcher as a process, index open and encoder warm (JSON lines;
@@ -520,6 +521,13 @@ func indexService(_ args: Arguments) throws -> Int32 {
     codeOptions.code = true
     codeOptions.excludedFolders = (args.lists["--code-exclude"] ?? []).map { Arguments.folderURL($0).path }
     let codeRoots = (args.lists["--code-root"] ?? []).map(Arguments.folderURL)
+    // Index Now (the shell's `speed full`, or `--full-speed`): no giving way for the rest of this run — the next media
+    // read takes every thread, and the rest of long files doesn't wait for an idle machine.
+    let speed = ManualIndexing(startingFullSpeed: args.flags.contains("--full-speed"))
+    var options = args.options
+    let automatic = options.userIsActive
+    options.userIsActive = { !speed.isForced && automatic() }
+    codeOptions.userIsActive = options.userIsActive
     // A file whose reading runs away ends this helper, noted for the next one (`Watchdog`). Media is judged by liveness
     // and movement; the other kinds keep a total limit (`--time-limit`, seconds).
     let policy = WatchdogPolicy(
@@ -530,7 +538,7 @@ func indexService(_ args: Arguments) throws -> Int32 {
     Watchdog(folder: args.indexFolder,
              memoryLimit: args.values["--memory-limit"].flatMap(UInt64.init).map { $0 << 20 } ?? Watchdog.defaultMemoryLimit,
              policy: policy).start()
-    let service = IndexService(main: try part(IndexStore.mainFile, options: args.options,
+    let service = IndexService(main: try part(IndexStore.mainFile, options: options,
                                               roots: args.positional.map(Arguments.folderURL)),
                                code: codeRoots.isEmpty ? nil : try part(IndexStore.codeFile, options: codeOptions,
                                                                         roots: codeRoots),
@@ -540,7 +548,8 @@ func indexService(_ args: Arguments) throws -> Int32 {
                                backfill: args.flags.contains("--backfill"),
                                newFilesLimit: args.values["--new-limit"].flatMap(Int.init) ?? 50,
                                linger: args.values["--linger"].flatMap(Double.init) ?? 60,
-                               restWhenIdle: args.values["--rest-when-idle"].flatMap(Double.init) ?? 0)
+                               restWhenIdle: args.values["--rest-when-idle"].flatMap(Double.init) ?? 0,
+                               speed: speed)
     return service.serve()
 }
 

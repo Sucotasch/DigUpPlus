@@ -325,6 +325,21 @@ impl IndexService {
         Ok(())
     }
 
+    /// Index Now: a running helper takes every thread from its next read and stops waiting for an idle machine
+    /// (`speed full`); a helper that isn't running starts and gets the same right away. The mode lasts for that helper's
+    /// run, so an idle machine and the hours are as they were afterwards.
+    pub fn index_now(&self, launch: &Launch) -> Result<(), String> {
+        self.run(launch)?;
+        let mut running = self.running.lock().unwrap();
+        if let Some(indexing) = running.as_mut() {
+            if matches!(indexing.child.try_wait(), Ok(None)) {
+                writeln!(indexing.stdin, "speed full").and_then(|_| indexing.stdin.flush())
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
     /// Only what changed under these paths: the helper reconciles their folders instead of walking every chosen one.
     pub fn sync_paths(&self, launch: &Launch, paths: &[PathBuf]) -> Result<(), String> {
         self.sync_paths_as(launch, paths, "sync")

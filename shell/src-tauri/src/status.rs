@@ -205,7 +205,7 @@ impl Status {
         }
     }
 
-    /// Something is under way or can't start: Index Now has nothing to add.
+    /// Something is under way or can't start.
     pub fn busy(&self, model: &Value) -> bool {
         model["state"] != "ready" || self.measuring || self.paused || self.held_until.is_some()
             || matches!(self.activity, Activity::Indexing { .. } | Activity::Finishing { .. })
@@ -267,6 +267,8 @@ impl Status {
             "watching": self.watching,
             "badge": self.badge(model),
             "busy": self.busy(model),
+            // Index Now is useful exactly when `busy` says no: paused, outside the hours, or already indexing.
+            "canIndexNow": has_folders && model["state"] == "ready" && !self.measuring,
             "activity": match self.activity {
                 Activity::Starting => "starting",
                 Activity::Scanning => "syncing",

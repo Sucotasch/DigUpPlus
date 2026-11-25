@@ -252,10 +252,13 @@ function renderStatus() {
   if (state.asOf) parts.push(`last sync ${indexAge(state.asOf)}`);
   $("status-detail").textContent = parts.join(" · ");
   $("pause").hidden = !info.folders?.length;
+  $("index-now").hidden = !info.folders?.length;
   $("pause").textContent = state.paused ? "Resume" : "Pause";
 }
 
 $("pause").onclick = () => invoke("pause_indexing", { paused: !(info.state || {}).paused }).catch(fail);
+/// Indexing now, at full speed (no idle wait, every thread): the same as the tray's Index Now.
+$("index-now").onclick = () => invoke("index_now").catch(fail);
 
 async function loadSummaries() {
   try {

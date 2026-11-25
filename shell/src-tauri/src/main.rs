@@ -1644,8 +1644,8 @@ async fn choose_folders(app: AppHandle, window: tauri::WebviewWindow, shell: Sta
 }
 
 #[tauri::command]
-fn index_now(app: AppHandle) {
-    run_index(&app);
+fn index_now(app: AppHandle) -> Result<(), String> {
+    start_index_now(&app)
 }
 
 #[tauri::command]
@@ -2075,6 +2075,39 @@ fn may_index(shell: &Shell) -> bool {
             let status = shell.status.lock().unwrap();
             !status.paused && status.held_until.is_none()
         }
+}
+
+/// Index Now: indexing at once, giving way to nothing — every thread for the next media read and no wait for an idle
+/// machine (`helper::IndexService::index_now`). It runs while paused too, since the person asked for it, and clears the
+/// paused line; the hours window stays (an explicit schedule, and the watcher would stop the run anyway).
+fn start_index_now(app: &AppHandle) -> Result<(), String> {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    if shell.folders().is_empty() && shell.code_folders().is_empty() {
+        return Err("Choose a folder first.".into());
+    }
+    if !shell.model_ready() {
+        return Err("The model isn't in yet; indexing starts after it downloads.".into());
+    }
+    if shell.quitting.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    if shell.measuring.load(Ordering::SeqCst) {
+        return Err("This computer's speed is being checked; indexing starts right after.".into());
+    }
+    if shell.index_busy.load(Ordering::SeqCst) {
+        return Err("The index is being moved; try again in a moment.".into());
+    }
+    held_now(app);   // the hours as they are now, not as of the last half-minute tick
+    if let Some(start) = shell.status.lock().unwrap().held_until.clone() {
+        return Err(format!("Indexing is set to run from {start}; change that in Settings → Folders."));
+    }
+    let _moving = shell.index_move.lock().unwrap_or_else(|error| error.into_inner());
+    shell.index.index_now(&shell.index_launch())
+        .map_err(|error| format!("Indexing couldn't start: {error}"))?;
+    // The person asked for it now: the paused line goes, and Settings' button says Pause again.
+    shell.status.lock().unwrap().paused = false;
+    changed(app);
+    Ok(())
 }
 
 /// Has the index helper sync and index.
@@ -3736,7 +3769,11 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
             "folders" => later(app, |app| {
                 let _ = show_setup(app);
             }),
-            "index" => run_index(app),
+            "index" => {
+                if let Err(problem) = start_index_now(app) {
+                    set_status(app, &problem);
+                }
+            }
             "pause" => {
                 let paused = app.state::<Arc<Shell>>().status.lock().unwrap().paused;
                 set_paused(app, !paused);
@@ -3832,7 +3869,7 @@ fn changed(app: &AppHandle) {
         let _ = status.set_text(snapshot["line"].as_str().unwrap_or_default());
     }
     if let Some(index) = shell.index_item.lock().unwrap().as_ref() {
-        let _ = index.set_enabled(folders && snapshot["busy"] == false);
+        let _ = index.set_enabled(snapshot["canIndexNow"] == true);
     }
     if let Some(pause) = shell.pause_item.lock().unwrap().as_ref() {
         let _ = pause.set_text(if snapshot["paused"] == true { "Resume Indexing" } else { "Pause Indexing" });

@@ -4493,7 +4493,7 @@ function showMainMenu() {
   const folders = state.info.folders.length > 0, paused = state.app.paused === true;
   showMenu(button.right - 200, button.bottom + 4, [
     ["Choose Folders…", () => invoke("choose_folders").catch(failed)],
-    ["Index Now", () => invoke("index_now").catch(failed), null, folders && state.app.busy === false],
+    ["Index Now", () => invoke("index_now").catch(failed), null, state.app.canIndexNow === true],
     [paused ? "Resume Indexing" : "Pause Indexing", () => invoke("pause_indexing", { paused: !paused }).catch(failed),
      null, folders],
     null,
