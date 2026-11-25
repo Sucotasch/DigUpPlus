@@ -1075,21 +1075,6 @@ svg { display: block; }
 .frames-sheet .sheet-error { color: #d7443e; font-size: 12px; margin-top: 6px; }
 .frames-sheet .sheet-error[hidden] { display: none; }
 
-/* The Edit sheet: the picture with Cropper.js over it, then the choices (the field rows are the frame sheet's). */
-.edit-stage {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 140px;
-  margin: 12px 0;
-  border-radius: 8px;
-  background: var(--tile);
-  overflow: hidden;
-}
-.edit-stage img { display: block; max-width: 100%; max-height: 46vh; }
-.edit-sheet { width: min(760px, 94vw); }
-
 /* The big preview (Space): the selected result over the window, as big as it allows. */
 .big { position: fixed; inset: 0; z-index: 20; display: flex; padding: 24px; background: rgba(0, 0, 0, 0.45); }
 .big[hidden] { display: none; }
@@ -1113,15 +1098,16 @@ svg { display: block; }
 .big .title .dims { flex: none; font-size: 12px; color: var(--secondary); font-variant-numeric: tabular-nums; }
 .big .title .dims b { color: var(--text); font-weight: 600; }
 
-/* The picture's tools, in the big preview: a real button each, not a line of text. */
-.big .edit-bar {
-  position: relative; flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
-  padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--surface);
+/* The picture's tools: a rail down the left of the picture, where a portrait picture leaves room to spare, so the
+   window's height stays the picture's. A real button each, not a line of text. */
+.big .edit-body { flex: 1; min-height: 0; display: flex; }
+.big .edit-rail {
+  position: relative; flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 8px 7px; border-right: 1px solid var(--line); background: var(--surface);
 }
-.big .edit-bar .grow { flex: 1; }
 .edit-button {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  min-width: 34px; height: 32px; padding: 0 8px;
+  width: 38px; height: 36px; padding: 0;
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text);
   font-size: 12.5px; cursor: pointer;
 }
@@ -1129,24 +1115,18 @@ svg { display: block; }
 .edit-button:disabled { opacity: 0.38; cursor: default; }
 .edit-button.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .edit-button svg {
-  width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8;
+  width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8;
   stroke-linecap: round; stroke-linejoin: round;
 }
-.big .edit-bar button.text {
-  padding: 6px 15px; font-size: 12.5px; border: 1px solid var(--line); border-radius: 8px;
-  background: var(--surface); color: var(--text); cursor: pointer;
-}
-.big .edit-bar button.text.primary { background: var(--accent); color: white; border-color: transparent; }
-.big .edit-bar button.text:disabled { opacity: 0.45; cursor: default; }
 .big .edit-stage {
-  flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  flex: 1; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center;
   padding: 16px; overflow: hidden; background: var(--pane);
 }
 .big .edit-stage canvas { max-width: 100%; max-height: 100%; box-shadow: 0 4px 22px rgba(0, 0, 0, 0.28); }
 
-/* Resize: the pixels on either side, a chain for the ratio, and what the picture is and will be. */
+/* Resize and Format: panels beside the rail, with the pixels on either side and a chain for the ratio. */
 .size-pop {
-  position: absolute; top: calc(100% + 6px); left: 12px; z-index: 5;
+  position: absolute; top: 8px; left: calc(100% + 10px); z-index: 5;
   display: grid; gap: 8px; align-items: center; padding: 12px 14px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.35); font-size: 12.5px;
@@ -1158,6 +1138,10 @@ svg { display: block; }
 .size-pop input {
   width: 92px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--pane); color: var(--text); font: inherit; font-variant-numeric: tabular-nums;
+}
+.size-pop select {
+  min-width: 120px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--pane); color: var(--text); font: inherit;
 }
 .size-pop .lock { grid-row: 1 / span 2; grid-column: 3; align-self: center; }
 .size-pop .summary { grid-column: 1 / -1; color: var(--secondary); font-variant-numeric: tabular-nums; }

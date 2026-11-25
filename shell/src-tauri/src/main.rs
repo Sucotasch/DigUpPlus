@@ -1325,7 +1325,11 @@ async fn edit_picture(shell: State<'_, Arc<Shell>>, path: String, crop: Option<V
 async fn undo_image_edit() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<Value, String> {
         let path = image_edit::undo()?;
-        Ok(json!({ "path": path.map(|path| path.display().to_string()) }))
+        let size = path.as_deref().and_then(|path| image::image_dimensions(path).ok());
+        Ok(json!({
+            "path": path.map(|path| path.display().to_string()),
+            "width": size.map(|(width, _)| width), "height": size.map(|(_, height)| height),
+        }))
     })
     .await
     .map_err(|error| error.to_string())?

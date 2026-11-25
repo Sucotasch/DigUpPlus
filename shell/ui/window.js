@@ -1415,7 +1415,7 @@ function wire(item, hit) {
         ["Rotate right", () => rotatePicture(hit, 90)],
         ["Flip horizontally", () => rotatePicture(hit, 0, "horizontal")],
         ["Flip vertically", () => rotatePicture(hit, 0, "vertical")],
-        ["Edit…", () => editDialog(hit)]);
+        ["Crop, resize, format…", () => { state.selection = hit.path; render(); toggleBig(); }]);
     }
     if (MEDIA.has(hit.kind)) items.push(null, ["Find similar", () => findSimilar(hit)]);
     if (fileTargets.length) {
@@ -2765,6 +2765,7 @@ async function rotatePicture(hit, degrees, flip = null) {
     // A JPEG whose blocks align is turned by moving its DCT coefficients: said out loud, since it costs no generation.
     const how = reply.lossless ? " (lossless)" : "";
     setNote(`${what} ${nameOf(hit.path)} — Ctrl+Z to undo (${reply.width}×${reply.height})${how}`);
+    rememberSize(hit.path, reply.width, reply.height);
     refreshPicture(hit.path);
   } catch (error) {
     failed(`The picture couldn't be edited: ${error}`);
@@ -2777,6 +2778,7 @@ async function undoPicture() {
     const reply = await invoke("undo_image_edit");
     if (!reply?.path) { setNote("Nothing to undo"); return; }
     setNote(`Edit undone: ${nameOf(reply.path)}`);
+    rememberSize(reply.path, reply.width, reply.height);
     refreshPicture(reply.path);   // and the big preview re-reads the file it is showing
   } catch (error) {
     failed(`The edit couldn't be undone: ${error}`);
@@ -2785,8 +2787,7 @@ async function undoPicture() {
 
 /// The edited file's previews are stale (the page caches renders by path): forget them, ask again, and set what is on
 /// screen - the side pane and any visible card of that file.
-function refreshPicture(path) {
-  forgetRendersOf(path);
+function refreshPicture(path) {  forgetRendersOf(path);
   for (const cell of $content.querySelectorAll("[data-path]")) {
     if (cell.dataset.path !== path) continue;
     const image = cell.querySelector("img[data-render]");
@@ -2800,124 +2801,12 @@ function refreshPicture(path) {
   if (!$big.hidden && bigHit?.path === path) renderBig();
 }
 
-let editCropper = null;   // the open Edit sheet's crop box; destroyed whenever the sheet goes
-
-function destroyEditCropper() {
-  if (!editCropper) return;
-  try { editCropper.destroy(); } catch {}
-  editCropper = null;
-}
-
-/// Edit…: crop on the rendered preview and a format change - one write. Turning, flipping and the pixel size are the
-/// big preview's own tools, where the result is on screen before it is written.
-function editDialog(hit) {
-  if (!hit || !["image", "screenshot"].includes(hit.kind) || !$modal.hidden) return;
-  destroyEditCropper();
-  const box = element("div", "modal-box frames-sheet edit-sheet");
-  box.append(element("h2", "", "Edit the picture"));
-  box.append(element("div", "sheet-about", `${nameOf(hit.path)} · the file itself changes; Ctrl+Z undoes it`));
-  const stage = element("div", "edit-stage");
-  const image = element("img");
-  image.alt = "";
-  stage.append(image);
-  const fields = element("div", "fields");
-
-  const formatField = element("label", "field");
-  formatField.append(element("span", "", "Format"));
-  const format = element("select");
-  for (const [value, label] of [["keep", "Keep format"], ["jpeg", "JPEG"], ["png", "PNG"]]) {
-    const option = element("option", "", label);
-    option.value = value;
-    format.append(option);
-  }
-  const quality = element("input");
-  quality.type = "number";
-  quality.min = "60";
-  quality.max = "100";
-  quality.value = "92";
-  quality.title = "JPEG quality";
-  formatField.append(format, quality);
-  fields.append(formatField);
-  const syncQuality = () => {
-    quality.hidden = !(format.value === "jpeg"
-      || (format.value === "keep" && /\.(jpe?g|jpe|jfif|jfi|jif)$/i.test(hit.path)));
-  };
-  format.onchange = syncQuality;
-  syncQuality();
-
-  const note = element("div", "sheet-note",
-    "Drag on the picture to crop it; leave it untouched to keep the whole picture.");
-  const error = element("div", "sheet-error");
-  error.hidden = true;
-
-  const actions = element("div", "modal-actions");
-  const cancel = element("button", "", "Cancel");
-  cancel.onclick = () => { destroyEditCropper(); closeModal(); };
-  const go = element("button", "primary", "Apply");
-  go.onclick = async () => {
-    const crop = editCrop(hit, image);
-    const target = format.value === "keep" ? null : format.value;
-    const controls = [format, quality, go, cancel].filter(Boolean);
-    for (const control of controls) control.disabled = true;
-    error.hidden = true;
-    go.textContent = "Applying…";
-    try {
-      const reply = await invoke("edit_picture", {
-        path: hit.path, crop, format: target, quality: Math.round(Number(quality.value)),
-      });
-      destroyEditCropper();
-      closeModal();
-      if (reply?.converted) {
-        if (!$big.hidden) closeBig();   // the file it was showing has a new name now
-        setNote(`Converted to ${nameOf(reply.path)} (${reply.width}×${reply.height})`);
-        // The old row is gone; the watcher indexes the new file, and a search then shows it.
-        setTimeout(() => { if (state.hasResults && !state.busy) setQuery(state.text); }, 2500);
-      } else if (reply?.path) {
-        setNote(`Edited ${nameOf(reply.path)} (${reply.width}×${reply.height})`);
-        refreshPicture(reply.path);
-      }
-    } catch (failure) {
-      for (const control of controls) control.disabled = false;
-      go.textContent = "Apply";
-      error.textContent = String(failure);
-      error.hidden = false;
-    }
-  };
-  actions.append(cancel, go);
-  box.append(stage, fields, note, error, actions);
-  showModal(box);
-
-  ask({ op: "render", kind: "image", path: hit.path, pixels: 1800, data: true }).then((reply) => {
-    if (!reply?.data) throw new Error("the helper sent no picture");
-    image.onload = () => {
-      if (!box.isConnected) return;
-      // Nothing is cropped until the person draws a box.
-      editCropper = new window.Cropper(image, { viewMode: 1, autoCrop: false, background: false, responsive: true,
-                                                guides: false, toggleDragModeOnDblclick: false, checkOrientation: false });
-    };
-    image.src = `data:image/jpeg;base64,${reply.data}`;
-  }).catch((failure) => {
-    error.textContent = String(failure);
-    error.hidden = false;
-  });
-}
-
-/// The crop box in the source's own pixels: the preview is the helper's render, so its natural size is scaled back to
-/// what the index says the file is.
-function editCrop(hit, preview) {
-  if (!editCropper) return null;
-  const data = editCropper.getData(true);
-  if (!data || data.width < 2 || data.height < 2) return null;
-  const sourceWidth = Number(hit.info?.width) || preview.naturalWidth;
-  const sourceHeight = Number(hit.info?.height) || preview.naturalHeight;
-  if (!sourceWidth || !sourceHeight || !preview.naturalWidth || !preview.naturalHeight) return null;
-  const scaleX = sourceWidth / preview.naturalWidth;
-  const scaleY = sourceHeight / preview.naturalHeight;
-  const x = Math.max(0, Math.round(data.x * scaleX));
-  const y = Math.max(0, Math.round(data.y * scaleY));
-  const width = Math.min(sourceWidth - x, Math.round(data.width * scaleX));
-  const height = Math.min(sourceHeight - y, Math.round(data.height * scaleY));
-  return width >= 1 && height >= 1 ? { x, y, width, height } : null;
+/// The size this window just wrote: the row's `info` is the index's, and the index sees the write a little later, so
+/// the editor and the side pane would otherwise measure the picture as it was.
+function rememberSize(path, width, height) {
+  const hit = hitForPath(path);
+  if (!hit || !width || !height) return;
+  hit.info = { ...hit.info, width, height };
 }
 
 let ocrToken = 0;   // the preview whose words are being fetched: a late reply for an older one is dropped
@@ -3009,7 +2898,14 @@ let bigHit = null;    // the result the sheet shows
 let bigAt = 0;        // its page or passage on screen
 let bigTotal = 0;     // how many it has
 let bigWheel = 0;     // wheel travel kept, so a touchpad's trickle is one turn
-let bigEditorState = null;   // the unsaved turn/flip/size of the picture on screen; nothing is written until Save
+let bigEditorState = null;   // the unsaved turn/flip/crop/size of the picture on screen; nothing is written until Save
+let bigCropper = null;       // Crop mode's box, on the big canvas itself
+
+function closeBigCropper() {
+  if (!bigCropper) return;
+  try { bigCropper.destroy(); } catch {}
+  bigCropper = null;
+}
 
 /// Space shows the selected result over the window, big; Space, Esc or a click beside it puts it away. The arrows move
 /// through the results under it, and ↩ opens the one shown.
@@ -3023,6 +2919,7 @@ function toggleBig() {
 
 function closeBig() {
   $big.hidden = true;
+  closeBigCropper();
   $big.replaceChildren();   // its video or sound stops with it
   bigHit = null;
   bigAt = 0;
@@ -3034,6 +2931,12 @@ function closeBig() {
 function renderBig() {
   const hit = state.hasResults && state.query.trim() ? selectedHit() : null;
   if (!hit) return closeBig();
+  // The index catching up, a watcher redraw or a click on the same result must not rebuild the sheet under the hands
+  // of someone with unsaved changes or a crop box open.
+  if (bigEditorState && bigHit?.path === hit.path && (bigEditorState.cropping || bigEditorState.isDirty())) {
+    bigHit = hit;
+    return;
+  }
   bigHit = hit;
   // A page or passage is what the wheel turns through; other kinds have nothing to turn.
   bigTotal = hit.kind === "pdf" || hit.segment === "chunk" ? partsOf(hit) : 0;
@@ -3051,14 +2954,16 @@ function renderBig() {
   const close = element("button", "close", "×");
   close.title = "Close (Space)";
   close.onclick = closeBig;
-  head.append(title, opening, close);
+  head.append(title);
+  let editor = null;
   if (editablePicture(hit)) {
-    // The picture's own tools, with the result on screen before it is written: a side pane is too small for that.
-    const editor = bigEditor(hit, dims);
-    sheet.append(head, editor.bar, editor.stage);
-  } else {
-    sheet.append(head, bigView(hit));
+    // The picture's own tools, with the result on screen before it is written.
+    editor = bigEditor(hit, dims);
+    head.append(...editor.headActions);
   }
+  head.append(opening, close);
+  sheet.append(head);
+  if (editor) sheet.append(editor.body); else sheet.append(bigView(hit));
   $big.replaceChildren(sheet);
 }
 
@@ -3110,8 +3015,6 @@ $big.addEventListener("wheel", (event) => {
   bigFlip(event.deltaY > 0 ? 1 : -1);
 }, { passive: false });
 
-/// The result as big as the window allows: the picture or the page, the video or the recording from the moment, the
-/// passage or the lines of code.
 /// A picture the editor can write back: the helper's writer is JPEG and PNG only, and the other formats stay a preview.
 function editablePicture(hit) {
   return (hit.kind === "image" || hit.kind === "screenshot") && /\.(jpe?g|png)$/i.test(hit.path);
@@ -3129,6 +3032,9 @@ const EDIT_ICONS = {
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
   link: '<path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/>' +
         '<path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/>',
+  format: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
+  cancel: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
 };
 
 function editButton(icon, title, text = "") {
@@ -3140,17 +3046,20 @@ function editButton(icon, title, text = "") {
   return button;
 }
 
-/// The big preview's picture tools. Turning and flipping are drawn on a canvas right away; Resize takes the exact
-/// pixels and keeps the aspect ratio unless the chain is clicked; Crop keeps its own sheet; and Save is the only thing
-/// that touches the file (in place, with Ctrl+Z / Undo to put it back).
+/// The big preview's picture tools, in a rail down the left side: a portrait picture leaves its room to the sides, so
+/// the picture keeps the window's height. Turning and flipping are on the canvas at once, Resize takes exact pixels,
+/// Crop draws its box on the same canvas, Format picks JPEG/PNG, and Save is the only thing that touches the file.
 function bigEditor(hit, dims) {
+  closeBigCropper();
   const state = {
     angle: 0, fx: false, fy: false,
-    width: 0, height: 0,             // the size Save will write; the picture's own after turning until Resize changes it
+    crop: null,                         // in the turned picture's own pixels: { x, y, width, height }
+    width: 0, height: 0,                // what Save writes; the crop's own size until Resize changes it
+    format: "keep", quality: 92,
     sourceW: 0, sourceH: 0, ready: false, image: new Image(),
   };
   bigEditorState = state;
-  const bar = element("div", "edit-bar");
+  const body = element("div", "edit-body");  const rail = element("div", "edit-rail");
   const stage = element("div", "edit-stage");
   const canvas = element("canvas", "edit-canvas");
   stage.append(canvas);
@@ -3158,103 +3067,182 @@ function bigEditor(hit, dims) {
   const turned = () => state.angle % 180 !== 0;
   const base = () => turned() ? { width: state.sourceH, height: state.sourceW }
                               : { width: state.sourceW, height: state.sourceH };
-  const target = () => state.width && state.height ? { width: state.width, height: state.height } : base();
+  const uncropped = () => state.crop ? { width: state.crop.width, height: state.crop.height } : base();
+  const target = () => state.width && state.height ? { width: state.width, height: state.height } : uncropped();
   const dirty = () => {
     if (!state.ready) return false;
-    const own = base();
+    const own = uncropped();
     const now = target();
-    return state.angle !== 0 || state.fx || state.fy || now.width !== own.width || now.height !== own.height;
+    return state.angle !== 0 || state.fx || state.fy || !!state.crop
+      || now.width !== own.width || now.height !== own.height || state.format !== "keep";
   };
+  state.isDirty = dirty;   // a redraw of the results must not throw away what is being edited
 
+  // The turned, flipped picture at the preview's own resolution; the crop and the size are then cut out of it, so the
+  // screen shows exactly what Save writes.
   const draw = () => {
     if (!state.ready) return;
+    const own = base();
+    const scale = Math.min(1, 1800 / Math.max(own.width, own.height));
+    const turnedCanvas = document.createElement("canvas");
+    turnedCanvas.width = Math.max(1, Math.round(own.width * scale));
+    turnedCanvas.height = Math.max(1, Math.round(own.height * scale));
+    const paint = turnedCanvas.getContext("2d");
+    paint.imageSmoothingQuality = "high";
+    paint.translate(turnedCanvas.width / 2, turnedCanvas.height / 2);
+    paint.scale(state.fx ? -1 : 1, state.fy ? -1 : 1);
+    paint.rotate((state.angle * Math.PI) / 180);
+    const drawWidth = turned() ? turnedCanvas.height : turnedCanvas.width;
+    const drawHeight = turned() ? turnedCanvas.width : turnedCanvas.height;
+    paint.drawImage(state.image, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+
     const { width, height } = target();
-    // The canvas is only what the screen shows: it keeps the target's ratio at the preview's own resolution.
-    const scale = Math.min(1, 1800 / Math.max(width, height));
-    const bufferWidth = Math.max(1, Math.round(width * scale));
-    const bufferHeight = Math.max(1, Math.round(height * scale));
-    canvas.width = bufferWidth;
-    canvas.height = bufferHeight;
+    const fit = Math.min(1, 1800 / Math.max(width, height));
+    canvas.width = Math.max(1, Math.round(width * fit));
+    canvas.height = Math.max(1, Math.round(height * fit));
     const context = canvas.getContext("2d");
     context.imageSmoothingQuality = "high";
-    // Turn, then flip, in the same order as the helper: the flip is of the turned picture.
-    const drawWidth = turned() ? bufferHeight : bufferWidth;
-    const drawHeight = turned() ? bufferWidth : bufferHeight;
-    context.save();
-    context.translate(bufferWidth / 2, bufferHeight / 2);
-    context.scale(state.fx ? -1 : 1, state.fy ? -1 : 1);
-    context.rotate((state.angle * Math.PI) / 180);
-    context.drawImage(state.image, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
-    context.restore();
-    updateControls();
+    const cut = state.crop || { x: 0, y: 0, width: own.width, height: own.height };
+    context.drawImage(turnedCanvas,
+      cut.x * scale, cut.y * scale, cut.width * scale, cut.height * scale,
+      0, 0, canvas.width, canvas.height);
+    update();
   };
 
+  // A turn carries the crop box with it (the box is of the picture), and the size goes back to the picture's own.
   const turn = (step) => {
+    if (state.crop) {
+      const before = base();
+      const crop = state.crop;
+      state.crop = step === 90
+        ? { x: before.height - (crop.y + crop.height), y: crop.x, width: crop.height, height: crop.width }
+        : { x: crop.y, y: before.width - (crop.x + crop.width), width: crop.height, height: crop.width };
+    }
     state.angle = (state.angle + step + 360) % 360;
-    // The size keeps its meaning for the new orientation: its sides swap with the picture.
-    [state.width, state.height] = [state.height, state.width];
-    if (!sizePop.hidden) showSize();
+    const own = uncropped();
+    state.width = own.width;
+    state.height = own.height;
+    showSize();
     draw();
   };
   const flip = (axis) => {
+    if (state.crop) {
+      const own = base();
+      state.crop = axis === "x"
+        ? { ...state.crop, x: own.width - (state.crop.x + state.crop.width) }
+        : { ...state.crop, y: own.height - (state.crop.y + state.crop.height) };
+    }
     if (axis === "x") state.fx = !state.fx; else state.fy = !state.fy;
     (axis === "x" ? flipH : flipV).classList.toggle("on", axis === "x" ? state.fx : state.fy);
     draw();
   };
 
-  const left = editButton("left", "Rotate left", "Rotate left");
+  const left = editButton("left", "Rotate left");
   left.onclick = () => turn(-90);
-  const right = editButton("right", "Rotate right", "Rotate right");
+  const right = editButton("right", "Rotate right");
   right.onclick = () => turn(90);
-  const flipH = editButton("flipH", "Flip horizontally", "Flip H");
+  const flipH = editButton("flipH", "Flip horizontally");
   flipH.onclick = () => flip("x");
-  const flipV = editButton("flipV", "Flip vertically", "Flip V");
+  const flipV = editButton("flipV", "Flip vertically");
   flipV.onclick = () => flip("y");
-  const sizeButton = editButton("resize", "Resize…", "Resize");
-  const cropButton = editButton("crop", "Crop…", "Crop");
-  cropButton.onclick = () => { if (!dirty()) editDialog(hit); };
-  const resetButton = editButton("reset", "Discard the changes in this preview", "Reset");
-  const undoButton = editButton("undo", "Undo the last saved edit (Ctrl+Z)", "Undo");
+  const sizeButton = editButton("resize", "Resize…");
+  const cropButton = editButton("crop", "Crop…");
+  cropButton.onclick = startCrop;
+  const formatButton = editButton("format", "Format…");
+  const resetButton = editButton("reset", "Discard the changes in this preview");
+  resetButton.onclick = reset;
+  const undoButton = editButton("undo", "Undo the last saved edit (Ctrl+Z)");
   undoButton.onclick = () => { undoPicture(); };
-  const cancel = element("button", "text", "Cancel");
+  const cancel = element("button", "", "Cancel");
   cancel.onclick = closeBig;
-  const save = element("button", "text primary", "Save");
-  save.onclick = async () => {
-    if (!state.ready) return;
-    const wanted = target();
+  const save = element("button", "primary", "Save");
+  save.onclick = savePicture;
+
+  // Crop mode: the rail becomes Apply/Cancel, and the box is drawn on the same canvas, at the same size as the
+  // picture - no second, smaller window to aim in.
+  const cropApply = editButton("check", "Apply the crop");
+  cropApply.onclick = applyCrop;
+  const cropCancel = editButton("cancel", "Leave the picture uncropped");
+  cropCancel.onclick = () => { endCrop(); draw(); };
+  let cropping = false;
+
+  function startCrop() {
+    if (!state.ready || cropping) return;
+    state.crop = null;
     const own = base();
-    const resize = wanted.width === own.width && wanted.height === own.height
-      ? null : { width: wanted.width, height: wanted.height };
-    let angle = state.angle;
-    let which = null;
-    // Two flips make a half turn; the helper takes one axis at a time.
-    if (state.fx && state.fy) angle = (angle + 180) % 360;
-    else if (state.fx) which = "horizontal";
-    else if (state.fy) which = "vertical";
-    save.disabled = true;
-    save.textContent = "Saving…";
-    try {
-      const reply = await invoke("edit_picture", { path: hit.path, rotate: angle, flip: which, resize });
-      setNote(`Saved ${nameOf(hit.path)} (${reply.width}×${reply.height})${reply.lossless ? " (lossless)" : ""} — Ctrl+Z to undo`);
-      refreshPicture(hit.path);   // the editor re-reads the file it just wrote
-    } catch (failure) {
-      save.disabled = false;
-      save.textContent = "Save";
-      failed(`The picture couldn't be saved: ${failure}`);
+    state.width = own.width;
+    state.height = own.height;
+    showSize();
+    draw();
+    cropping = true;
+    state.cropping = true;
+    save.hidden = true;      // while the box is being drawn, Save and Cancel belong to the box
+    cancel.hidden = true;
+    rail.replaceChildren(cropApply, cropCancel);
+    closeBigCropper();
+    bigCropper = new window.Cropper(canvas, {
+      viewMode: 1, autoCrop: true, autoCropArea: 0.85, background: false, responsive: true,
+      guides: false, toggleDragModeOnDblclick: false, checkOrientation: false,
+      crop: () => {
+        if (!bigCropper?.ready) return;
+        const data = bigCropper.getData(true);
+        if (!data.width || !data.height) return;
+        const own = base();
+        const factor = own.width / canvas.width;
+        dims.textContent = `${own.width} × ${own.height} → `;
+        dims.append(element("b", "",
+          `${Math.max(1, Math.round(data.width * factor))} × ${Math.max(1, Math.round(data.height * factor))}`));
+      },
+    });
+  }
+
+  function applyCrop() {
+    if (!bigCropper) return;
+    const data = bigCropper.getData(true);
+    const own = base();
+    const factor = own.width / canvas.width;
+    if (data.width > 2 && data.height > 2) {
+      const x = Math.max(0, Math.min(own.width - 1, Math.round(data.x * factor)));
+      const y = Math.max(0, Math.min(own.height - 1, Math.round(data.y * factor)));
+      state.crop = {
+        x, y,
+        width: Math.max(1, Math.min(own.width - x, Math.round(data.width * factor))),
+        height: Math.max(1, Math.min(own.height - y, Math.round(data.height * factor))),
+      };
+      state.width = state.crop.width;
+      state.height = state.crop.height;
     }
-  };
-  resetButton.onclick = () => {
+    endCrop();
+    draw();
+  }
+
+  function endCrop() {
+    cropping = false;
+    state.cropping = false;
+    save.hidden = false;
+    cancel.hidden = false;
+    closeBigCropper();
+    rail.replaceChildren(left, right, flipH, flipV, sizeButton, cropButton, formatButton, resetButton, undoButton);
+  }
+
+  function reset() {
     state.angle = 0;
     state.fx = state.fy = false;
+    state.crop = null;
+    state.format = "keep";
+    state.quality = 92;
     flipH.classList.remove("on");
     flipV.classList.remove("on");
+    formatSelect.value = "keep";
+    qualityInput.value = "92";
+    qualityInput.hidden = true;
     state.width = 0;
     state.height = 0;
     showSize();
     draw();
-  };
-  // Resize: pixels on either side, the aspect ratio kept by a chain until it is clicked off, and the numbers of what
-  // the picture is and what it will be.
+  }
+
+  // Resize: pixels on either side, the chain keeping the ratio, and the numbers of what the picture is and will be.
   const sizePop = element("div", "size-pop");
   sizePop.hidden = true;
   const widthRow = element("label", "row");
@@ -3275,9 +3263,9 @@ function bigEditor(hit, dims) {
   lock.classList.add("on", "lock");
   const summary = element("div", "summary");
   sizePop.append(widthRow, heightRow, lock, summary);
-  sizePop.style.gridTemplateColumns = "auto auto auto";
   sizeButton.onclick = () => {
     sizePop.hidden = !sizePop.hidden;
+    formatPop.hidden = true;
     if (!sizePop.hidden) showSize();
   };
 
@@ -3290,16 +3278,16 @@ function bigEditor(hit, dims) {
   };
   const showSize = () => {
     if (!state.ready) return;
-    const own = base();
+    const own = uncropped();
     const now = target();
     widthInput.value = String(now.width);
     heightInput.value = String(now.height);
     summary.textContent = "";
-    summary.append(`Original ${own.width} × ${own.height} → `, element("b", "", `${now.width} × ${now.height}`));
+    summary.append(`Size ${own.width} × ${own.height} → `, element("b", "", `${now.width} × ${now.height}`));
   };
   const typed = (side) => {
     if (!state.ready) return;
-    const own = base();
+    const own = uncropped();
     let width = Math.min(16384, Math.max(1, Math.round(Number(widthInput.value) || own.width)));
     let height = Math.min(16384, Math.max(1, Math.round(Number(heightInput.value) || own.height)));
     if (linked) {
@@ -3316,21 +3304,100 @@ function bigEditor(hit, dims) {
   widthInput.oninput = () => typed("width");
   heightInput.oninput = () => typed("height");
 
-  const updateControls = () => {
-    const own = base();
+  // Format: the same panel, not a sheet of its own. JPEG asks for its quality.
+  const formatPop = element("div", "size-pop format-pop");
+  formatPop.hidden = true;
+  const formatRow = element("label", "row");
+  formatRow.append(element("span", "", "Format"));
+  const formatSelect = element("select");
+  for (const [value, label] of [["keep", "Keep"], ["jpeg", "JPEG"], ["png", "PNG"]]) {
+    const option = element("option", "", label);
+    option.value = value;
+    formatSelect.append(option);
+  }
+  formatRow.append(formatSelect);
+  const qualityRow = element("label", "row");
+  qualityRow.append(element("span", "", "Quality"));
+  const qualityInput = element("input");
+  qualityInput.type = "number";
+  qualityInput.min = "60";
+  qualityInput.max = "100";
+  qualityInput.value = "92";
+  qualityInput.hidden = true;
+  qualityRow.append(qualityInput);
+  qualityRow.hidden = true;
+  formatPop.append(formatRow, qualityRow);
+  const syncFormat = () => {
+    const jpeg = formatSelect.value === "jpeg"
+      || (formatSelect.value === "keep" && /\.(jpe?g|jpe|jfif|jfi|jif)$/i.test(hit.path));
+    qualityRow.hidden = !jpeg;
+    qualityInput.hidden = !jpeg;
+    state.format = formatSelect.value;
+    state.quality = Math.round(Number(qualityInput.value) || 92);
+    update();
+  };
+  formatSelect.onchange = syncFormat;
+  qualityInput.oninput = syncFormat;
+  formatButton.onclick = () => {
+    formatPop.hidden = !formatPop.hidden;
+    sizePop.hidden = true;
+    syncFormat();
+  };
+
+  const update = () => {
     const now = target();
     save.disabled = !dirty();
     resetButton.disabled = !dirty();
     undoButton.disabled = dirty();
-    cropButton.disabled = dirty();
-    cropButton.title = dirty() ? "Save or Cancel the changes first" : "Crop… and change the format";
+    cropButton.disabled = cropping;
+    // The head tells the whole story: what the picture is, and what Save will leave.
+    const own = base();
     const changed = now.width !== own.width || now.height !== own.height;
     dims.textContent = changed ? `${own.width} × ${own.height} → ` : `${own.width} × ${own.height}`;
     if (changed) dims.append(element("b", "", `${now.width} × ${now.height}`));
   };
 
-  bar.append(left, right, flipH, flipV, sizeButton, cropButton, resetButton, undoButton);
-  bar.append(element("span", "grow"), cancel, save, sizePop);
+  async function savePicture() {
+    if (!state.ready || cropping) return;
+    const own = uncropped();
+    const wanted = target();
+    const resize = wanted.width === own.width && wanted.height === own.height
+      ? null : { width: wanted.width, height: wanted.height };
+    let angle = state.angle;
+    let which = null;
+    // Two flips make a half turn; the helper takes one axis at a time.
+    if (state.fx && state.fy) angle = (angle + 180) % 360;
+    else if (state.fx) which = "horizontal";
+    else if (state.fy) which = "vertical";
+    save.disabled = true;
+    save.textContent = "Saving…";
+    try {
+      const reply = await invoke("edit_picture", {
+        path: hit.path, rotate: angle, flip: which, crop: state.crop, resize,
+        format: state.format === "keep" ? null : state.format,
+        quality: Math.round(Number(qualityInput.value) || 92),
+      });
+      if (reply?.converted) {
+        setNote(`Converted to ${nameOf(reply.path)} (${reply.width}×${reply.height})`);
+        closeBig();
+        // The old row is gone; the watcher indexes the new file, and a search then shows it.
+        setTimeout(() => { if (state.hasResults && !state.busy) setQuery(state.text); }, 2500);
+      } else {
+        setNote(`Saved ${nameOf(reply.path)} (${reply.width}×${reply.height})${reply.lossless ? " (lossless)" : ""} — Ctrl+Z to undo`);
+        rememberSize(reply.path, reply.width, reply.height);
+        bigEditorState = null;        // the picture on screen is the written one now: the editor starts clean
+        refreshPicture(reply.path);   // and re-reads the file it just wrote
+      }
+    } catch (failure) {
+      save.disabled = false;
+      save.textContent = "Save";
+      failed(`The picture couldn't be saved: ${failure}`);
+    }
+  }
+
+  rail.append(left, right, flipH, flipV, sizeButton, cropButton, formatButton, resetButton, undoButton);
+  rail.append(sizePop, formatPop);
+  body.append(rail, stage);
 
   state.image.onload = () => {
     state.sourceW = Number(hit.info?.width) || state.image.naturalWidth;
@@ -3348,9 +3415,11 @@ function bigEditor(hit, dims) {
     if (!reply?.data) throw new Error("the helper sent no picture");
     state.image.src = `data:image/jpeg;base64,${reply.data}`;
   }).catch((failure) => { dims.textContent = String(failure); });
-  return { bar, stage };
+  return { body, headActions: [cancel, save] };
 }
 
+/// The result as big as the window allows: the picture or the page, the video or the recording from the moment, the
+/// passage or the lines of code.
 function bigView(hit) {
   const view = element("div", "view");
   if (hit.kind === "code" || hit.segment === "chunk") {
