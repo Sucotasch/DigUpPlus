@@ -3973,9 +3973,13 @@ fn index_event(app: &AppHandle, event: Value) {
         }
         "rest" => reload(app, false),
         "idle" => {
+            // Index Now's run is over with its work (the helper may linger a minute for more): the hours and Pause
+            // apply again from here, not only when the helper finally exits.
+            let shell = app.state::<Arc<Shell>>().inner().clone();
+            shell.manual_indexing.store(false, Ordering::SeqCst);
+            held_now(app);
             reload(app, true);
             // A debug run through setup searches once the first index is in.
-            let shell = app.state::<Arc<Shell>>();
             if let Some(query) = &shell.options.debug_query {
                 if shell.options.debug_setup && !shell.debug_query_sent.swap(true, Ordering::SeqCst) {
                     let label = *shell.panel_label.lock().unwrap();
