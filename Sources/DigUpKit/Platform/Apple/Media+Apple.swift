@@ -9,7 +9,8 @@ extension AudioExtractor {
     /// Decodes audio (a file, or a video's soundtrack) to 16 kHz mono and writes `window`-second WAV pieces `hop`
     /// seconds apart, skipping silent ones. One model input ignores anything past 30 s, so windows stay ≤ 30 s.
     /// Streams: memory stays at one window, even for a 3-hour podcast.
-    static func windows(of url: URL, window: Double, hop: Double, minimum: Double = 2, to folder: URL) async throws
+    static func windows(of url: URL, window: Double, hop: Double, minimum: Double = 2, to folder: URL,
+                        progress: @escaping @Sendable (Bool) -> Void = { _ in }) async throws
         -> (pieces: [MediaPiece], duration: Double) {
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .audio).first else { return ([], 0) }
@@ -36,6 +37,7 @@ extension AudioExtractor {
                                      end: Double(offset + count) / sampleRate))
         }
         while let sampleBuffer = output.copyNextSampleBuffer() {
+            progress(true)   // a buffer arrived: the decode is working
             guard let block = CMSampleBufferGetDataBuffer(sampleBuffer) else { continue }
             let length = CMBlockBufferGetDataLength(block)
             guard length >= 2 else { continue }   // an empty buffer has no base address to copy into
@@ -61,7 +63,8 @@ extension VideoExtractor {
     /// Samples a frame every `interval` seconds and keeps one per shot: a frame that looks like the previous kept one
     /// (8×8 average hash within 4 bits) only extends it. Screen recordings and lectures shrink a lot.
     /// Google's Video Moments Finder also matches queries against per-frame vectors.
-    static func keyframes(of url: URL, every interval: Double, maxPixel: Int, maxFrames: Int = 1200, to folder: URL)
+    static func keyframes(of url: URL, every interval: Double, maxPixel: Int, maxFrames: Int = 1200, to folder: URL,
+                          progress: @escaping @Sendable (Bool) -> Void = { _ in })
         async throws -> (frames: [MediaPiece], duration: Double, hasAudio: Bool) {
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
@@ -83,6 +86,7 @@ extension VideoExtractor {
         var frames: [MediaPiece] = []
         var lastHash: UInt64?
         for await result in generator.images(for: times) {
+            progress(true)   // a frame was generated: the read is moving
             guard case let .success(_, image, actualTime) = result else { continue }
             let hash = averageHash(image)
             if let lastHash, (hash ^ lastHash).nonzeroBitCount <= 4 { continue }

@@ -104,7 +104,8 @@ extension AudioExtractor {
     /// Decodes audio (a file, or a video's soundtrack) to 16 kHz mono through ffmpeg and writes `window`-second WAV
     /// pieces `hop` seconds apart, skipping silent ones; one model input ignores anything past 30 s, so windows stay
     /// ≤ 30 s. Streams: memory stays at one window, even for a 3-hour podcast.
-    static func windows(of url: URL, window: Double, hop: Double, minimum: Double = 2, to folder: URL) async throws
+    static func windows(of url: URL, window: Double, hop: Double, minimum: Double = 2, to folder: URL,
+                        progress: @escaping @Sendable (Bool) -> Void = { _ in }) async throws
         -> (pieces: [MediaPiece], duration: Double) {
         guard MediaInfo.streams(of: url).audio else { return ([], 0) }
         let duration = MediaInfo.duration(of: url) ?? 0
@@ -139,6 +140,7 @@ extension AudioExtractor {
                 buffer.removeFirst(hopSamples)
                 offset += hopSamples
             }
+            progress(true)   // data arrived: the decode is working, however long the file
         }
         // The tail: new audio beyond the previous window's overlap, or the whole file if it was shorter than a window.
         let alreadyCovered = offset == 0 ? 0 : windowSamples - hopSamples
@@ -150,7 +152,8 @@ extension AudioExtractor {
 extension VideoExtractor {
     /// Samples a frame every `interval` seconds through ffmpeg and keeps one per shot: a frame that looks like the
     /// previous kept one (8×8 average hash within 4 bits) only extends it.
-    static func keyframes(of url: URL, every interval: Double, maxPixel: Int, maxFrames: Int = 1200, to folder: URL)
+    static func keyframes(of url: URL, every interval: Double, maxPixel: Int, maxFrames: Int = 1200, to folder: URL,
+                          progress: @escaping @Sendable (Bool) -> Void = { _ in })
         async throws -> (frames: [MediaPiece], duration: Double, hasAudio: Bool) {
         let streams = MediaInfo.streams(of: url)
         let duration = MediaInfo.duration(of: url) ?? 0
@@ -162,14 +165,34 @@ extension VideoExtractor {
         // last frame at or before it (its default gives the last before the slot's middle, half a step later). Every
         // frame is decoded anyway, so reading from the start costs nothing over seeking to `first`, and an MPEG-TS has
         // no index: a seek there lands past the keyframe, and nothing decodes until the next one.
+        var pending = Data()
+        var lastOut: Int64 = -1
         try FFmpeg.run(FFmpeg.ffmpeg, ["-v", "error", "-nostdin", "-i", url.path, "-an", "-vf",
                                        "fps=fps=\(1 / step):start_time=\(first):round=up,"
                                        + "scale=\(maxPixel):\(maxPixel):force_original_aspect_ratio=decrease",
-                                       "-q:v", "3", "-f", "image2", folder.appendingPathComponent(prefix + "%06d.jpg").path]) { _ in }
+                                       "-q:v", "3", "-progress", "pipe:1", "-nostats", "-f", "image2",
+                                       folder.appendingPathComponent(prefix + "%06d.jpg").path]) { data in
+            // ffmpeg writes a block every ~0.5 s even while no new frame is out (measured): `progress=` is liveness,
+            // `out_time_us` is real movement.
+            pending.append(data)
+            while let newline = pending.firstIndex(of: 0x0A) {
+                let line = String(decoding: pending[pending.startIndex..<newline], as: UTF8.self)
+                pending.removeSubrange(pending.startIndex...newline)
+                if line.hasPrefix("out_time_us="), let value = Int64(line.dropFirst("out_time_us=".count)) {
+                    if value != lastOut {
+                        lastOut = value
+                        progress(true)
+                    }
+                } else if line.hasPrefix("progress=") {
+                    progress(false)
+                }
+            }
+        }
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasPrefix(prefix) }.sorted()
         var frames: [MediaPiece] = []
         var lastHash: UInt64?
         for (index, name) in names.enumerated() {
+            progress(true)   // hashing a frame: the read is still moving, even after ffmpeg has finished
             let path = folder.appendingPathComponent(name).path
             let start = first + Double(index) * step
             guard start < duration else {   // fps can fill a slot past the end

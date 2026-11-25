@@ -510,19 +510,36 @@ public final class Indexer {
     /// some files (PDF text extraction growing by gigabytes a minute, never returning), and nothing stops them from
     /// outside but ending the process, so it has to know which file that was. With `prepareAhead` several files are
     /// read at once; the one that has been read longest is the one worth reporting (and timing).
-    public static var nowReading: (path: String, since: Date)? {
-        readingLock.withLock { reads.values.min { $0.since < $1.since } }
+    /// The read that has been silent the longest, for the watchdog: with two reads in flight, the stuck one is not
+    /// necessarily the oldest.
+    public static var slowestRead: ActiveRead? {
+        let now = Monotonic.now()
+        return readingLock.withLock {
+            reads.values.max { (now - $0.lastSignal) < (now - $1.lastSignal) }
+        }
     }
-    nonisolated(unsafe) private static var reads: [Int: (path: String, since: Date)] = [:]
+    nonisolated(unsafe) private static var reads: [Int: ActiveRead] = [:]
     nonisolated(unsafe) private static var nextRead = 0
     private static let readingLock = NSLock()
 
     /// Marks `path` as being read by the calling thread until `finishReading` (each read has its own token).
-    private static func startReading(_ path: String) -> Int {
+    private static func startReading(_ path: String, kind: FileKind) -> Int {
         readingLock.withLock {
             nextRead += 1
-            reads[nextRead] = (path, Date())
+            reads[nextRead] = ActiveRead(path: path, kind: kind, started: Monotonic.now())
             return nextRead
+        }
+    }
+
+    /// A read said something: `moved` when it advanced (a frame, a page), false when it only showed it was alive.
+    static func signalReading(_ token: Int, moved: Bool) {
+        let now = Monotonic.now()
+        readingLock.withLock {
+            guard var read = reads[token] else { return }
+            read.lastSignal = now
+            if moved { read.lastMove = now }
+            read.hasSignal = true
+            reads[token] = read
         }
     }
 
@@ -544,7 +561,7 @@ public final class Indexer {
         let batch = job.files
         var prepared = Prepared(batch: batch, step: job.step, folder: folder)
         let url = URL(fileURLWithPath: batch[0].path)
-        var reading = startReading(batch[0].path)
+        var reading = startReading(batch[0].path, kind: batch[0].kind)
         defer { finishReading(reading) }
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -557,7 +574,7 @@ public final class Indexer {
                     var texts: [String] = []
                     for file in batch {
                         finishReading(reading)
-                        reading = startReading(file.path)
+                        reading = startReading(file.path, kind: file.kind)
                         let reads = file.ocrPictures.readsWords(for: file.kind)
                         texts.append(reads ? OCR.readings(ofImageAt: URL(fileURLWithPath: file.path))
                             .joined(separator: "\n\n") : "")
@@ -568,7 +585,7 @@ public final class Indexer {
                     for (slot, file) in batch.enumerated() {
                         let url = URL(fileURLWithPath: file.path)
                         finishReading(reading)
-                        reading = startReading(file.path)
+                        reading = startReading(file.path, kind: file.kind)
                         do {
                             let image = try ImageExtractor.prepare(url, maxPixel: screenshot ? 1536 : 1024,
                                                                    minSide: options.minImageSide, to: folder,
@@ -619,17 +636,22 @@ public final class Indexer {
                     break
                 }
                 let (window, hop) = (options.audioWindow, options.audioHop)
+                let token = reading
                 let (pieces, duration) = try runBlocking {
-                    try await AudioExtractor.windows(of: url, window: window, hop: hop, to: folder)
+                    try await AudioExtractor.windows(of: url, window: window, hop: hop, to: folder,
+                                                     progress: { moved in Indexer.signalReading(token, moved: moved) })
                 }
                 prepared.payload = .audio(pieces: pieces, duration: duration)
             case .video:
                 let (interval, window, hop) = (options.frameInterval, options.audioWindow, options.audioHop)
+                let token = reading
                 let (frames, duration, hasAudio) = try runBlocking {
-                    try await VideoExtractor.keyframes(of: url, every: interval, maxPixel: 1024, to: folder)
+                    try await VideoExtractor.keyframes(of: url, every: interval, maxPixel: 1024, to: folder,
+                                                       progress: { moved in Indexer.signalReading(token, moved: moved) })
                 }
                 let sound = hasAudio
-                    ? try runBlocking { try await AudioExtractor.windows(of: url, window: window, hop: hop, to: folder) }
+                    ? try runBlocking { try await AudioExtractor.windows(of: url, window: window, hop: hop, to: folder,
+                                                                        progress: { moved in Indexer.signalReading(token, moved: moved) }) }
                         .pieces
                     : []
                 prepared.payload = .video(frames: frames, sound: sound, duration: duration)

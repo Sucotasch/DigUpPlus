@@ -1,15 +1,18 @@
 import DigUpKit
 import Foundation
+#if os(Windows)
+import WinSDK
+#endif
 
 /// Ends the indexing helper when reading one file runs away. Apple's PDF text extraction has grown without end on a
 /// page of some PDFs (30 GB in 3.5 minutes, never returning), and nothing stops code like that from outside but ending
-/// the process. Every second the watchdog looks at the helper's memory (its footprint, as Activity Monitor counts it) and
-/// at how long the file being read (`Indexer.nowReading`) has taken. Past `memoryLimit`, or past `timeLimit` on one
-/// file, it writes down the file and why (`StoppedFile`) and exits with `StoppedFile.exitCode`: the app starts a new
-/// helper, which marks that file as one that couldn't be read and goes on.
+/// the process. Every second the watchdog looks at the helper's memory (footprint) and at the read that has been silent
+/// the longest (`Indexer.slowestRead`): past `memoryLimit`, or past the policy's limits, it writes down the file and why
+/// (`StoppedFile`) and exits with `StoppedFile.exitCode`: the app starts a new helper, which marks that file as one that
+/// couldn't be read and goes on.
 final class Watchdog: @unchecked Sendable {
     let memoryLimit: UInt64
-    let timeLimit: TimeInterval
+    let policy: WatchdogPolicy
     let note: URL
 
     /// Half the Mac's memory, but at least 4 GB and at most 8 GB: indexing peaks at 1–3 GB on the biggest files.
@@ -17,13 +20,9 @@ final class Watchdog: @unchecked Sendable {
         min(8 << 30, max(4 << 30, ProcessInfo.processInfo.physicalMemory / 2))
     }
 
-    /// Reading one file never takes this long: an hour of 4K video is minutes, a long book is read 30 pages a step.
-    static let defaultTimeLimit: TimeInterval = 15 * 60
-
-    init(folder: URL, memoryLimit: UInt64 = Watchdog.defaultMemoryLimit,
-         timeLimit: TimeInterval = Watchdog.defaultTimeLimit) {
+    init(folder: URL, memoryLimit: UInt64 = Watchdog.defaultMemoryLimit, policy: WatchdogPolicy = .default) {
         self.memoryLimit = memoryLimit
-        self.timeLimit = timeLimit
+        self.policy = policy
         note = StoppedFile.location(in: folder)
     }
 
@@ -31,13 +30,12 @@ final class Watchdog: @unchecked Sendable {
         Thread.detachNewThread { [self] in
             while true {
                 Thread.sleep(forTimeInterval: 1)
-                let reading = Indexer.nowReading
+                let read = Indexer.slowestRead
                 if let footprint = Self.footprint(), footprint > memoryLimit {
-                    stop(reading?.path, why: "needed more than \(Self.size(memoryLimit)) of memory to read")
+                    stop(read?.path, why: "needed more than \(Self.size(memoryLimit)) of memory to read")
                 }
-                if let reading, Date().timeIntervalSince(reading.since) > timeLimit {
-                    let limit = timeLimit >= 120 ? "\(Int(timeLimit / 60)) minutes" : "\(Int(timeLimit)) seconds"
-                    stop(reading.path, why: "took more than \(limit) to read")
+                if let read, let why = policy.verdict(for: read, at: Monotonic.now()) {
+                    stop(read.path, why: why)
                 }
             }
         }
@@ -58,7 +56,8 @@ final class Watchdog: @unchecked Sendable {
         bytes >= 1 << 30 ? String(format: "%.0f GB", Double(bytes) / Double(1 << 30)) : "\(bytes >> 20) MB"
     }
 
-    /// This process's memory as Activity Monitor counts it: its footprint on a Mac, resident memory on Linux.
+    /// This process's memory as Activity Monitor counts it: its footprint on a Mac, resident memory on Linux and the
+    /// working set on Windows (`K32GetProcessMemoryInfo`, the same number Task Manager shows).
     static func footprint() -> UInt64? {
         #if canImport(Darwin)
         var info = task_vm_info_data_t()
@@ -69,6 +68,11 @@ final class Watchdog: @unchecked Sendable {
             }
         }
         return result == KERN_SUCCESS ? info.phys_footprint : nil
+        #elseif os(Windows)
+        var counters = PROCESS_MEMORY_COUNTERS()
+        counters.cb = DWORD(MemoryLayout<PROCESS_MEMORY_COUNTERS>.size)
+        guard K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, counters.cb) else { return nil }
+        return UInt64(counters.WorkingSetSize)
         #elseif os(Linux)
         guard let statm = try? String(contentsOfFile: "/proc/self/statm", encoding: .utf8),
               let pages = statm.split(separator: " ").dropFirst().first.flatMap({ UInt64($0) }) else { return nil }

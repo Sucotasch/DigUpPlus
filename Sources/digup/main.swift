@@ -33,10 +33,12 @@ let usage = """
                                               --model times the model itself (Linux and Windows) and keeps it
       digup eval <queries.json> [-n 10]       recall of known answers (see evals/; "code: …" queries search code)
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
-                          [--memory-limit MB] [--time-limit S] [--rest-when-idle S]
+                          [--memory-limit MB] [--start-limit S] [--silence-limit S] [--move-limit S]
+                          [--time-limit S] [--rest-when-idle S]
                                               the app's indexing helper (JSON lines; see IndexService); it stops
-                                              on a file whose reading passes the limits (see Watchdog); the rest
-                                              of long files waits for S seconds without input
+                                              on a file whose reading runs away (see Watchdog: audio and video by
+                                              start, silence and movement, the other kinds by --time-limit); the
+                                              rest of long files waits for S seconds without input
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
       digup search-service <folder>... [--code-root DIR]... [--encoder-idle S]
                                               the searcher as a process, index open and encoder warm (JSON lines;
@@ -84,7 +86,8 @@ struct Arguments {
     var rootRules: [RootRule] = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--offset", "--zgate", "--word-weight", "--new-limit",
                                       "--linger", "--rest-when-idle", "--shot-tokens", "--code-stretch", "--encoder-idle",
-                                      "--to", "--memory-limit", "--time-limit", "--tries", "--when-quiet", "--print-config",
+                                      "--to", "--memory-limit", "--time-limit", "--start-limit", "--silence-limit",
+                                      "--move-limit", "--tries", "--when-quiet", "--print-config",
                                       "--from", "--threads"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--root-rule",
                                         "--tag-type", "--root"]
@@ -513,10 +516,16 @@ func indexService(_ args: Arguments) throws -> Int32 {
     codeOptions.code = true
     codeOptions.excludedFolders = (args.lists["--code-exclude"] ?? []).map { Arguments.folderURL($0).path }
     let codeRoots = (args.lists["--code-root"] ?? []).map(Arguments.folderURL)
-    // A file whose reading runs away ends this helper, noted for the next one (`Watchdog`).
+    // A file whose reading runs away ends this helper, noted for the next one (`Watchdog`). Media is judged by liveness
+    // and movement; the other kinds keep a total limit (`--time-limit`, seconds).
+    let policy = WatchdogPolicy(
+        startLimit: args.values["--start-limit"].flatMap(Double.init) ?? WatchdogPolicy.default.startLimit,
+        silenceLimit: args.values["--silence-limit"].flatMap(Double.init) ?? WatchdogPolicy.default.silenceLimit,
+        moveLimit: args.values["--move-limit"].flatMap(Double.init) ?? WatchdogPolicy.default.moveLimit,
+        totalLimit: args.values["--time-limit"].flatMap(Double.init) ?? WatchdogPolicy.default.totalLimit)
     Watchdog(folder: args.indexFolder,
              memoryLimit: args.values["--memory-limit"].flatMap(UInt64.init).map { $0 << 20 } ?? Watchdog.defaultMemoryLimit,
-             timeLimit: args.values["--time-limit"].flatMap(Double.init) ?? Watchdog.defaultTimeLimit).start()
+             policy: policy).start()
     let service = IndexService(main: try part(IndexStore.mainFile, options: args.options,
                                               roots: args.positional.map(Arguments.folderURL)),
                                code: codeRoots.isEmpty ? nil : try part(IndexStore.codeFile, options: codeOptions,
