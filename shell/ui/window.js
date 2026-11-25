@@ -1034,6 +1034,7 @@ function tableRow(hit) {
   propertiesCell.title = properties;
   row.append(nameCell, tableCell("size", hit.size > 0 ? bytes(hit.size) : ""), typeCell, dateCell, propertiesCell);
   wire(row, hit);
+  peekOnHover(row, hit);   // the list needs it more than the grid: there is no picture in a row to look at
   return row;
 }
 
