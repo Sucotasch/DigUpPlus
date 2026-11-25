@@ -225,8 +225,8 @@
 
 ## 7. Сделано (2026-11-25)
 
-Реализовано и проверено на сборочной паре (`.build/hover-target`), гейты: **редактор 30/30**, **режимы 17/17**,
-Rust **114** тестов, clippy и `node --check` чисты.
+Реализовано, проверено на сборочной паре и **выпущено в `v0.1.23`** (https://github.com/Sucotasch/DigUpPlus/releases/tag/v0.1.23),
+гейты: **редактор 30/30**, **режимы 17/17**, Rust **114** тестов, clippy и `node --check` чисты.
 
 - **Одна операция за раз**: `pendingKind()` (turn/crop/size/format); другой инструмент при неприменённом — вопрос
   `Save and continue` / `Discard and continue` / `Keep editing`; выход — `Save changes?` / `Save` / `Don't save` /
