@@ -235,13 +235,21 @@ public final class MCPServer {
             throw Problem("\(path) isn't in the index")
         }
         var segment: Int64?
+        var substituted: Int64?
         if let given = try number(arguments["segment_id"], "segment_id", in: 0...Int.max).map(Int64.init) {
             var owner: Int64?
             try searcher.store.db.query("SELECT file FROM segments WHERE id = ?", [.int(given)]) { owner = $0.int(0) }
             guard owner == file.id else {
                 throw Problem("segment \(given) isn't in \(path)", invalidParams: true)
             }
-            segment = given
+            // A page's picture (a scan, or a PDF page rendered for its few words) can be the segment that matched while
+            // the words sit in the file's text segments: read one of those rather than refuse a file that has text.
+            if let text = try searcher.text(ofSegment: given), !text.isEmpty {
+                segment = given
+            } else {
+                segment = try passage(of: file, query: arguments["query"] as? String, searcher: searcher)
+                if let segment { substituted = given }
+            }
         } else {
             segment = try passage(of: file, query: arguments["query"] as? String, searcher: searcher)
         }
@@ -257,6 +265,9 @@ public final class MCPServer {
         let window = Self.window(full, around: arguments["query"] as? String, characters: tokens * 4)
         var answer: [String: Any] = ["path": path, "segment_id": id, "text": window.text,
                                      "truncated": window.truncated, "max_tokens": tokens]
+        if let substituted {
+            answer["note"] = "segment \(substituted) has no text; read the file's text instead"
+        }
         if let loc { answer["loc"] = loc }
         if let locEnd { answer["loc_end"] = locEnd }
         return answer

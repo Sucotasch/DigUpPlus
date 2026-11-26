@@ -243,6 +243,29 @@ import Testing
         #expect((read.answer["message"] as? String)?.contains("no text") == true)
     }
 
+    /// A page's picture can be the segment search matched while the words live in the file's text segments: a read
+    /// asked for that segment gives the file's text, and says which segment it read.
+    @Test func readSnippetFallsBackFromAPagePictureToTheFilesText() throws {
+        let store = try index(count: 1)
+        let path = folder.appendingPathComponent("note-0.txt").path
+        let file = try #require(try store.file(at: path))
+        var vector = [Float](repeating: 0, count: Vectors.dimension)
+        vector[0] = 1
+        try store.addSegment(file: file.id, kind: .pageImage, modality: .image, loc: 7, vector: vector)
+        var picture: Int64?
+        try store.db.query("SELECT id FROM segments WHERE file = ? AND kind = 'page_image'", [.int(file.id)]) {
+            picture = $0.int(0)
+        }
+        let pictureID = try #require(picture)
+        let server = MCPServer(index: folder)
+        let read = try tool(server, "read_snippet", ["path": path, "segment_id": pictureID])
+        #expect(!read.failed)
+        #expect((read.answer["text"] as? String)?.contains("budgetword") == true)
+        let readID = try #require(read.answer["segment_id"] as? Int)
+        #expect(Int64(readID) != pictureID)
+        #expect((read.answer["note"] as? String)?.contains("no text") == true)
+    }
+
     @Test func vectorsFromAnotherModelAreNotUsed() throws {
         let store = try index(count: 2)
         let path = folder.appendingPathComponent("note-0.txt").path
