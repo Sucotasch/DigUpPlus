@@ -125,6 +125,32 @@ import Testing
         #expect((unfiltered.answer["results"] as? [[String: Any]])?.isEmpty == false)
     }
 
+    /// `--root` is a privacy boundary for every tool, not only `read_snippet`: a search and the counts must not
+    /// reveal a path outside it, even when the same index holds more.
+    @Test func searchAndStateStayInsideTheAgentRoot() throws {
+        let store = try IndexStore(directory: folder)
+        let base = folder.appendingPathComponent("scope-\(UUID().uuidString)")
+        let inside = base.appendingPathComponent("inside")
+        let outside = base.appendingPathComponent("outside")
+        for (dir, inode) in [(inside, 1), (outside, 2)] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let path = dir.appendingPathComponent("note.txt").path
+            let id = try store.insert(Candidate(path: path, kind: .doc, size: 10, mtime: 1, inode: UInt64(inode),
+                                                device: 1))
+            try store.addSegment(file: id, kind: .chunk, modality: .text, loc: 1,
+                                 text: "budgetword in \(dir.lastPathComponent)")
+        }
+        let server = MCPServer(index: folder, roots: [inside.path])
+        let page = try tool(server, "search", ["query": "budgetword"])
+        #expect(!page.failed)
+        #expect(page.answer["total"] as? Int == 1)
+        let paths = (page.answer["results"] as? [[String: Any]])?.compactMap { $0["path"] as? String } ?? []
+        #expect(paths == [inside.appendingPathComponent("note.txt").path])
+        let state = try tool(server, "index_state")
+        #expect(state.answer["files"] as? Int == 1)
+        #expect(state.answer["pending"] as? Int == 1)
+    }
+
     @Test func readSnippetGivesAWindowAndStaysInTheIndex() throws {
         let store = try index(count: 2)
         let path = folder.appendingPathComponent("note-0.txt").path

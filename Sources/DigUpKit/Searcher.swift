@@ -70,6 +70,8 @@ public final class Searcher {
     /// False for the vectors the later pass adds (`Indexer.finishLongFiles`): scored, but they don't set the scale.
     private var rowSetsScale: [Bool] = []
     private var fileKind: [Int64: FileKind] = [:]
+    /// A file's path, for the agent scope (`IndexStore.scope`): search results and counts stay under it.
+    private var filePath: [Int64: String] = [:]
     /// A picture's look is indexed (`files.looks`): false for the ones a folder keeps only for their words.
     private var fileLooks: [Int64: Bool] = [:]
     /// A PDF is a document (`files.as_document`): false for one kept only for its scans' text.
@@ -138,12 +140,15 @@ public final class Searcher {
 
     private func reloadFiles() throws {
         fileKind.removeAll(keepingCapacity: true)
+        filePath.removeAll(keepingCapacity: true)
         fileLooks.removeAll(keepingCapacity: true)
         fileAsDocument.removeAll(keepingCapacity: true)
-        try store.db.query("SELECT id, kind, looks, as_document FROM files") { row in
-            fileKind[row.int(0)] = FileKind(rawValue: row.text(1) ?? "")
-            fileLooks[row.int(0)] = row.int(2) != 0
-            fileAsDocument[row.int(0)] = row.int(3) != 0
+        try store.db.query("SELECT id, path, kind, looks, as_document FROM files") { row in
+            let id = row.int(0)
+            if store.scope != nil { filePath[id] = row.text(1) ?? "" }
+            fileKind[id] = FileKind(rawValue: row.text(2) ?? "")
+            fileLooks[id] = row.int(3) != 0
+            fileAsDocument[id] = row.int(4) != 0
         }
         fileHasOCR.removeAll(keepingCapacity: true)
         // The OCR results: a picture's `.ocr` text, or a scanned PDF page's. A page_image carrying text is a scan's
@@ -187,11 +192,19 @@ public final class Searcher {
         let wordWeight = wordWeight ?? (isCode ? Self.codeWordWeight : Self.wordWeight)
         if queryVector != nil, !vectorsLoaded { try reload() }
         let fileKind = self.fileKind
+        let filePath = self.filePath
         let fileLooks = self.fileLooks
         let fileAsDocument = self.fileAsDocument
         let fileHasOCR = self.fileHasOCR
+        // The connected folders (`IndexStore.scope`): an agent's `--root` search must not see a path outside them,
+        // even when the index itself holds more.
+        let scope = store.scope
+        let inScope = { (file: Int64) -> Bool in
+            guard let scope, let path = filePath[file] else { return true }
+            return FolderSelection.isSearched(path, folders: scope, skipped: [])
+        }
         let allowed = { (file: Int64) -> Bool in
-            guard let kind = fileKind[file] else { return false }
+            guard inScope(file), let kind = fileKind[file] else { return false }
             switch section {
             case .images:
                 // The look: a picture with an image vector, whatever the folder also did with its words.
@@ -230,7 +243,7 @@ public final class Searcher {
         if tierThresholds.count >= 2 {
             func layers(_ cut: (visible: Double, weak: Double)) -> [String: Int] {
                 var counts = ["visible": 0, "weak": 0, "hidden": 0]
-                for (file, semantic) in best where isPicture(file) {
+                for (file, semantic) in best where inScope(file) && isPicture(file) {
                     if semantic.cosine >= cut.visible { counts["visible", default: 0] += 1 }
                     else if semantic.cosine >= cut.weak { counts["weak", default: 0] += 1 }
                     else { counts["hidden", default: 0] += 1 }
@@ -239,7 +252,7 @@ public final class Searcher {
             }
             var cut = (visible: tierThresholds[0], weak: tierThresholds[1])
             var counts = layers(cut)
-            let top = best.filter { isPicture($0.key) }.map(\.value.cosine).max()
+            let top = best.filter { inScope($0.key) && isPicture($0.key) }.map(\.value.cosine).max()
             if counts["visible"] ?? 0 < Self.tierMinVisible, let top {
                 cut = (visible: max(0, top - Self.tierFall),
                        weak: max(0, top - Self.tierFall - (tierThresholds[0] - tierThresholds[1])))
@@ -389,15 +402,15 @@ public final class Searcher {
         if totalsAll {
             // The whole query's counts for the window's chips, from the same scoring: one request serves the page and
             // the chip numbers alike.
-            for entry in ranked { if let kind = chipKind(entry.key) { kindTotals[kind, default: 0] += 1 } }
+            for entry in ranked where inScope(entry.key) { if let kind = chipKind(entry.key) { kindTotals[kind, default: 0] += 1 } }
         }
         // The chips' numbers: how many files each filter's list holds for this query, over the one admission above and
         // the same whatever filter the request asked for — a click must not rewrite them. Images is the two upper
         // cosine layers (what its list shows before the hidden fold); OCR is the words search's own set, which is what
         // that filter runs; the rest are the ranking's kinds, with the bits that keep a file out of those sections.
-        var sectionTotals: [String: Int] = ["all": admitted.count, "documents": 0, "images": 0, "ocr": 0, "video": 0,
-                                            "audio": 0]
-        for file in admitted {
+        var sectionTotals: [String: Int] = ["all": admitted.filter(inScope).count, "documents": 0, "images": 0, "ocr": 0,
+                                            "video": 0, "audio": 0]
+        for file in admitted where inScope(file) {
             switch fileKind[file] {
             case .pdf?, .doc?: if fileAsDocument[file] ?? true { sectionTotals["documents", default: 0] += 1 }
             case .image?, .screenshot?: if fileLooks[file] ?? true { sectionTotals["images", default: 0] += 1 }
@@ -409,11 +422,13 @@ public final class Searcher {
         if let counts = tierCounts {
             // A picture that matched by its words alone has no cosine: its list shows it at once, so it counts as
             // visible rather than nowhere.
-            let wordsOnly = admitted.filter { isPicture($0) && best[$0] == nil }.count
+            let wordsOnly = admitted.filter { inScope($0) && isPicture($0) && best[$0] == nil }.count
             tierCounts = counts.merging(["visible": (counts["visible"] ?? 0) + wordsOnly]) { $1 }
             sectionTotals["images"] = (tierCounts?["visible"] ?? 0) + (tierCounts?["weak"] ?? 0)
         }
-        sectionTotals["ocr"] = coverage.reduce(0) { $0 + ($1.value >= 0.5 && fileHasOCR.contains($1.key) ? 1 : 0) }
+        sectionTotals["ocr"] = coverage.reduce(0) {
+            $0 + ($1.value >= 0.5 && fileHasOCR.contains($1.key) && inScope($1.key) ? 1 : 0)
+        }
         let start = min(max(0, offset), total)
         let count = min(max(0, limit), total - start)
         let slice = ordered[start ..< start + count]

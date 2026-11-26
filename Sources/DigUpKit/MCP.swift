@@ -91,7 +91,8 @@ public final class MCPServer {
             "type": "object",
             "properties": [
                 "query": ["type": "string", "description": "What to look for, in words."],
-                "kinds": ["type": "array", "items": ["type": "string", "enum": FileKind.allCases.map(\.rawValue)],
+                "kinds": ["type": "array", "items": ["type": "string",
+                          "enum": FileKind.allCases.filter { $0 != .code }.map(\.rawValue)],
                           "description": "Only these kinds: screenshots, pictures, PDFs, documents, recordings, videos."],
                 "limit": ["type": "integer", "minimum": 1, "maximum": 50, "default": 10],
                 "offset": ["type": "integer", "minimum": 0, "maximum": 10000, "default": 0],
@@ -280,9 +281,17 @@ public final class MCPServer {
         guard FileManager.default.fileExists(atPath: file.path) else {
             throw Problem("no index at \(index.path) yet: open DigUp Plus once, or index a folder")
         }
-        let searcher = try Searcher(store: try IndexStore(directory: index, file: file.lastPathComponent))
+        let searcher = try Searcher(store: try scopedStore(directory: index, file: file.lastPathComponent))
         searchers[code] = searcher
         return searcher
+    }
+
+    /// The index's store, narrowed to `--root` when the agent asked for one: `Searcher` filters by
+    /// `store.scope` in `page`, and counts/pending honor it too. Without roots, anything the index holds.
+    private func scopedStore(directory: URL, file: String) throws -> IndexStore {
+        let store = try IndexStore(directory: directory, file: file)
+        if !roots.isEmpty { store.scope = roots }
+        return store
     }
 
     /// The file has to be one the index holds and, when `--root` gave folders, under one of them.
