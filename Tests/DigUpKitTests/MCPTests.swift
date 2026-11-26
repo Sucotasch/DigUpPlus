@@ -102,6 +102,30 @@ import Testing
         #expect(parsed["total"] as? Int == 2)
     }
 
+    /// Meaning is asked for only when the index holds a vector: the searcher opens without loading them, so a words
+    /// search and index_state never pay for them, and the first meaning search loads them.
+    @Test func aMeaningSearchLoadsVectorsOnlyWhenItRuns() throws {
+        let store = try index(count: 2)
+        let file = try #require(try store.file(at: folder.appendingPathComponent("note-0.txt").path))
+        var vector = [Float](repeating: 0, count: Vectors.dimension)
+        vector[0] = 1
+        try store.addSegment(file: file.id, kind: .chunk, modality: .text, loc: 2, vector: vector)
+
+        var asked = 0
+        let server = MCPServer(index: folder, vectors: { _, _ in asked += 1; return vector },
+                               vectorSource: { "test" })
+        let words = try tool(server, "search", ["query": "budgetword", "meaning": false])
+        #expect(!words.failed)
+        #expect(words.answer["meaning"] as? Bool == false)
+        #expect(asked == 0)
+        let state = try tool(server, "index_state")
+        #expect(state.answer["files"] as? Int == 2)
+        let meaning = try tool(server, "search", ["query": "budgetword"])
+        #expect(!meaning.failed)
+        #expect(meaning.answer["meaning"] as? Bool == true)
+        #expect(asked == 1)
+    }
+
     @Test func invalidParametersAreRefused() throws {
         _ = try index(count: 3)
         let server = MCPServer(index: folder)

@@ -85,6 +85,10 @@ public final class Searcher {
 
     public var vectorCount: Int { rowFile.count }
 
+    /// Whether the index holds any vector at all, without holding them: `vectorCount` is what's in memory. The MCP
+    /// server opens its searcher this way, so a caller can decide whether a meaning search is worth the load.
+    public private(set) var hasVectors = false
+
     /// This is the code index's searcher (`IndexStore.codeFile`): names are looked up as names (`CodeLookup`).
     public var isCode: Bool { store.file.lastPathComponent == IndexStore.codeFile }
 
@@ -162,6 +166,10 @@ public final class Searcher {
             fileHasOCR.insert(row.int(0))
         }
         vectorSource = try store.meta("vector_source")
+        // Existence, not a count: the scan ends at the first vector row, so knowing whether a meaning search is
+        // possible costs no memory and almost no time.
+        hasVectors = false
+        try store.db.query("SELECT 1 FROM segments WHERE vec IS NOT NULL LIMIT 1") { _ in hasVectors = true }
     }
 
     /// How much finding the query's words counts against meaning (`search`). Code's words count for less: they're

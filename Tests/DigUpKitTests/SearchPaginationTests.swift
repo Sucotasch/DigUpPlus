@@ -66,6 +66,22 @@ import Testing
         return (try Searcher(store: store), vector)
     }
 
+    /// A searcher opened without its vectors still knows the index holds them, so the MCP server can decide whether a
+    /// meaning search is worth the load; that search loads them, and an index without vectors says so.
+    @Test func aLazySearcherKnowsWhetherTheIndexHasVectors() throws {
+        let (_, query) = try vectorIndex(count: 3)
+        let lazy = try Searcher(store: try IndexStore(directory: folder), loadVectors: false)
+        #expect(lazy.hasVectors)
+        #expect(!lazy.vectorsLoaded)
+        #expect(lazy.vectorCount == 0)
+        let page = try lazy.page("paginationword", queryVector: query, limit: 10, zGate: 0)
+        #expect(lazy.vectorsLoaded)
+        #expect(page.total == 3)
+        let empty = try Searcher(store: try IndexStore(directory: folder.appendingPathComponent("plain")),
+                                 loadVectors: false)
+        #expect(!empty.hasVectors)
+    }
+
     @Test func pagesTileTheWholeRankingWithoutGapsOrDuplicates() throws {
         let searcher = try index(count: 7)
         let all = try searcher.search("paginationword", queryVector: nil, limit: 100)

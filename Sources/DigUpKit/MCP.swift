@@ -185,7 +185,7 @@ public final class MCPServer {
         // Vectors from another model would match everything a little and nothing well: words only, and say why.
         var note: String?
         var vector: [Float]?
-        if meaning, searcher.vectorCount > 0, let source = vectorSource() {
+        if meaning, searcher.hasVectors, let source = vectorSource() {
             if let indexed = searcher.vectorSource, indexed != source {
                 note = "the index's vectors come from \(indexed), not \(source): searching words only until it is indexed again"
             } else {
@@ -292,7 +292,10 @@ public final class MCPServer {
         guard FileManager.default.fileExists(atPath: file.path) else {
             throw Problem("no index at \(index.path) yet: open DigUp Plus once, or index a folder")
         }
-        let searcher = try Searcher(store: try scopedStore(directory: index, file: file.lastPathComponent))
+        // Vectors stay on disk until a meaning search asks for them (`Searcher.page` reloads): index_state, words and
+        // reads open the index at once, and a session that never searches by meaning never pays for the vectors.
+        let searcher = try Searcher(store: try scopedStore(directory: index, file: file.lastPathComponent),
+                                    loadVectors: false)
         searchers[code] = searcher
         return searcher
     }
