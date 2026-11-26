@@ -502,6 +502,22 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
   `075200aee030261d5797e5ba43ade43308cdbaf88a77569351127b890f030f64` (digup.exe + ocr.exe); zip
   `DigUpPlus-0.1.24-windows-x64.zip` 481 477 302 байта, SHA-256
   `1362507a611fdb4693f126bfc5579fc84ab78299a71a5aa348507d51c70e5c5f`;
+- 0.1.25 выпущен 2026-11-26 (`v0.1.25`, https://github.com/Sucotasch/DigUpPlus/releases/tag/v0.1.25):
+  **MCP: область на все инструменты, `structuredContent`, ленивые векторы**.
+  `--root` проверялся только в `read_snippet`; теперь `search` показывает только файлы под корнями, а `index_state`
+  считает только их (`Searcher` фильтрует ранжирование, section/tier totals и страницу по
+  `FolderSelection.isSearched`), с тестом на индексе из файла внутри и снаружи. `initialize` несёт `instructions`,
+  каждый ответ дублирует объект в `structuredContent` рядом с текстом, схемы отклоняют неизвестные аргументы;
+  протокол — по-прежнему `2024-11-05`. Векторы читаются только на первом смысловом поиске: на индексе 5927 файлов
+  первый `index_state` 34 с холодно / 0.6 с тепло и 1.1 ГБ → 0.2 с и 260 МБ, выдача та же (12 слов, 186 смысл);
+  первый смысловой запрос платит ту же загрузку, что раньше платил старт. `read_snippet` по `segment_id` страничной
+  картинки читает текст файла (раньше отказывал PDF с 212 текстовыми страницами) и называет запрошенный сегмент.
+  `kinds` больше не рекламирует `code` (код — флаг/префикс). helper изменился (версия для агентов): полный zip,
+  HELPER SHA256 `c70aae1bae2f941b0ca1114de8b6ac20bbdc1d35334e255e69f7aab53e4aeb5d` (digup.exe + ocr.exe); zip
+  `DigUpPlus-0.1.25-windows-x64.zip` 481 486 042 байта, SHA-256
+  `8daa988f2aa81f2ad70c7a69d3823f08f9bbf781d95cf8ef1ac712fb7e830a53`;
+- на 2026-11-26 (0.1.25): `python .build/swift_test.py` — 248 тестов, 247 прошли (тот же symlink-тест),
+  `cargo test --locked` — 114, все прошли;
 - на 2026-11-25 (0.1.24): `python .build/swift_test.py` — 243 теста, 242 прошли (тот же symlink-тест),
   `cargo test --locked` — 114, все прошли;
 - на 2026-11-25: `python .build/swift_test.py` — 234 теста, 233 прошли (тот же symlink-тест), `cargo test --locked`
