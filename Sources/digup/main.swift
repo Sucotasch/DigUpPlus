@@ -507,6 +507,9 @@ func indexService(_ args: Arguments) throws -> Int32 {
         indexer.costsFolder = args.indexFolder   // what indexing costs here, for later estimates
         // Several workers embed a batch faster than one thread reads the next: keep that many picture batches ready.
         indexer.prepareAhead = max(1, indexWorkerCount())
+        // A stop leaves `stopped-file.json`; a crash leaves nothing, so the shell keeps the last files a read started on.
+        let code = options.code
+        indexer.onReadStart = { path in emit(["event": "reading", "path": path, "code": code]) }
         // A new app version may bring a new model: the index starts over by itself (keyword search on names goes on).
         indexer.embedderSource = embedderSource()
         indexer.resetOnModelChange = { indexed, now in

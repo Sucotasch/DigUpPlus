@@ -102,6 +102,9 @@ struct Shell {
     /// Helpers that ended without a note, one after another: a crash, not a stopped file. Three in a row stop indexing
     /// until the app is started again.
     crashes: AtomicUsize,
+    /// The files the index helper said it just started reading (newest last, at most `RECENT_READS`): a crash names
+    /// them, since the helper dies before it can say what it was reading.
+    recent_reads: Mutex<Vec<String>>,
     /// Index Now asked for indexing at once: it runs while paused or outside the hours, until that helper ends (then the
     /// schedule and Pause apply again).
     manual_indexing: AtomicBool,
@@ -1878,6 +1881,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         reloaded: Mutex::new(Instant::now()),
         last_watchdog_path: Mutex::default(),
         crashes: AtomicUsize::new(0),
+        recent_reads: Mutex::new(Vec::new()),
         manual_indexing: AtomicBool::new(false),
         window_inner: Mutex::new(None),
         preview_width: Mutex::new(None),
@@ -3960,9 +3964,38 @@ fn search_event(app: &AppHandle, event: Value) {
     let _ = app.emit("helper", json!({"from": "search", "event": event}));
 }
 
+/// How many of the helper's last reads to keep: `prepareAhead` picture batches are read at once (1–4), and four
+/// starts cover every thread's current file, with room for a batch's first picture said twice.
+const RECENT_READS: usize = 8;
+
+/// A read started: keep it newest last, once (a picture batch restarts its first file).
+fn note_reading(reads: &mut Vec<String>, path: &str) {
+    reads.retain(|seen| seen != path);
+    reads.push(path.to_string());
+    if reads.len() > RECENT_READS {
+        reads.remove(0);
+    }
+}
+
+/// What the status says about the files a crashed helper was reading: the newest by name. The full paths go to
+/// `index.log` with the crash.
+fn crash_file_text(reads: &[String]) -> String {
+    let Some(last) = reads.last() else { return String::new() };
+    let name = Path::new(last).file_name().and_then(|name| name.to_str()).unwrap_or(last);
+    format!(" (last file: {name})")
+}
+
 fn index_event(app: &AppHandle, event: Value) {
     if cfg!(debug_assertions) {
         println!("index: {event}");
+    }
+    if event["event"].as_str() == Some("reading") {
+        // No status change and no page event: this line comes once per file, and only a crash reads it.
+        if let Some(path) = event["path"].as_str() {
+            let shell = app.state::<Arc<Shell>>().inner().clone();
+            note_reading(&mut shell.recent_reads.lock().unwrap(), path);
+        }
+        return;
     }
     app.state::<Arc<Shell>>().status.lock().unwrap().apply(&event);
     match event["event"].as_str().unwrap_or_default() {
@@ -4006,6 +4039,7 @@ fn index_ended(app: &AppHandle, event: &Value) {
     let status = event["status"].as_i64();
     if status == Some(0) {
         shell.crashes.store(0, Ordering::SeqCst);
+        shell.recent_reads.lock().unwrap().clear();
         // The helper Index Now asked is done: the hours and Pause apply again from the next run.
         shell.manual_indexing.store(false, Ordering::SeqCst);
         if event["owed"] == true {
@@ -4014,6 +4048,7 @@ fn index_ended(app: &AppHandle, event: &Value) {
         return;
     }
     if status == Some(STOPPED_ON_FILE) {
+        shell.recent_reads.lock().unwrap().clear();
         if let Some(path) = stopped_file_path(&shell) {
             shell.crashes.store(0, Ordering::SeqCst);
             let mut last = shell.last_watchdog_path.lock().unwrap();
@@ -4029,11 +4064,24 @@ fn index_ended(app: &AppHandle, event: &Value) {
             return;
         }
     }
-    // No note (or none readable): the helper crashed rather than stopped on a file.
+    // No note (or none readable): the helper crashed rather than stopped on a file. The reads it announced are the
+    // only lead to the file: the status names the newest, the log keeps them all.
     let crashes = shell.crashes.fetch_add(1, Ordering::SeqCst) + 1;
+    let reads = shell.recent_reads.lock().unwrap().clone();
+    // The next helper starts its own list: a crash before it reads anything must not name this one's files.
+    shell.recent_reads.lock().unwrap().clear();
+    if !reads.is_empty() {
+        use std::io::Write;
+        let code = status.map_or_else(|| "no exit code".to_string(), |code| code.to_string());
+        if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true)
+            .open(shell.logs.join("index.log")) {
+            let _ = writeln!(log, "[shell] helper crashed (status {code}) while reading: {}", reads.join("; "));
+        }
+    }
+    let named = crash_file_text(&reads);
     match [2u64, 10, 60].get(crashes - 1) {
         Some(seconds) => {
-            set_failed(app, &format!("Indexing stopped; trying again in {seconds} seconds"));
+            set_failed(app, &format!("Indexing stopped; trying again in {seconds} seconds{named}"));
             let app = app.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(*seconds));
@@ -4043,7 +4091,7 @@ fn index_ended(app: &AppHandle, event: &Value) {
         None => {
             eprintln!("digup-shell: the index helper crashed {crashes} times in a row");
             shell.manual_indexing.store(false, Ordering::SeqCst);
-            set_failed(app, "Indexing stopped: the helper keeps failing");
+            set_failed(app, &format!("Indexing stopped: the helper keeps failing{named}"));
         }
     }
 }
@@ -4349,6 +4397,23 @@ mod tests {
         assert!(!crate::ASK_OPS.contains(&"file_op"));
         assert!(crate::ASK_OPS.contains(&"search"));
         assert!(crate::ASK_OPS.contains(&"render"));
+    }
+
+    #[test]
+    fn a_crash_names_the_file_the_helper_was_reading() {
+        let mut reads = Vec::new();
+        super::note_reading(&mut reads, "D:/Books/A.pdf");
+        super::note_reading(&mut reads, "D:/Books/B.pdf");
+        super::note_reading(&mut reads, "D:/Books/A.pdf");   // a picture batch restarts its first file
+        assert_eq!(reads, vec!["D:/Books/B.pdf", "D:/Books/A.pdf"]);
+        assert_eq!(super::crash_file_text(&reads), " (last file: A.pdf)");
+        assert_eq!(super::crash_file_text(&[]), "");
+        // More reads than kept: the newest stay, the oldest go.
+        for number in 0..12 {
+            super::note_reading(&mut reads, &format!("D:/Books/{number}.pdf"));
+        }
+        assert_eq!(reads.len(), super::RECENT_READS);
+        assert_eq!(reads.last().map(String::as_str), Some("D:/Books/11.pdf"));
     }
 
     #[test]

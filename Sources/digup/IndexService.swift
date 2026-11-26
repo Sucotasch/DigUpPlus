@@ -13,7 +13,7 @@ import WinSDK
 /// Protocol: one command per line on stdin, one JSON event per line on stdout.
 ///   stdin:  sync [JSON paths] | sync code [JSON paths] | reread [JSON paths] | stop | backfill on | backfill off
 ///           | speed full | speed auto   (EOF = stop)
-///   stdout: {"event": "missing" | "pruned" | "scanning" | "sync" | "file" | "rest" | "summary" | "waiting" | "idle" | "error" |
+///   stdout: {"event": "missing" | "pruned" | "scanning" | "sync" | "reading" | "file" | "rest" | "summary" | "waiting" | "idle" | "error" |
 ///            "exit", ...}; events about the code index say "code": true
 ///
 /// The loop: sync, index what the sync just queued (if it's a few files: new files go first, on any power source),

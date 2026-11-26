@@ -57,6 +57,10 @@ public final class Indexer {
     /// pays only when the model work runs on several workers (`WorkerPool`): one thread then reads no faster than they
     /// embed, and the workers would sit idle between batches.
     public var prepareAhead = 1
+    /// Called with a file's path just before its read starts. The shell keeps the last few: a crash leaves no note
+    /// (`stopped-file.json` is for stops), and the file being read is the only lead. Called on the preparing threads,
+    /// so several at once.
+    public var onReadStart: (@Sendable (String) -> Void)?
     /// Called before a job is prepared: the test that a finished file's later steps aren't read.
     var onPrepare: ((Job) -> Void)?
     private var measured = MeasuredCosts()
@@ -557,13 +561,15 @@ public final class Indexer {
         let pending = PendingBatch()
         jobsPrepared += 1
         let (options, folder) = (options, scratch.appendingPathComponent("batch-\(jobsPrepared)"))
+        let onRead = onReadStart
         preparing.async {
-            pending.fulfill(Self.prepare(job, options: options, into: folder))
+            pending.fulfill(Self.prepare(job, options: options, into: folder, onRead: onRead))
         }
         return pending
     }
 
-    static func prepare(_ job: Job, options: IndexOptions, into folder: URL) -> Prepared {
+    static func prepare(_ job: Job, options: IndexOptions, into folder: URL,
+                        onRead: (@Sendable (String) -> Void)? = nil) -> Prepared {
         let batch = job.files
         var prepared = Prepared(batch: batch, step: job.step, folder: folder)
         let url = URL(fileURLWithPath: batch[0].path)
@@ -571,6 +577,7 @@ public final class Indexer {
         // allows its blocks twice the usual silence. Files a sync just queued go full speed: those are what the person
         // is waiting for.
         let lowPriority = !job.queuedNow && options.userIsActive()
+        onRead?(batch[0].path)
         var reading = startReading(batch[0].path, kind: batch[0].kind, lowPriority: lowPriority)
         defer { finishReading(reading) }
         do {
@@ -584,6 +591,7 @@ public final class Indexer {
                     var texts: [String] = []
                     for file in batch {
                         finishReading(reading)
+                        onRead?(file.path)
                         reading = startReading(file.path, kind: file.kind, lowPriority: lowPriority)
                         let reads = file.ocrPictures.readsWords(for: file.kind)
                         texts.append(reads ? OCR.readings(ofImageAt: URL(fileURLWithPath: file.path))
@@ -595,6 +603,7 @@ public final class Indexer {
                     for (slot, file) in batch.enumerated() {
                         let url = URL(fileURLWithPath: file.path)
                         finishReading(reading)
+                        onRead?(file.path)
                         reading = startReading(file.path, kind: file.kind, lowPriority: lowPriority)
                         do {
                             let image = try ImageExtractor.prepare(url, maxPixel: screenshot ? 1536 : 1024,
