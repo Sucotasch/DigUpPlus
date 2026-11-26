@@ -61,9 +61,14 @@ import Testing
         let result = try #require(ready["result"] as? [String: Any])
         #expect(result["protocolVersion"] as? String == "2024-11-05")
         #expect((result["serverInfo"] as? [String: Any])?["name"] as? String == "digup")
+        #expect((result["instructions"] as? String)?.isEmpty == false)
         let tools = call(server, "tools/list")["result"] as? [String: Any]
         let listed = try #require(tools?["tools"] as? [[String: Any]])
         #expect(listed.compactMap { $0["name"] as? String } == ["search", "read_snippet", "index_state"])
+        // The schemas refuse unknown arguments rather than silently ignoring them.
+        let schemas = listed.compactMap { $0["inputSchema"] as? [String: Any] }
+        #expect(schemas.count == listed.count)
+        #expect(schemas.allSatisfy { $0["additionalProperties"] as? Bool == false })
         // Read-only by design: nothing that writes, moves or deletes.
         #expect(!listed.contains { ($0["name"] as? String)?.contains("write") == true })
         // A tool on an index that isn't there says so, and initialize still answered.
@@ -80,6 +85,21 @@ import Testing
         let unknownTool = call(server, "tools/call", ["name": "delete_everything", "arguments": [:]])
         #expect((unknownTool["error"] as? [String: Any])?["code"] as? Int == -32602)
         #expect(call(server, "ping")["result"] != nil)
+    }
+
+    /// An answer carries the same object for a machine (`structuredContent`) and for a model (`content` text), and
+    /// the two say the same thing.
+    @Test func toolAnswersCarryStructuredContent() throws {
+        _ = try index(count: 2)
+        let server = MCPServer(index: folder)
+        let envelope = call(server, "tools/call", ["name": "search", "arguments": ["query": "budgetword"]])
+        let result = try #require(envelope["result"] as? [String: Any])
+        let structured = try #require(result["structuredContent"] as? [String: Any])
+        #expect(structured["total"] as? Int == 2)
+        let content = try #require(result["content"] as? [[String: Any]]).first
+        let text = try #require(content?["text"] as? String)
+        let parsed = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        #expect(parsed["total"] as? Int == 2)
     }
 
     @Test func invalidParametersAreRefused() throws {

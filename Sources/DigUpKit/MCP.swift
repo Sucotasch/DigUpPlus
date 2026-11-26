@@ -63,7 +63,8 @@ public final class MCPServer {
         case "initialize":
             return message(id: id, result: ["protocolVersion": Self.protocolVersion,
                                             "capabilities": ["tools": [:]],
-                                            "serverInfo": ["name": "digup", "version": Self.version]])
+                                            "serverInfo": ["name": "digup", "version": Self.version],
+                                            "instructions": Self.instructions])
         case "ping":
             return message(id: id, result: [:])
         case "tools/list":
@@ -78,6 +79,13 @@ public final class MCPServer {
     /// The version an agent sees. The helper has no bundle of its own to read it from: keep this in step with
     /// `shell/src-tauri/tauri.conf.json` (a test in `MCPTests` checks the two match).
     static let version = "0.1.24"
+
+    /// Said once at `initialize`: read-only, what a path means, and how to keep the first call cheap.
+    static let instructions = """
+        Read-only: no tool writes, moves or deletes. A path is only read when it is in the index and, when the server \
+        was given --root folders, under one of them. Meaning search needs the model and may take a while on its first \
+        call; pass meaning:false for words only. read_snippet returns a window of a file, never the whole file.
+        """
 
     // MARK: Tools
 
@@ -101,6 +109,7 @@ public final class MCPServer {
                 "code": ["type": "boolean", "default": false, "description": "Search the code index instead."],
             ],
             "required": ["query"],
+            "additionalProperties": false,
          ]],
         ["name": "read_snippet",
          "description": "Read a window of the text of one indexed file: the page, passage or code stretch that matched, "
@@ -115,11 +124,12 @@ public final class MCPServer {
                 "code": ["type": "boolean", "default": false, "description": "The file is in the code index."],
             ],
             "required": ["path"],
+            "additionalProperties": false,
          ]],
         ["name": "index_state",
          "description": "What the index holds: files by kind and state, what's still waiting, the model, and how old "
              + "the index is (as_of, seconds since 1970).",
-         "inputSchema": ["type": "object", "properties": [:]]],
+         "inputSchema": ["type": "object", "properties": [:], "additionalProperties": false]],
     ]
     }
 
@@ -134,7 +144,8 @@ public final class MCPServer {
             case "index_state": answer = try indexState()
             default: throw Problem("no tool \(name)", invalidParams: true)
             }
-            return message(id: id, result: ["content": [["type": "text", "text": Self.json(answer)]], "isError": false])
+            return message(id: id, result: ["content": [["type": "text", "text": Self.json(answer)]],
+                                            "structuredContent": answer, "isError": false])
         } catch let problem as Problem {
             if problem.invalidParams { return message(id: id, error: -32602, problem.message) }
             return message(id: id, result: ["content": [["type": "text", "text": problem.message]], "isError": true])
