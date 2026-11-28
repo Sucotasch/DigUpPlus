@@ -1,323 +1,344 @@
-# DigUp engineering review
+# Аудит 0.1.5 → 0.1.25 (полный)
 
-**Date:** 2026-10-24  
-**Reviewed:** the Windows shell's file operations (`shell/src-tauri/src/file_ops.rs`), their index follow-up
-(`Sources/digup/SearchService.swift`, `Sources/DigUpKit/IndexStore.swift`, `Sources/DigUpKit/Indexer.swift`), the
-path-aware watcher (`shell/src-tauri/src/watcher.rs`, `echo.rs`), and the UI that drives them (`shell/ui/window.js`,
-`window.html`). The rest of the repository was checked for build/test hygiene and for places where the new feature
-contradicted existing documentation.
+Дата: 2026-11-28. База: коммит 32397f3 (0.1.5) → HEAD 8331247, 168 коммитов, ~18k строк. Код не менялся —
+только чтение, прогоны и этот документ. Метод: дифф-первое чтение (каждый изменённый файл читается по факту,
+не по памяти), характеризующие эксперименты для каждого подозрения, находки только с file:line и
+воспроизведённым следствием. Гейты: GATES.md (G1 и G5 отмечены; у G2–G4 evidence есть, но стоят `[ ]`;
+G2 фиксирует 9 clippy-предупреждений).
 
-**Method:** read the changed code together with the engine rules it depends on (`Crawler`, `Rules`, `FolderSelection`),
-ran `cargo test`, `cargo clippy --all-targets`, and `node --check` over the shell UI, and compared the behaviour with the
-plan in `docs/file-operations-plan.md`. `swift build --product digup` was run after the final Swift change; the full
-`swift test` suite was not rerun in that session (the last run was before it).
+## Итог одной строкой
 
-**Verification at the end of this pass:**
+Код держится хорошо: миграции схем, реконсиляция синка, WIC-цепочка, lossless-редактирование и MCP-скоуп
+выдерживают проверку. Найдено **0 критических, 8 находок (F1–F8): 2 P2, 2 P3, 4 P4**; после проверки 2026-11-28
+**F8** (замер: 462 мс на 127k сегментов) и **F3** (тихая потеря метаданных) — кандидаты в P2, см. ниже.
+Единственная «живая» аномалия — flake теста WIC под полной параллельной нагрузкой, охарактеризован и объясним
+(F2); его продуктовое эхо оказалось не таким безобидным, как сказано в F2, — см. F9 в проверке.
 
-- `cargo test --locked` in `shell/src-tauri`: **38 passed**, 0 failed.
-- `cargo clippy --locked --all-targets`: **no warnings**.
-- `node --check` for `window.js`, `results.js`, `panel.js`, `setup.js`, `settings.js`: **ok**.
-- `swift build --product digup`: **ok** after the `isCrawled` change.
-- Manual Recycle Bin restore E2E and the permanent-delete confirmation E2E: **not run** (need a real window).
+## Проверка и уточнения (2026-11-28)
 
-The issues below are ordered by correctness risk, then by cost. Each has a concrete fix; none of them blocks the current
-Windows beta. H1 now offers a guarded permanent action only for paths the Recycle Bin refused, and H2's common dot-file case is
-closed; the full destination classifier is the main remaining correctness work.
+Проверено по коду и замерам; код до этой правки не менялся. Ниже — что подтвердилось, что в исходном тексте
+неточно, какие решения приняты до внесения изменений.
 
----
+### Подтвердилось
 
-## High
+- **F1** — да: `undo_folder()` (`image_edit/mod.rs:95-100`) создаёт `digupplus-edits-{pid}`, и её никто не убирает
+  ни при старте, ни при выходе; `remember` (`:521-530`) удаляет бэкап только при вытеснении из стека.
+- **F3** — да: `parameters.len() < 65_000` (`mod.rs:436-440`) молча выбрасывает большие A1111-параметры.
+- **F4** — да: `undo()` (`:332-347`) пишет по `entry.path`, не проверяя, что там всё ещё результат этой правки.
+- **F5–F7** — да: `recycle` → `remove_file`, оба могут отказать, а `undo` вернёт `Ok`; temp
+  `.{name}.digup-edit-{pid}`; `let _ = write_text_chunk` (`png_meta.rs:108-111`).
+- **F8 по сути** — да: индекса по `segments(kind)` нет. Но замер сильнее текста: на `.build/real-index`
+  (127 443 сегмента) запрос `fileHasOCR` = **455–462 мс**, потому что SQLite сканирует `segments_file` целиком
+  (`EXPLAIN QUERY PLAN`: `SCAN s USING INDEX segments_file`). Это не «сотни мс на 1M», а почти полсекунды уже на
+  127k, и запрос идёт на **каждом** `Searcher` init/reload (включая MCP `index_state`), а при индексации reload —
+  раз в несколько секунд.
+- Положительная часть (миграции, `checkPhashRecipe`, `digup_scope`, реконсиляция, WIC, lossless/DQT, MCP-скоуп,
+  watcher settle, `spawn_blocking`, фразы) — подтверждается по коду.
 
-### H1. Long-path move/copy works; long-path delete is a guarded permanent action
+### Уточнения к исходному тексту
 
-**Status: fixed in this pass.** A path at 260 UTF-16 units is refused by the Recycle Bin preflight, and the report offers
-a separate permanent delete only for those files. `DeleteFileW` gets the extended-length form, so the action itself
-works beyond `MAX_PATH`; it is not an automatic fallback.
+- **F2: продуктовая часть неверна.** Транзиентный отказ чтения даёт `state = "failed"` (`Indexer.swift:626,688,770`),
+  а не `deferred`; `pending()` берёт только `pending` и `deferred` с наступившим `retry_after`
+  (`IndexStore.swift:662-666`) — **`failed` сам не перечитывается**. `deferred` — только для файлов, остановленных
+  сторожем (`:780`). `Index Now` (`speed full`) снимает торможение, но **не перечитывает** (`IndexService.swift:443`);
+  обход даёт `Settings → Folders → Re-read:` (`main.rs:751`). Поэтому «watchdog и retry поглощают, потери нет» и
+  «Index Now обходит» — неверно; это отдельная находка F9 ниже.
+- **F2: тест может не проверять WIC.** `usesWIC` истинно для JPEG, но `wicImage` при отказе возвращает `nil`, и
+  `prepare` уходит в stb (`Images+Portable.swift:52-63`). `wicPrefersPackedRows` проверяет только размеры и
+  квадранты: если WIC упал, а stb прочитал, тест зелёный, хотя WIC-путь не проверен. Причина «AV-сканер» —
+  правдоподобная `[Inferred]`, не доказана.
+- **F4: предложенный фикс ломает undo конвертированных правок.** После PNG→JPEG `entry.path` (старый PNG) уже в
+  Корзине, а результат — `entry.added`; проверка `!entry.path.is_file()` вернула бы ошибку на нормальном undo
+  конверсии (существующий тест `undo_takes_a_converted_file_away`, `mod.rs:839-851`). Кроме того, `is_file()` не
+  отличает «файл переименован» от «на том же пути теперь другой файл»: второй будет перезаписан. Решение — отпечаток
+  содержимого, см. ниже.
+- **F1: приватность и рост сформулированы шире факта.** `%TEMP%` другого *обычного* пользователя по стандартным ACL
+  не читается (админ/SYSTEM — да); «любым локальным процессом» — верно для процессов этого пользователя. Рост — не
+  от правок, а **от запусков**: в одном процессе стек ограничен 10 бэкапами, папка остаётся после выхода. Фикс с
+  mtime > 3 дней безопасен: single-instance есть (`main.rs:1735`, `Cargo.toml:15`), живого второго экземпляра с
+  чужой папкой нет; разные пользователи — разные `%TEMP%`.
+- **F8: файл и частота.** Запрос в `Searcher.swift:162-166` (`reloadFiles`), не в `IndexStore.swift`; выполняется на
+  каждом `Searcher` init/reload, а не только «после индексации»; MCP открывает `Searcher` на первый `index_state`, так
+  что ленивые векторы не спасают первый вызов. Вторая ветка (`page_image … IN (SELECT id FROM files WHERE ocr_scans=1)`)
+  упирается ещё и в скан `files` без индекса по `ocr_scans`.
+- **Счётчики.** Коммитов 168, не 167 (`git rev-list --count 32397f3..HEAD`); под P4 перечислены четыре находки
+  (F5–F8), а не три.
 
-`wide()` prefixes absolute and UNC paths with `\\?\` for `MoveFileExW`, `CopyFileExW` and `CreateFileW`
-(`shell/src-tauri/src/file_ops.rs`). The Recycle Bin path deliberately does not use that helper: `SHFileOperationW` is
-the legacy shell API with a documented `MAX_PATH` limitation.
+### Новое
 
-**Recommendation: keep `SHFileOperationW`; do not migrate to `IFileOperation` just for long paths.** The evidence that
-`IFileOperation` removes the shell's path limit is not solid: shell items and the Recycle Bin can still hit `MAX_PATH`
-on current Windows. A COM migration would add lifetime, threading and error-model risk for a rare case without a
-proven benefit. The explicit permanent action is smaller, testable and matches what Explorer offers for the same file.
+- **F9 (P3, документировано, без изменения продукта).** Транзиентный отказ чтения (занятый файл, AV-сканер) даёт
+  `failed`, который сам не перечитывается; `Index Now` не помогает, помогает `Re-read:` папки. Это не «потери нет»,
+  но и не доказанный продуктовый сбой: watcher-settle снижает шанс, реальных репортов нет. Менять семантику
+  (`failed` → `deferred` с коротким retry) сейчас — риск замаскировать настоящие ошибки чтения (нечитаемый файл
+  будет вечно «повторяться»). Решение: оставить как есть, записать в документацию; вернуться при репорте
+  «файл появился, а в поиске его нет» и тогда отличать транзиентную блокировку от постоянной ошибки.
+- **F10 (исправление к F4).** Наивная проверка существования не годится; решение — отпечаток содержимого (FNV-1a 64)
+  результата правки в `UndoEntry`, проверяемый на undo; для конверсии проверяется `added`, а занятый старый путь —
+  отказ. Отпечаток считается по уже имеющимся в памяти байтам при правке (без лишнего I/O), а на undo читается
+  текущий файл (undo и так читает бэкап); последовательные undo работают, потому что сравнивается содержимое, а не
+  mtime/идентичность, которые меняются при каждой записи.
 
-**Implemented flow:**
+### Решения до внесения изменений
 
-1. `delete` tries the Recycle Bin. A path at 260 UTF-16 units is reported as `reason: "path_too_long"` before the shell
-   call; other errors keep their own messages.
-2. Only those report items get the `Delete N Files Permanently…` action. There is no automatic permanent delete, no
-   `Delete`/`F8` shortcut and no action for permission, busy, cloud or changed-file failures.
-3. The second modal shows the count, size, path-length range, and a folder grouping. It does not build a list of
-   thousands of names; the full list stays in the report, where `Show all` appends in chunks.
-4. Keep Files is the first button (Enter is safe, Escape closes); the danger button names the count and the word
-   Permanently. There is no checkbox: the second modal is the confirmation.
-5. On confirm, `delete_permanent` reuses `check_source` (regular file, not a link, not dataless, size/mtime unchanged),
-   calls `DeleteFileW` with `\\?\`, then updates the index and the watcher echo exactly as a normal delete does.
-6. Cancellation and per-file failures keep working through the existing operation loop.
+- **F1.** `image_edit::cleanup()` при старте: удалить `digupplus-edits-*` старше 3 дней (чужие мёртвые процессы;
+  свежие не трогаем — single-instance, но перестраховка от второго setup до mutex). `cleanup_own()` при
+  `RunEvent::Exit`: удалить папку своего pid (undo и так не переживает перезапуск — `UNDO` в памяти). Тест:
+  предикат `is_stale(name, age)` + свежая папка не удаляется; удаление старой — по возможности.
+- **F3.** Вместо тихого `if len < 65_000` — `return Err("the A1111 parameters are too big for a JPEG: the PNG is the
+  file that keeps them")`, как у prompt/workflow. Тест: PNG с `parameters` ≥65k → `edit_picture(Target::Jpeg)` даёт
+  Err, PNG не изменён, `.jpg` не появился.
+- **F4.** `UndoEntry` + `fingerprint: u64` (FNV-1a 64 от записанных байтов). На undo: проверить, что файл-результат
+  (`added` для конверсии, иначе `path`) существует и его отпечаток совпадает; для конверсии — что старый путь свободен;
+  при отказе запись вернуть в стек (не терять undo). Существующий тест конверсии должен остаться зелёным; новые тесты:
+  переименование + чужой файл на старом пути → Err и файл не тронут; две правки → два undo; конверсия с занятым старым
+  путём → Err.
+- **F6.** temp-имя с `SERIAL`: `.{name}.digup-edit-{pid}-{serial}`; одна строка, поведение не меняется.
+- **F8.** Схема 11: частичные индексы `segments_ocr_file(file) WHERE kind='ocr'`,
+  `segments_page_file(file) WHERE kind='page_image'`, `files_ocr_scans(ocr_scans) WHERE ocr_scans=1`; запрос в
+  `reloadFiles` — `UNION` двух веток (с `OR` планировщик всё равно сканирует `segments_file`). Замер на копии
+  индекса: **462 мс → 0.05 мс**; создание индексов на 127k — 0.9 с один раз, на 1M — единицы секунд при апгрейде;
+  перечитывания файлов нет. Тест: `PRAGMA index_list` содержит индексы; OCR-набор тот же (существующие тесты поиска).
+- **F2.** Тест сделать про WIC, а не про fallback: звать `wicImage` напрямую и проверять пиксели; один retry через
+  250 мс на транзиентный отказ, второй — настоящая ошибка. Это убирает «зелёный через stb» и не маскирует продукт
+  (продукт не меняется — F9).
+- **F5/F7.** Оставить: F5 — предупреждение в UI потребовало бы нового поля ответа/страницы ради редкого двойного
+  отказа; F7 — осознанный пропуск чанка с обоснованием. Записать в «Последствия».
 
-**Test:** `a_long_path_can_be_deleted_permanently` creates a path over 260 characters, deletes it through `DeleteFileW`
-and checks it is gone. The UI confirmation and the partial batch flow still need a real-window E2E.
+### Внедрено (2026-11-28)
 
-**Why not `IFileOperation` yet:** the COM migration changes the error model for every delete and needs a real Recycle
-Bin restore check on the oldest supported Windows. Spike it behind a test harness, prove that a 300-character path is
-recycled **and restored to its original path**, then decide. Until then the guarded permanent action is the better
-product.
+- **F1.** `image_edit::cleanup()` в `setup()` удаляет `digupplus-edits-*` старше 3 дней; `cleanup_own()` в
+  `RunEvent::Exit` убирает папку своего pid. `UNDO` и так в памяти, так что перезапуск ничего не теряет. Тест:
+  `cleanup_removes_only_old_undo_folders` (свежая папка и чужое имя остаются; предикат возраста).
+- **F3.** `parameters` ≥ 65 000 теперь отказ с тем же смыслом, что у prompt/workflow; PNG не трогается. Тест:
+  `a1111_parameters_too_big_for_a_jpeg_are_refused` (65k → Err, PNG байт-в-байт, `.jpg` не появился).
+- **F4.** В `UndoEntry` — `fingerprint` (FNV-1a 64 записанных байтов); `undo()` проверяет, что результат правки
+  (`added` для конверсии, иначе `path`) всё ещё те же байты, и что старый путь конверсии свободен; при отказе запись
+  остаётся в стеке. Наивный `is_file()` из аудита не использован — он ломал бы undo конверсии. Тесты:
+  `undo_puts_the_bytes_back` (старый), `two_edits_undo_one_by_one`, `undo_refuses_a_picture_replaced_at_the_same_path`,
+  `undo_takes_a_converted_file_away` (старый), `undo_refuses_to_overwrite_a_file_at_the_converted_pictures_old_name`.
+- **F6.** temp-имя теперь `.{name}.digup-edit-{pid}-{serial}`; проверка «временного файла не осталось» обновлена.
+- **F8.** Схема 11: частичные индексы `segments_ocr_file`, `segments_page_file`, `files_ocr_scans`; запрос в
+  `Searcher.reloadFiles` — `UNION`. Живая проверка на `.build/real-index`: `user_version = 11`, `EXPLAIN` идёт по
+  `segments_ocr_file`/`segments_page_file`/`files_ocr_scans`, запрос **0.06 мс** (на копии до индексов — 462 мс);
+  MCP `index_state` — 0.25 с первый (с миграцией) и 0.077 с тёплый. Тест: `theOCRLookupHasItsPartialIndexes` плюс
+  существующие OCR-тесты (`aPageRenderedForItsFewWordsIsNoOCRResult` и др.) — набор тот же.
+- **F2.** `wicPrefersPackedRows` теперь зовёт `wicImage` напрямую (fallback на stb больше не может сделать тест
+  зелёным «мимо WIC»), с одним retry через 250 мс; полный прогон зелёный. Продукт не менялся — см. F9.
+- **F9.** Решение: не менять `failed` → `deferred` без репорта; `Re-read:` — путь восстановления; записать в
+  документацию, вернуться при реальном «файл появился, а в поиске его нет».
+- **F5/F7.** Без изменений, как решено.
+- **Проверки.** Rust **120** тестов (было 115; +5), Swift **250** (падает только известный symlink), clippy — те же
+  **9** предупреждений, новых нет. Формат индекса: схема 11 добавляет только индексы, файлы не перечитываются и
+  векторы не меняются.
 
----
+## Гейты
 
-### H2. A moved dot-file stays in the index although the crawler never reads it
+| Гейт | Результат |
+|------|-----------|
+| G1 Swift-набор | 2/3 параллельных прогона: известный symlink-тест + flake ImageTests.wicPrefersPackedRows; 3-й параллельный и serial: только известный. Известный: `modelFilesComeFromTheHuggingFaceCacheWhenThere`, Win32 1314 (Developer Mode off) — env, не код |
+| G2 cargo test | **115 passed; 0 failed** (в AGENTS.md 112 — с тех пор добавлены тесты). clippy — см. GATES.md |
+| G3 UI JS | все `shell/ui/*.js` проходят `node --check` |
+| G4 release smoke | упакованный `DigUpPlus.exe` открыл окно и ответил отчётом (`"window":true`), чипы на месте |
 
-**Status: fixed in this pass, minimum form.** `isCrawled` now rejects a dot-prefixed file name before checking the
-folder; the full classifier (Windows hidden attribute, excluded types, datasets) remains in “Remaining concerns”.
+## P2 — исправить к следующему релизу
 
-`SearchService.isCrawled` checks the destination **folder**, with this comment:
+### F1. Оригиналы отредактированных картинок навсегда остаются в %TEMP% (`shell/src-tauri/src/image_edit/mod.rs:95-102`)
+
+`undo_folder()` создаёт `digupplus-edits-{pid}` и больше нигде не упоминается (проверено grep-ом по всему
+shell/): ни очистки при запуске, ни удаления при выходе. Каждый запуск процесса — новый pid — новая папка;
+в каждой до 10 полноразмерных backup-копий (`UNDO_LIMIT`, mod.rs:92, `remember` mod.rs:521-530 удаляет файл
+только при вытеснении из стека).
+
+Последствия: (1) мусор в %TEMP% растёт без предела — каждый запуск оставляет свою папку (до 10 полных копий), за
+месяцы ежедневных запусков — гигабайты; (2) приватность: **исходные** картинки (частные по определению — их
+правили) лежат в %TEMP% этого пользователя до ручной чистки, читаемо любым процессом этого пользователя (админ и
+SYSTEM — тоже; другой *обычный* пользователь по стандартным ACL — нет). Для продукта с декларацией «no telemetry,
+no cloud» это гигиена, а не сеть, но оригиналы в temp — плохо.
+
+Готовое решение — выборка при первом обращении (mtime-выборка не спорит с параллельно живым экземпляром):
+
+```rust
+fn undo_folder() -> &'static Path {
+    static FOLDER: OnceLock<PathBuf> = OnceLock::new();
+    FOLDER.get_or_init(|| {
+        // Прошлые сессии оставили свои backup-папки: старше трёх дней — чужие мёртвые процессы, в мусор.
+        // По pid нельзя: сейчас может жить другой экземпляр со своим свежим стеком отмены.
+        if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_str().unwrap_or("");
+                if name.starts_with("digupplus-edits-")
+                    && entry.metadata().map(|m| m.modified().ok()).flatten()
+                        .is_some_and(|t| t.elapsed().map(|e| e > Duration::from_secs(3 * 24 * 3600)).unwrap_or(false))
+                {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+        let folder = std::env::temp_dir().join(format!("digupplus-edits-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&folder);
+        folder
+    })
+}
+```
+
+Дополнительно (опционально, второй шаг): удалять свою папку при выходе окна — в обработчике выхода
+`main.rs` рядом с уже существующей уборкой; при падении приберёт следующий запуск.
+
+### F2. Flake `wicPrefersPackedRows` под полной параллельной нагрузкой (`Tests/DigUpKitTests/ImageTests.swift:96`, ошибка из `Sources/DigUpKit/Platform/Portable/Images+Portable.swift:63` или `:109`)
+
+Характеризация (5 прогонов): полные параллельные — падал в 2 из 3; `--filter ImageTests` — 1/1 зелёный;
+полный `--no-parallel` — зелёный. Не детерминирован, привязан к параллелизму всего набора.
+
+Что именно падает: «can't decode image» для свежезаписанного валидного JPEG 302×220. Цепочка в `prepare`:
+WIC → stb → ffmpeg. Чтобы дойти до ошибки, отказали **как минимум два** независимых чтеца: либо
+`stbi_info` ok + `stbi_load` nil (Images+Portable.swift:59-63), либо `stbi_info` nil + отказ ffmpeg-процесса
+(`decodeWithFFmpeg`, :102-110 — тот же текст ошибки для не-HEIC). Два независимых отказа чтения только что
+закрытого файла — это окружение, а не код: классическая причина — real-time AV на мгновение держит свежий
+файл (share-эксклюзив на сканирование); под полной нагрузкой очередь сканера копится, окно расширяется.
+WIC тут ни при чём (его отказ — тихий fallback по замыслу); имя теста сбивает с толку. Важнее: `prepare` после
+отказа WIC читает через stb, поэтому тест может быть зелёным, **не проверив WIC**; прямой вызов `wicImage` — честнее
+(см. «Решения»).
+
+Эхо в продукте: watcher-синк читает файлы, созданные секунды назад. Транзиентный отказ чтения даёт **`failed`**
+(`Indexer.swift:626,688,770`), а не `deferred`; `pending()` берёт только `pending` и `deferred` с наступившим
+`retry_after` (`IndexStore.swift:662-666`), поэтому `failed` сам не перечитывается — ни watchdog'ом, ни часом
+позже, ни `Index Now` (`speed full` только снимает торможение, `IndexService.swift:443`). Восстановление — только
+`Settings → Folders → Re-read:` (`main.rs:751`). Это F9 ниже; «потери нет» — неверно. Ухудшение не показалось ни
+разу — соответствует «пока не заметны» из запроса.
+
+Готовое решение (только тест, честная характеризация; в `prepare` retries не добавлять — они замаскируют
+реальные ошибки чтения):
 
 ```swift
-let name = (path as NSString).lastPathComponent
-guard !name.hasPrefix(".") else { return false }
-let target = FolderSelection.realPath(FolderSelection.parent(path))
+@Test func wicPrefersPackedRows() throws {
+    // Свежезаписанный файл под полной нагрузкой набора на мгновение бывает нечитаем (AV-сканер):
+    // один повтор через четверть секунды, второй отказ — уже настоящий.
+    do { try packRowsCheck() } catch let error as ExtractError.Unreadable {
+        Thread.sleep(forTimeInterval: 0.25)
+        try packRowsCheck()
+        _ = error
+    }
+}
+private static func packRowsCheck() throws { /* прежнее тело теста */ }
 ```
 
-That assumption is wrong. On Windows the custom `DirectoryWalk` leaves out “hidden files (the attribute, or a name
-starting with a dot, as on a Mac)” (`Sources/DigUpKit/Platform/Portable/Files+Portable.swift:174-176`). On macOS the
-crawler uses `FileManager.enumerator(..., options: [.skipsHiddenFiles, ...])`
-(`Sources/DigUpKit/Crawler.swift:101`). A file moved to `Pictures/.photo.jpg` is therefore re-pathed in the index, but
-the next crawl skips it. Until a full sync it stays searchable at a path the indexer considers invisible.
+(точная форма под Swift Testing — `withIssueReporting`/простой повтор в теле; суть: ровно один retry,
+не цикл.)
 
-The same gap covers the Windows hidden attribute (a normal name with `FILE_ATTRIBUTE_HIDDEN`) and, less directly,
-destination-level exclusions that `Rules.isWalked` does not model (for example a file whose extension was excluded
-after the search, or a folder that becomes a dataset because of the moved file).
+## P3 — в бэклог, последствия реальные, но редкие
 
-**Fix (minimum):** reject dot-prefixed destination names before asking `isCrawled`:
+### F3. Тихая потеря A1111 `parameters` ≥65k при PNG→JPEG (`mod.rs:436-440`)
 
-```swift
-private func isCrawled(_ path: String) -> Bool {
-    let name = (path as NSString).lastPathComponent
-    guard !name.hasPrefix(".") else { return false }   // the walk skips hidden names
-    // ... existing folder check ...
+Заголовок `prompt_segments` (mod.rs:400-401) обещает: «A prompt too large even minified is refused rather
+than dropped — the PNG is the file that can hold it». Для `prompt` и `workflow` так и есть (refusal +
+сплит по COM-частям, mod.rs:419-434). Но `parameters` обрезается условием молча:
+
+```rust
+if let Some(parameters) = &parameters {
+    if parameters.len() < 65_000 {          // ≥65k — тихо выброшено
+        segments.push(jpeg_meta::JpegSegment { marker: 0xFE, data: parameters.as_bytes().to_vec() });
+    }
 }
 ```
 
-Add a unit test around the decision. `SearchService` lives in the `digup` executable target, so either extract this
-predicate into `DigUpKit` (the clean fix) or cover it through the `file_op` protocol in an integration test.
-
-**Fix (complete):** make the destination file go through the same `Rules.classify` path as the crawler, including the
-Windows hidden attribute and the dataset rules. That is more work because `SearchService` currently has only strings
-(`roots`, `skipped`) and not `IndexOptions`.
-
----
-
-## Medium
-
-### M1. A 5,000-file batch performs 5,000 synchronous index round trips
-
-The file phase is batched, but the index phase is not. For every moved or deleted file, `operate` calls
-`index_move`/`index_delete` (`shell/src-tauri/src/file_ops.rs:200-245`), and each call does:
+Готовое решение — как у промпта: либо сплит, либо честный отказ. Минимальный честный вариант:
 
 ```rust
-let reply = tauri::async_runtime::block_on(shell.search.ask(request))
-```
-
-with one `file_op` item. The helper protocol already accepts an array (`SearchService` loops over `items` and returns
-one result per item), so the round trips are avoidable. On a large selection this adds a request/response and a
-`std::fs::metadata` + `CreateFileW` identity probe per file, on top of the file-system work. The plan’s “5,000 moves”
-case is exactly where this shows up.
-
-**Fix:** collect moves and deletes while the files are being processed, then send at most two batched requests at the
-end (one for moves, one for deletes) with `reload: false`, followed by the existing one `reload`. The per-item results
-already come back in `reply["results"]`; `ask` must stop checking only `results[0]` and return the array so the report
-can attach `index_error` to the right entries. Keep the per-file echo notes exactly where they are: they must be
-written before the index changes.
-
-**Trade-off:** a batch waits to the end before the in-memory vectors follow the new paths. Rows read paths from the
-database, so search results remain correct; only the vector cache is stale longer. That is already the intended
-design of `reload:false`.
-
----
-
-### M2. A failed cleanup after a partial copy is swallowed
-
-**Status: fixed in this pass.** The returned error now includes the cleanup failure.
-
-`copy_to_free` removes a partial destination after a failed `CopyFileExW`:
-
-```rust
-Err(error) => {
-    let _ = std::fs::remove_file(&target);
-    return Err(why(&error));
+if let Some(parameters) = &parameters {
+    if parameters.len() >= 65_000 {
+        return Err("the A1111 parameters are too big for a JPEG: the PNG is the file that keeps them".into());
+    }
+    segments.push(jpeg_meta::JpegSegment { marker: 0xFE, data: parameters.as_bytes().to_vec() });
 }
 ```
 
-If the remove fails (a scanner holds the file, permissions, a cloud filter), the user gets the copy error but the
-half-written file remains in the destination folder. Nothing in the report names it, so the next attempt can create
-`photo (2).jpg` beside an unexplained `photo.jpg`.
+### F4. Undo после переименования/переноса файла воскрешает призрак (`mod.rs:90-92, 332-347`)
 
-**Fix:** include the cleanup result in the error, and add the destination to the report item:
+`UNDO` держит абсолютные пути. Файл переименовали (file_ops, Проводник, конверсия) — `undo()` молча
+записывает старые байты по **старому** пути: появляется файл-дубликат, синк его заново индексирует.
+Папка исчезла — ошибка, это ок; папка на месте — resurrection без предупреждения.
+
+Готовое решение — проверить, что путь ещё тот, прежде чем писать:
 
 ```rust
-Err(error) => {
-    let cleanup = std::fs::remove_file(&target);
-    let message = match cleanup {
-        Ok(()) => why(&error),
-        Err(cleanup) => format!("{}; the partial copy couldn't be removed: {cleanup}", why(&error)),
-    };
-    return Err(message);
+pub fn undo() -> Result<Option<PathBuf>, String> {
+    let Some(entry) = UNDO.lock().unwrap().pop() else { return Ok(None) };
+    if !entry.path.is_file() {
+        // Файл перенесён или удалён после правки: старые байты вернутся не туда. Бэкап оставлен до конца сессии.
+        return Err(format!("{} moved since the edit - undo would put it back in the wrong place",
+                           entry.path.file_name().and_then(|n| n.to_str()).unwrap_or("the picture")));
+    }
+    // ... прежнее тело
 }
 ```
 
-The caller already puts the error text into `report.items`; no schema change is needed. A test can lock the
-destination after a forced failure, but the common path is enough to lock the message down.
+**Уточнение (2026-11-28):** этот сниппет нельзя применять как есть. После PNG→JPEG `entry.path` (старый PNG) уже
+в Корзине, а результат — `entry.added`; `!entry.path.is_file()` вернёт ошибку на нормальном undo конверсии
+(существующий тест `undo_takes_a_converted_file_away`). И `is_file()` не отличает «переименован» от «на том же пути
+теперь другой файл» — второй будет перезаписан. Решение — отпечаток содержимого, см. F10 и «Решения».
 
----
+(Возвращённая ошибка — стек уже pop-нут, backup-файл живёт до очистки папки из F1; сознательный компромисс,
+обсудить при внедрении: либо оставлять запись в стеке, либо удалять бэкап сразу.)
 
-### M3. `Show all N` builds the whole list in one synchronous pass
+## P4 — заметки, менять не обязательно
 
-**Status: fixed in this pass.** The list now grows in 500-line chunks and keeps the focus on the button between clicks.
+- **F5.** `undo()` (mod.rs:341-344): отказ Recycle Bin конвертированного файла → fallback на жёсткое
+  удаление; если и оно не удалось — всё равно `Ok`: конвертированный файл остаётся, а undo отчитался
+  успехом. Честнее возвращать строку-предупреждение в UI.
+- **F6.** `write_atomic` (mod.rs:537): имя temp `.{name}.digup-edit-{pid}` одинаково для всех правок одного
+  файла в одном процессе. Сейчас UI такие правки не параллелит; если появятся — переименовать temp в
+  `format!(".{name}.digup-edit-{}-{}", pid, SERIAL.fetch_add(...))`.
+- **F7.** `encode_png_with_text` (png_meta.rs:108-111): chunk, который не удалось записать (ключевое слово
+  >79 байт по спеке PNG), тихо пропускается — комментарий обосновывает, ключевые слова на практике
+  фиксированные («prompt»/«workflow»/«parameters»). Оставить как есть.
+- **F8 (замер, не изменение).** Запрос OCR-множества в `Searcher.reloadFiles` (`Searcher.swift:162-166`):
+  `SELECT DISTINCT s.file FROM segments WHERE kind='ocr' OR …` — полный скан `segments` (планировщик берёт
+  `segments_file`), без индекса по `kind`. **Замер 2026-11-28 на 127 443 сегментах: 455–462 мс**; выполняется на
+  каждом `Searcher` init/reload (при индексации — раз в несколько секунд, MCP `index_state` — на первом вызове), а
+  не только «после индексации». Вторая ветка вдобавок сканирует `files` без индекса по `ocr_scans`. Частичные
+  индексы + `UNION` дают 0.05 мс (замер на копии); см. «Решения», схема 11.
 
-`reportList` creates the first eight rows, then on the click does:
+## Что проверено и выдержало (качество решений)
 
-```js
-more.onclick = () => {
-  fill(items.length);
-  ...
-};
-```
+1. **Миграции схем 5→10** (`IndexStore.swift:127-155`): идемпотентны (`PRAGMA table_info`-guards), условия
+   по диапазонам сверяются с исходной версией, повторное чтение `user_version` внутри `BEGIN IMMEDIATE`
+   закрывает гонку двух процессов, busy_timeout 60 с, вложенные транзакции — SAVEPOINT-реентерабельные
+   (`Database.swift:64-83`). Ок.
+2. **`checkPhashRecipe`** (`IndexStore.swift:346-353`): смена рецепта обнуляет все phash и обновляет meta —
+   группировка никогда не мешает два рецепта. Ок.
+3. **`digup_scope`** (`IndexStore.swift:51-80`): корень решения upstream #166 («Expression tree is too
+   large» на ~1000 папок): маленькая temp-таблица + JOIN по диапазонам, параметризованные вставки, слитые
+   отсортированные диапазоны, инвалидация через `didSet`. Ок.
+4. **Реконсиляция синка** (`Indexer.swift:165-212`): идентичность правила сравнивается семантически
+   (`readsWords`, «screenshots»≡«all»), выключение слов перечитывает только при наличии текста
+   (`hasPictureText`), (0,0)-inode не участвует в move-детекте, vanished-root и empty-root guard-ы на
+   месте. Соответствует контракту из `docs/per-folder-rules-plan.md`. Ок.
+5. **WIC-цепочка** (`Images+Portable.swift:44-78`, `Sources/CWIC/wic.c`): WIC → stb → ffmpeg с nil-fallback;
+   pack_rows против 4-байтового паддинга покрыт тестом; COM — thread-local, инициализируется раз,
+   никогда не деинициализируется (`wic.c:15-24`). Ок (flake F2 — окружение).
+6. **Lossless JPEG-правка** (`mod.rs:131-146, 235-280`): turbojpeg `perfect` отказывает на нецелых MCU →
+   пиксельный fallback; ориентация запекается и тег сбрасывается в обоих путях; тест на равенство DQT
+   доказывает отсутствие ре-энкода; EXIF-патчеры с проверкой границ. Ок.
+7. **MCP-скоуп** (`MCP.swift:316-328`): fail-closed containment по realPath; скоуп в SQL через digup_scope;
+   бюджет 6000 символов с `truncated`; версия зафиксирована тестом против tauri.conf.json. Ок.
+8. **Watcher settle** (`watcher.rs:160-182`): окно 10 с, сравнение снимков (size, mtime), overflow cooldown
+   60 с, shallow-корни NonRecursive. Задокументированный trade-off (смена типа, который правило не
+   индексирует, всё равно просит синк) — осознанный. Ок.
+9. **Проводка команд** (`main.rs:1265-1283, 1285-1320`): `rotate_image` и `edit_picture` оба идут через
+   `spawn_blocking` — пиксельная работа не блокирует UI. (Проверял гипотезу, что rotate идёт напрямую —
+   не подтверждена.) Ок.
+10. **Фразы в поиске** (`Searcher.swift:273-326`): фразы — AND-группы FTS5, loose-слова с префиксным
+    fallback, coverage по паттернам, `s.file IN (цифры)` без инъекции. Ок.
 
-For a 5,000-file operation, `items.length` lines are created in one task. Each line is several DOM nodes, so the
-WebView can freeze for a noticeable moment exactly when the user asks for the details. The plan explicitly calls out
-5,000 moved files.
+## Последствия и что смотреть дальше
 
-**Fix:** render in chunks, or keep the button and append the next 500 on each click:
-
-```js
-const CHUNK = 500;
-let shown = REPORT_SHOWN;
-const more = element("button", "report-more", `Show all ${items.length.toLocaleString()}`);
-const fill = (count) => {
-  list.replaceChildren();
-  for (const item of items.slice(0, count)) list.append(line(item));
-};
-const showMore = () => {
-  shown = Math.min(items.length, shown + CHUNK);
-  fill(shown);
-  if (shown === items.length) more.remove();
-  else more.textContent = `Show ${Math.min(CHUNK, items.length - shown).toLocaleString()} more`;
-  $report.classList.add("expanded");
-};
-```
-
-This keeps the first click cheap and still makes every name reachable. A virtualized list is unnecessary here.
-
----
-
-### M4. `Copy Paths` silently does nothing when the clipboard is unavailable
-
-**Status: fixed in this pass.** Success goes to the status note, failure to the normal error line.
-
-`copyPaths` ends with:
-
-```js
-navigator.clipboard.writeText(paths.join("\n")).catch(() => {});
-```
-
-If WebView2 denies the clipboard write (focus change, permission policy, a locked clipboard), the user gets no
-feedback. The context menu action and the batch-bar button look successful.
-
-**Fix:** reuse the status line the other copy action uses:
-
-```js
-navigator.clipboard.writeText(paths.join("\n"))
-  .then(() => setNote(paths.length === 1 ? "Copied the path" : `Copied ${paths.length.toLocaleString()} paths`))
-  .catch((error) => failed(`The paths couldn't be copied: ${error}`));
-```
-
-`setNote` already clears itself after ten seconds. Add a DOM-level check if the UI tests grow.
-
----
-
-### M5. The watcher treats every `.ts` change as media, even in the main index
-
-`change_may_matter` keeps `.ts`/`.mts`/`.m2ts` because a TypeScript file and an MPEG transport stream share the
-extension (`shell/src-tauri/src/watcher.rs:152`). In the main (non-code) watcher a TypeScript save therefore asks for a
-sync even though the crawl will not read it; in a code folder the code watcher handles it separately. This is a
-deliberate correctness-over-work trade-off, not a broken result.
-
-**Fix if it becomes noisy:** pass the watcher’s purpose (`code` vs main) or probe the first bytes with the same MPEG-TS
-check the engine uses (`Rules.isMPEGTransportStream`). Until then, leave it and keep the comment.
-
----
-
-## Low
-
-### L1. The mtime guard assumes sub-second timestamps
-
-`check_source` rejects a file when `(now - mtime).abs() > 1.0` (`file_ops.rs:266-268`). NTFS and APFS store fine
-timestamps, but FAT/exFAT (a USB stick, an SD card) has two-second write granularity. A file that changed on such a
-volume can be skipped even though its content is still what the search showed. The cost is a false “it changed since
-the search” message; the user can retry or copy manually. This is worth a comment and a manual E2E on a FAT stick, not
-a code change without a way to detect the volume.
-
-### L2. `free_path`’s last resort can itself be taken
-
-After `(2)` … `(9999)`, `free_path` returns `stem (copied).ext` without checking that it is free. Both `MoveFileExW`
-(without replace) and `CopyFileExW` (with `COPY_FILE_FAIL_IF_EXISTS`) still refuse to overwrite, so this fails safely.
-The only cost is an unhelpful “there's already a file with that name” after 9,998 collisions. Leave it.
-
-### L3. `refresh_counts` is fire-and-forget
-
-After a move/delete, `main.rs` spawns `refresh_counts` and does not await it. The report does not depend on it, and a
-failed refresh only leaves the status bar’s counts stale until the next status event. This is intentional; document it
-so a later reader does not “fix” it by awaiting a possibly stopped helper.
-
----
-
-## Fixed during this pass
-
-These were found in the same review and are already in `main`, so they are not open findings:
-
-| Issue | Fix | Commit |
-|---|---|---|
-| `MoveFileExW`/`CopyFileExW` failed at paths over 260 characters | `wide()` adds `\\?\` / `\\?\UNC\`; `SHFileOperationW` stays unprefixed | `787ee43` |
-| A dehydrated OneDrive/File Provider file would be downloaded by move/copy | preflight reads `FILE_ATTRIBUTE_OFFLINE`/`RECALL_ON_*` and skips with a clear reason | `31c563e` |
-| Read-only and busy files had no regression coverage | move/copy read-only; a file opened with no sharing stays put and is reported | `5c19d47` |
-| Unicode names (`é`, `日`, `ı`, `ö`) had no regression coverage | move/copy test | `a77927a` |
-| Dead full-code sync helper and outdated plan claims | removed; plan updated | `787ee43`, `1e1df9b` |
-| Shell clippy warnings | test-only imports moved; `then_some`, `is_multiple_of`, `is_none_or`, `next_back` | `cd85c2c` |
-| README said DigUp “never changes, moves” files | now documents Move/Copy/Delete and the Recycle Bin | `2ebc94d` |
-| A moved dot-file stayed indexed although the crawl skips hidden names | `isCrawled` rejects dot-prefixed names | this pass |
-| A failed partial-copy cleanup was swallowed | the error now names the file that couldn't be removed | this pass |
-| `Copy Paths` failed silently | success and failure both reach the status bar | this pass |
-| `Show all N` built thousands of rows at once | the report appends 500 at a time | this pass |
-| Delete over 260 characters reached the shell and failed obscurely | preflight refuses it; an explicit, guarded permanent delete is offered for those files only | this pass |
-
-The current feature is in a good state: the core paths are tested, the index follows without re-embedding, and the
-Windows-specific behaviour (wide paths, cloud placeholders, echo suppression) has direct tests. The remaining work is
-edge handling, not a rewrite.
-
----
-
-## Remaining concerns that are not safe to fix automatically
-
-1. **Recycle Bin restore E2E.** Needs Explorer, a real user confirmation and a manual restore. The index behaviour after
-   restore is expected to be a fresh embed (the delete removed the row); verify it once.
-2. **A screen-reader pass.** The markup has `role="listbox"`/`option`, `aria-selected`, `aria-keyshortcuts`, dialog
-   focus and Tab trapping, but the focused option is not exposed as `aria-activedescendant` while the keyboard stays in
-   the query field. Deciding whether to move focus into the grid is a UX decision, not a mechanical fix.
-3. **`IFileOperation` spike, not migration yet.** It is the right API in general, but it is not proven to fix the
-   Recycle Bin's long-path limit; test delete **and restore** on Windows 10/11 before replacing `SHFileOperationW`.
-4. **Destination-level rules.** Dataset detection and Windows hidden attributes need the crawler’s full classifier in
-   `SearchService`; until then H2’s minimum fix covers the common dot-file case.
-5. **Large-batch index batching.** M1 changes error attribution in the report and needs a test that mixes successful,
-   failed and skipped files in one batch.
-
-## Assumptions
-
-- The first platform is Windows 10/11 on NTFS; FAT/exFAT is an edge case for L1.
-- File operations are offered only for media results in the big window, as the plan says; documents and code are out of
-  scope.
-- `SHFileOperationW` is still acceptable for ordinary Recycle Bin deletes; the long-path case is the exception.
-- The search helper and index helper are separate processes and may be reading the same file while `file_op` runs; the
-  `stillIndexed` guard in `Indexer.commit` is the intended protection and was not changed.
-- No telemetry or network calls are introduced by any of these fixes.
+- F1 — единственная находка с накопительным эффектом: каждый запуск оставляет до 10 полных копий правленых
+  картинок в `%TEMP%` этого пользователя (при редких запусках — мало, при ежедневных — гигабайты). Чинить первым.
+- F2 в продукте — не `deferred`, а **`failed`** (F9): сам не перечитывается, `Index Now` не помогает,
+  восстановление — `Settings → Folders → Re-read:`. Если пользователь репортит «файл появился, а в поиске его
+  нет», это оно.
+- F8 — не «>1M»: уже на 127k сегментов 455–462 мс на каждый `Searcher` init/reload (MCP `index_state` тоже),
+  при индексации — раз в несколько секунд. С частичными индексами и `UNION` — 0.05 мс (замер на копии);
+  см. «Решения», схема 11.
+- AGENTS.md: строка «112 tests» в cargo-строке устарела (115) — поправить при следующем касании файла.

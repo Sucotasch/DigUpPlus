@@ -15,6 +15,7 @@ use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime};
 
 /// Which way a flip goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +86,9 @@ struct UndoEntry {
     backup: PathBuf,
     /// A converted edit's new file: undoing it takes that away and puts the original back.
     added: Option<PathBuf>,
+    /// FNV-1a 64 of the bytes this edit wrote: undo runs only while the result at its path is still those bytes.
+    /// Content, not size or time - an edit and an undo both replace the file, so metadata changes every time.
+    fingerprint: u64,
 }
 
 /// The last edits, newest last: a rotation is one keystroke away from being wrong, and the original is the only copy.
@@ -99,6 +103,40 @@ fn undo_folder() -> &'static Path {
         let _ = std::fs::create_dir_all(&folder);
         folder
     })
+}
+
+/// Removes the undo folders left by instances that are gone: a stop or a crash never cleans them, and they hold copies of
+/// the person's originals. A live instance's folder is left alone: the app is single-instance, and the three-day floor
+/// keeps a second process's setup (before its mutex check) from deleting a young one.
+pub fn cleanup() {
+    cleanup_in(&std::env::temp_dir());
+}
+
+fn cleanup_in(temp: &Path) {
+    let Ok(entries) = std::fs::read_dir(temp) else { return };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let age = entry.metadata().ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok());
+        if age.is_some_and(|age| is_stale_folder(name, age)) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// A folder this app left behind, old enough that no live instance owns it.
+fn is_stale_folder(name: &str, age: Duration) -> bool {
+    name.starts_with("digupplus-edits-") && age > Duration::from_secs(3 * 24 * 3600)
+}
+
+/// This process's undo backups: undo doesn't survive a restart (the stack is in memory), and they are copies of the
+/// person's originals.
+pub fn cleanup_own() {
+    let folder = std::env::temp_dir().join(format!("digupplus-edits-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(folder);
 }
 
 /// Rotates clockwise by `degrees` (0/90/180/270; 0 just bakes the camera's orientation in) and/or flips, in place.
@@ -138,7 +176,7 @@ pub fn edit_picture(path: &Path, ops: Edit) -> Result<Outcome, String> {
                 let _ = std::fs::remove_file(&saved);
                 return Err(error);
             }
-            remember(path, saved, None);
+            remember(path, saved, None, fingerprint(&encoded));
             return Ok(Outcome { path: path.to_path_buf(), width: header.width as u32, height: header.height as u32,
                                 bytes_before: before, bytes_after: encoded.len() as u64, converted: false,
                                 lossless: true });
@@ -217,13 +255,13 @@ pub fn edit_picture(path: &Path, ops: Edit) -> Result<Outcome, String> {
             let _ = std::fs::remove_file(&saved);
             return Err(format!("the original couldn't be put in the Recycle Bin: {error}"));
         }
-        remember(path, saved, Some(target_path.clone()));
+        remember(path, saved, Some(target_path.clone()), fingerprint(&encoded));
     } else {
         if let Err(error) = write_atomic(path, &encoded) {
             let _ = std::fs::remove_file(&saved);
             return Err(error);
         }
-        remember(path, saved, None);
+        remember(path, saved, None, fingerprint(&encoded));
     }
     Ok(Outcome { path: target_path, width, height, bytes_before: before, bytes_after: encoded.len() as u64,
                  converted, lossless: false })
@@ -329,10 +367,18 @@ pub fn undo_count() -> usize {
     UNDO.lock().unwrap().len()
 }
 
-pub fn undo() -> Result<Option<PathBuf>, String> {    let Some(entry) = UNDO.lock().unwrap().pop() else { return Ok(None) };
+pub fn undo() -> Result<Option<PathBuf>, String> {
+    let Some(entry) = UNDO.lock().unwrap().pop() else { return Ok(None) };
+    if let Err(error) = still_the_edit(&entry) {
+        UNDO.lock().unwrap().push(entry);   // the right picture may come back; undo stays
+        return Err(error);
+    }
     let bytes = match std::fs::read(&entry.backup) {
         Ok(bytes) => bytes,
-        Err(error) => return Err(format!("the undo copy couldn't be read: {error}")),
+        Err(error) => {
+            UNDO.lock().unwrap().push(entry);
+            return Err(format!("the undo copy couldn't be read: {error}"));
+        }
     };
     if let Err(error) = write_atomic(&entry.path, &bytes) {
         UNDO.lock().unwrap().push(entry);   // still undoable once the file lets go
@@ -345,6 +391,39 @@ pub fn undo() -> Result<Option<PathBuf>, String> {    let Some(entry) = UNDO.loc
     }
     let _ = std::fs::remove_file(&entry.backup);
     Ok(Some(entry.path))
+}
+
+/// Undo's precondition: the file this edit made is still at its path, byte for byte, and a converted edit's original
+/// path is free (the restore would otherwise overwrite a file that appeared there). A moved or replaced picture is a
+/// refusal, not an overwrite.
+fn still_the_edit(entry: &UndoEntry) -> Result<(), String> {
+    let output = entry.added.as_ref().unwrap_or(&entry.path);
+    let bytes = std::fs::read(output).map_err(|_| {
+        format!("{} moved or was deleted since the edit: undo would put the old picture in the wrong place",
+                name_of(output))
+    })?;
+    if fingerprint(&bytes) != entry.fingerprint {
+        return Err(format!("{} changed since the edit: undo would overwrite it", name_of(output)));
+    }
+    if entry.added.is_some() && entry.path.exists() {
+        return Err(format!("{} is there again: undo would overwrite it", name_of(&entry.path)));
+    }
+    Ok(())
+}
+
+/// FNV-1a 64 of a file's bytes: cheap, content-based, and stable within a run (the undo stack is in memory only).
+fn fingerprint(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    hash
+}
+
+fn name_of(path: &Path) -> String {
+    path.file_name().and_then(|name| name.to_str()).map(String::from)
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn format_of(path: &Path) -> Result<image::ImageFormat, String> {
@@ -397,8 +476,8 @@ fn flatten_on_white(rgba: &image::RgbaImage) -> image::RgbImage {
 }
 
 /// A PNG's AI-generation metadata, carried into a JPEG the way ComfyUI's own save path does: prompt and workflow
-/// minified into EXIF Model/Make, A1111's `parameters` into a comment. A prompt too large even minified is refused
-/// rather than dropped - the PNG is the file that can hold it.
+/// minified into EXIF Model/Make, A1111's `parameters` into a comment. A prompt or parameters too large even minified
+/// are refused rather than dropped - the PNG is the file that can hold them.
 fn prompt_segments(path: &Path) -> Result<Vec<jpeg_meta::JpegSegment>, String> {
     let chunks = png_meta::extract_text_chunks(path.to_str().ok_or("the picture's path isn't text")?)?;
     let mut prompt = None;
@@ -434,9 +513,10 @@ fn prompt_segments(path: &Path) -> Result<Vec<jpeg_meta::JpegSegment>, String> {
         }
     }
     if let Some(parameters) = &parameters {
-        if parameters.len() < 65_000 {
-            segments.push(jpeg_meta::JpegSegment { marker: 0xFE, data: parameters.as_bytes().to_vec() });
+        if parameters.len() >= 65_000 {
+            return Err("the A1111 parameters are too big for a JPEG: the PNG is the file that keeps them".into());
         }
+        segments.push(jpeg_meta::JpegSegment { marker: 0xFE, data: parameters.as_bytes().to_vec() });
     }
     Ok(segments)
 }
@@ -518,9 +598,9 @@ fn backup(path: &Path) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-fn remember(path: &Path, saved: PathBuf, added: Option<PathBuf>) {
+fn remember(path: &Path, saved: PathBuf, added: Option<PathBuf>, fingerprint: u64) {
     let mut undo = UNDO.lock().unwrap();
-    undo.push(UndoEntry { path: path.to_path_buf(), backup: saved, added });
+    undo.push(UndoEntry { path: path.to_path_buf(), backup: saved, added, fingerprint });
     while undo.len() > UNDO_LIMIT {
         if let Some(oldest) = undo.first() {
             let _ = std::fs::remove_file(&oldest.backup);
@@ -534,7 +614,8 @@ fn remember(path: &Path, saved: PathBuf, added: Option<PathBuf>) {
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let folder = path.parent().ok_or("the picture has no folder")?;
     let name = path.file_name().and_then(|name| name.to_str()).ok_or("the picture has no name")?;
-    let temp = folder.join(format!(".{name}.digup-edit-{}", std::process::id()));
+    let temp = folder.join(format!(".{name}.digup-edit-{}-{}", std::process::id(),
+                                    SERIAL.fetch_add(1, Ordering::Relaxed)));
     std::fs::write(&temp, bytes).map_err(|error| format!("the edited picture couldn't be written: {error}"))?;
     for attempt in 0..20 {
         match std::fs::rename(&temp, path) {
@@ -678,7 +759,9 @@ mod tests {
         assert_eq!(outcome.path, path);
         assert!(!outcome.converted);
         assert_eq!(image::image_dimensions(&path).unwrap(), (48, 64));
-        assert!(!dir.path().join(".photo.jpg.digup-edit.tmp").exists());
+        assert!(!std::fs::read_dir(dir.path()).unwrap().flatten()
+            .any(|entry| entry.file_name().to_string_lossy().starts_with(".photo.jpg.digup-edit")),
+                "the temp file is renamed over the picture, never left");
     }
 
     #[test]
@@ -793,6 +876,73 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 
+    #[test]
+    fn two_edits_undo_one_by_one() {
+        let _serial = serial();
+        let dir = folder();
+        let path = dir.path().join("twice.jpg");
+        jpeg_with_orientation(&path, 64, 48, 1);
+        let original = std::fs::read(&path).unwrap();
+        edit(&path, 90, None).unwrap();
+        let once = std::fs::read(&path).unwrap();
+        edit(&path, 90, None).unwrap();
+        let twice = std::fs::read(&path).unwrap();
+        assert_ne!(once, twice);
+        // The fingerprint is content: the undo of the second edit restores the first edit's bytes, so the first entry
+        // still matches even though the write changed the file's size/mtime.
+        assert_eq!(std::fs::read(undo().unwrap().unwrap()).unwrap(), once);
+        assert_eq!(std::fs::read(undo().unwrap().unwrap()).unwrap(), original);
+    }
+
+    #[test]
+    fn undo_refuses_a_picture_replaced_at_the_same_path() {
+        let _serial = serial();
+        let dir = folder();
+        let path = dir.path().join("photo.jpg");
+        jpeg_with_orientation(&path, 64, 48, 1);
+        let original = std::fs::read(&path).unwrap();
+        edit(&path, 90, None).unwrap();
+        std::fs::rename(&path, dir.path().join("elsewhere.jpg")).unwrap();
+        std::fs::write(&path, b"another picture").unwrap();
+        let error = undo().unwrap_err();
+        assert!(error.contains("changed since the edit"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"another picture", "the other file is untouched");
+        // The right picture comes back: undo works again (the entry stayed on the stack).
+        std::fs::remove_file(&path).unwrap();
+        std::fs::rename(dir.path().join("elsewhere.jpg"), &path).unwrap();
+        assert_eq!(std::fs::read(undo().unwrap().unwrap()).unwrap(), original);
+    }
+
+    #[test]
+    fn cleanup_removes_only_old_undo_folders() {
+        let dir = folder();
+        let fresh = dir.path().join("digupplus-edits-1");
+        let other = dir.path().join("some-other-folder");
+        std::fs::create_dir(&fresh).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        cleanup_in(dir.path());
+        assert!(fresh.exists(), "a young folder may belong to a live instance");
+        assert!(other.exists());
+        let old = std::time::Duration::from_secs(4 * 24 * 3600);
+        assert!(is_stale_folder("digupplus-edits-9", old));
+        assert!(!is_stale_folder("digupplus-edits-9", std::time::Duration::from_secs(3600)));
+        assert!(!is_stale_folder("some-other-folder", old));
+    }
+
+    #[test]
+    fn a1111_parameters_too_big_for_a_jpeg_are_refused() {
+        let _serial = serial();
+        let dir = folder();
+        let path = dir.path().join("a1111.png");
+        let big = "x".repeat(65_000);
+        png_with_chunks(&path, 4, 4, &[("parameters", big.as_str())]);
+        let original = std::fs::read(&path).unwrap();
+        let error = edit_picture(&path, Edit { target: Target::Jpeg, ..Edit::default() }).unwrap_err();
+        assert!(error.contains("parameters are too big"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), original, "the PNG is untouched");
+        assert!(!dir.path().join("a1111.jpg").exists());
+    }
+
     #[cfg(windows)]
     #[test]
     fn converts_png_to_jpg_with_its_prompts() {
@@ -848,5 +998,27 @@ mod tests {
         assert_eq!(restored, path);
         assert_eq!(std::fs::read(&path).unwrap(), original);
         assert!(!outcome.path.exists(), "the converted file is gone");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn undo_refuses_to_overwrite_a_file_at_the_converted_pictures_old_name() {
+        let _serial = serial();
+        let dir = folder();
+        let path = dir.path().join("back.png");
+        png_with_chunks(&path, 4, 4, &[]);
+        let original = std::fs::read(&path).unwrap();
+        let outcome = edit_picture(&path, Edit { target: Target::Jpeg, ..Edit::default() }).unwrap();
+        assert!(outcome.converted);
+        std::fs::write(&path, b"a new file").unwrap();
+        let error = undo().unwrap_err();
+        assert!(error.contains("is there again"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"a new file", "the new file is untouched");
+        assert!(outcome.path.exists(), "the converted file is untouched");
+        // Free the name: undo restores the PNG and takes the converted file away.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(undo().unwrap().unwrap(), path);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!outcome.path.exists());
     }
 }

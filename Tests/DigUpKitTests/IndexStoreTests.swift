@@ -447,6 +447,7 @@ import WinSDK
             let id = try store.insert(file(picture.path, inode: 1))
             try store.finish(id, state: "done")
             try store.db.execute("""
+                DROP INDEX IF EXISTS files_ocr_scans;
                 ALTER TABLE files DROP COLUMN ocr_pictures;
                 ALTER TABLE files DROP COLUMN ocr_scans;
                 PRAGMA user_version = 7
@@ -479,6 +480,19 @@ import WinSDK
         let reopened = try IndexStore(directory: index)
         #expect(try reopened.phashes(for: [picture.path]).isEmpty)
         #expect(try reopened.meta("phash_recipe") == Phash256.recipe)
+    }
+
+    /// The OCR set's partial indexes (schema 11): this query runs on every `Searcher` load, and an OR over the segments
+    /// scanned the whole table (455-462 ms on 127k segments, measured 2026-11-28).
+    @Test func theOCRLookupHasItsPartialIndexes() throws {
+        let store = try IndexStore(directory: folder.appendingPathComponent("ocr-indexes"))
+        var segments = Set<String>()
+        try store.db.query("PRAGMA index_list(segments)") { segments.insert($0.text(1) ?? "") }
+        #expect(segments.contains("segments_ocr_file"))
+        #expect(segments.contains("segments_page_file"))
+        var files = Set<String>()
+        try store.db.query("PRAGMA index_list(files)") { files.insert($0.text(1) ?? "") }
+        #expect(files.contains("files_ocr_scans"))
     }
 }
 

@@ -1776,6 +1776,7 @@ fn main() {
         .expect("DigUp couldn't start");
     app.run(|app, event| match event {
         tauri::RunEvent::Exit => {
+            image_edit::cleanup_own();   // the undo backups are copies of originals, and undo dies with the process
             stop_helpers(app);
             #[cfg(target_os = "linux")]
             if app.state::<Arc<Shell>>().shortcut == Method::Kde {
@@ -1789,6 +1790,7 @@ fn main() {
 }
 
 fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::error::Error>> {
+    image_edit::cleanup();   // undo backups of instances that are gone (never a live one)
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory); // the menu bar only, no Dock icon
 

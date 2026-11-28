@@ -159,9 +159,13 @@ public final class Searcher {
         // only in the 0.1.16 betas, which stored the reading there (`.ocr` came after); a page the reader rendered for
         // its few words of real text (a cover, a plate) also carries them there, and those are no OCR. The row's
         // `ocr_scans` separates the two: only a folder that asked for its scans' text has it.
+        // UNION, not OR: with the partial indexes (schema 11) each branch is a small index scan; an OR made SQLite
+        // scan every segment (455-462 ms on 127k segments, measured 2026-11-28).
         try store.db.query("""
-            SELECT DISTINCT s.file FROM segments s WHERE s.kind = 'ocr'
-                OR (s.kind = 'page_image' AND s.file IN (SELECT id FROM files WHERE ocr_scans = 1))
+            SELECT file FROM segments WHERE kind = 'ocr'
+            UNION
+            SELECT file FROM segments WHERE kind = 'page_image'
+                AND file IN (SELECT id FROM files WHERE ocr_scans = 1)
             """) { row in
             fileHasOCR.insert(row.int(0))
         }

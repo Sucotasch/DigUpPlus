@@ -33,7 +33,7 @@ public struct FileRecord: Sendable {
 public final class IndexStore {
     public let directory: URL
     public let db: Database
-    static let schemaVersion: Int64 = 10
+    static let schemaVersion: Int64 = 11
 
     /// Keyword search's tokenizer. Marks (M*) count as letters, so Bengali vowel signs and Arabic harakat stay inside
     /// their words: by default SQLite splits on them ("কলকাতায়" became "কলক", "ত", "য").
@@ -150,6 +150,7 @@ public final class IndexStore {
             if (1...7).contains(version) { try migrateOCRFields() }
             if (1...8).contains(version) { try migratePictureLook() }
             if (1...9).contains(version) { try migrateDocumentResult() }
+            if (1...10).contains(version) { try migrateSearchIndexes() }
         }
         try checkPhashRecipe()
     }
@@ -189,6 +190,11 @@ public final class IndexStore {
                 vec BLOB                  -- 768 × float16, L2-normalized
             );
             CREATE INDEX segments_file ON segments(file);
+            -- The OCR set (Searcher.reloadFiles) by kind: an OR over the whole table took 455-462 ms on 127k segments
+            -- (2026-11-28), while these partial indexes answer it in 0.05 ms.
+            CREATE INDEX segments_ocr_file ON segments(file) WHERE kind = 'ocr';
+            CREATE INDEX segments_page_file ON segments(file) WHERE kind = 'page_image';
+            CREATE INDEX files_ocr_scans ON files(ocr_scans) WHERE ocr_scans = 1;
             CREATE VIRTUAL TABLE fts USING fts5(\(Self.ftsColumns));
             INSERT INTO meta(key, value) VALUES('phash_recipe', '\(Phash256.recipe)');
             PRAGMA user_version = \(Self.schemaVersion);
@@ -338,6 +344,20 @@ public final class IndexStore {
         try db.transaction {
             if !hasColumn { try db.execute("ALTER TABLE files ADD COLUMN as_document INTEGER NOT NULL DEFAULT 1") }
             try db.execute("PRAGMA user_version = 10")
+        }
+    }
+
+    /// Schema 10 → 11: the OCR set was found by scanning every segment (455–462 ms on 127 443 segments, measured
+    /// 2026-11-28, on every `Searcher` load). Partial indexes for the two kinds plus the `files` flag, and the UNION in
+    /// `Searcher.reloadFiles`, answer it in 0.05 ms; no file is read again and nothing else changes.
+    private func migrateSearchIndexes() throws {
+        try db.transaction {
+            try db.execute("""
+                CREATE INDEX IF NOT EXISTS segments_ocr_file ON segments(file) WHERE kind = 'ocr';
+                CREATE INDEX IF NOT EXISTS segments_page_file ON segments(file) WHERE kind = 'page_image';
+                CREATE INDEX IF NOT EXISTS files_ocr_scans ON files(ocr_scans) WHERE ocr_scans = 1;
+                PRAGMA user_version = 11;
+                """)
         }
     }
 

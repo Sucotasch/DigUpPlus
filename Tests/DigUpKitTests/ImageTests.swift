@@ -109,10 +109,18 @@ import ImageIO
         }
         let source = folder.appendingPathComponent("quadrants-302.jpg")
         try RGBImage(width: width, height: height, pixels: pixels).write(to: source, png: false)
-        let prepared = try ImageExtractor.prepare(source, maxPixel: 1024, minSide: 0, to: folder, png: true)
-        let shown = try Self.decode(prepared.path)
-        #expect(shown.width == width && shown.height == height)
-        #expect(shown.quadrants == ["R", "G", "B", "Y"])
+        // Ask WIC itself: `prepare` falls back to stb when WIC refuses, and stb reads this file correctly, so a broken
+        // WIC path could still leave the prepared output right. One retry for a transient lock under the full parallel
+        // suite (an AV scanner can hold a fresh file for a moment); a second refusal is real.
+        var wic: (image: RGBImage, source: (width: Int, height: Int))?
+        for _ in 0..<2 {
+            wic = ImageExtractor.wicImage(source.path, maxPixel: 1024)
+            if wic != nil { break }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        let decoded = try #require(wic?.image)
+        #expect(decoded.width == width && decoded.height == height)
+        #expect(Self.quadrants(decoded.pixels, width: decoded.width, height: decoded.height) == ["R", "G", "B", "Y"])
     }
     #endif
 
@@ -120,7 +128,12 @@ import ImageIO
     /// as R, G, B or Y.
     static func decode(_ path: String) throws -> (width: Int, height: Int, quadrants: [String]) {
         let (width, height, rgb) = try pixels(path)
-        let quadrants = [(1, 1), (3, 1), (1, 3), (3, 3)].map { (qx, qy) -> String in
+        return (width, height, quadrants(rgb, width: width, height: height))
+    }
+
+    /// The color in the middle of each quadrant of packed 8-bit RGB pixels.
+    static func quadrants(_ rgb: [UInt8], width: Int, height: Int) -> [String] {
+        [(1, 1), (3, 1), (1, 3), (3, 3)].map { (qx, qy) -> String in
             let i = ((qy * height / 4) * width + qx * width / 4) * 3
             let high = (rgb[i] > 128, rgb[i + 1] > 128, rgb[i + 2] > 128)
             switch high {
@@ -131,7 +144,6 @@ import ImageIO
             default: return "(\(rgb[i]),\(rgb[i + 1]),\(rgb[i + 2]))"
             }
         }
-        return (width, height, quadrants)
     }
 
     /// Packed 8-bit RGB, decoded by the system's own reader.
