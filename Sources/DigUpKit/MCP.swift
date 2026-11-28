@@ -78,7 +78,7 @@ public final class MCPServer {
 
     /// The version an agent sees. The helper has no bundle of its own to read it from: keep this in step with
     /// `shell/src-tauri/tauri.conf.json` (a test in `MCPTests` checks the two match).
-    static let version = "0.1.25"
+    static let version = "0.1.26"
 
     /// Said once at `initialize`: read-only, what a path means, and how to keep the first call cheap.
     static let instructions = """
