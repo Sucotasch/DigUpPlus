@@ -516,6 +516,23 @@ Opt-in, отдельный индекс, префикс `code:` (CLI: `--code`).
   HELPER SHA256 `c70aae1bae2f941b0ca1114de8b6ac20bbdc1d35334e255e69f7aab53e4aeb5d` (digup.exe + ocr.exe); zip
   `DigUpPlus-0.1.25-windows-x64.zip` 481 486 042 байта, SHA-256
   `8daa988f2aa81f2ad70c7a69d3823f08f9bbf781d95cf8ef1ac712fb7e830a53`;
+- 0.1.26 выпущен 2026-11-28 (`v0.1.26`, https://github.com/Sucotasch/DigUpPlus/releases/tag/v0.1.26):
+  **аудит: undo, temp, A1111 и OCR-запрос; схема 11**.
+  Undo-бэкапы правленых картинок больше не остаются в `%TEMP%`: `image_edit::cleanup()` при старте убирает папки
+  `digupplus-edits-*` старше трёх дней, `cleanup_own()` при выходе — свою. Undo проверяет содержимое (FNV-1a 64
+  записанных байтов): переименованный/подменённый файл — отказ, а не перезапись; конверсия проверяет новый файл и
+  занятый старый путь; последовательные undo работают. A1111 `parameters` ≥65k теперь отказ (как prompt/workflow), а
+  не тихий выброс. Temp-имя атомарной записи получило serial. Запрос OCR-множества: схема 11 добавляет частичные
+  индексы `segments_ocr_file`, `segments_page_file`, `files_ocr_scans`, а `Searcher.reloadFiles` спрашивает их
+  `UNION`-ом; замер 455–462 мс → 0.06 мс на 127 443 сегментах, на каждом `Searcher` load и на MCP `index_state`.
+  Индекс обновляется при первом открытии, файлы не перечитываются, векторы те же; **0.1.25 после 0.1.26 индекс не
+  откроет** (схема новее). F2: тест WIC зовёт `wicImage` напрямую с одним retry. helper изменился
+  (schema/движок/версия): полный zip, HELPER SHA256
+  `b3360cb4ce021daffd434cd2ba260437f0816615cb243b4a3ad609269fc5b4d8` (digup.exe + ocr.exe); zip
+  `DigUpPlus-0.1.26-windows-x64.zip` 481 490 663 байта, SHA-256
+  `64a21f1f36c4cff5a39707e1f146363924dd104a2c0a4b43e957001c512a5d3d`;
+- на 2026-11-28 (0.1.26): `python .build/swift_test.py` — 250 тестов, 249 прошли (тот же symlink-тест),
+  `cargo test --locked` — 120, все прошли; clippy — те же 9 предупреждений, новых нет;
 - на 2026-11-26 (0.1.25): `python .build/swift_test.py` — 248 тестов, 247 прошли (тот же symlink-тест),
   `cargo test --locked` — 114, все прошли;
 - на 2026-11-25 (0.1.24): `python .build/swift_test.py` — 243 теста, 242 прошли (тот же symlink-тест),
