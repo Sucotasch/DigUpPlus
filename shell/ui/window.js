@@ -113,6 +113,7 @@ const state = {
   navigated: false,     // the selection was moved by the arrow keys or a click since the last edit: ← → move it then
   generation: 0,
   timer: null,
+  startupSince: 0,     // when the spinner for the first results went up (the note shows the seconds)
   error: null,
   info: { folders: [], hotkey: null, hasCode: false },
   app: {},              // indexing and the model, from the shell (status.rs): line, progress, caveat, counts
@@ -135,6 +136,7 @@ function run(immediate = false) {
   state.navigated = false;
   state.error = null;
   state.note = null;       // a search's count is what matters now, not the last operation's line; its report stays
+  state.startupSince = 0;  // the spinner, when it goes up, starts the seconds
   state.loadingMore = false;
   state.pageError = null;
   const wasChosen = state.selected.size;
@@ -870,6 +872,42 @@ function chip(title, icon, count, selected, action, number) {
   return button;
 }
 
+/// The spinner for the first results, with what the search is doing and how many seconds it has been: a bare spinner
+/// for half a minute looks like a hang. The phase comes from what the page knows (the vectors/model warming, the note
+/// `run()` sets, the shell's index activity); the seconds prove it is alive. No migration-specific states: a first
+/// start after an update is rare.
+function startupText() {
+  const phase = state.warming ? "Loading the meaning model"
+    : state.app.activity === "starting" ? "Starting the search"
+    : state.note ? state.note.replace(/[\s:…]+$/, "")
+    : "Searching";
+  const seconds = state.startupSince ? Math.max(0, Math.floor((Date.now() - state.startupSince) / 1000)) : 0;
+  return `${phase}…${seconds >= 2 ? ` ${seconds} s` : ""}`;
+}
+
+let startupTicker = null;
+function ensureStartupTicker() {
+  if (startupTicker) return;
+  startupTicker = setInterval(() => {
+    const notes = document.querySelectorAll(".startup-note");
+    if (!notes.length) {
+      clearInterval(startupTicker);
+      startupTicker = null;
+      return;
+    }
+    const text = startupText();
+    for (const note of notes) note.textContent = text;
+  }, 1000);
+}
+
+/// A spinner with its note; the note is updated in place, so the spinner's animation doesn't restart every second.
+function spinnerWithNote() {
+  if (!state.startupSince) state.startupSince = Date.now();
+  const box = centered(element("div", "spinner"), element("div", "startup-note", startupText()));
+  ensureStartupTicker();
+  return box;
+}
+
 function renderContent() {
   hidePeek();   // the cells are rebuilt: a peek attached to an old one would be stale (and its album with it)
   closeHover();   // same for a player anchored to one of them; a pinned one has no anchor to lose
@@ -880,9 +918,9 @@ function renderContent() {
   if (!state.info.folders.length) $content.append(chooseFolders());
   else if (!state.query.trim()) $content.append(home());
   else if (state.codePhase) $content.append(codeHintOrOff());
-  else if (!state.hasResults) $content.append(centered(element("div", "spinner")));
+  else if (!state.hasResults) $content.append(spinnerWithNote());
   // Words found nothing while the model loads: "Nothing found" would be a lie, and the answer is on its way.
-  else if (state.warming) $content.append(centered(element("div", "spinner")));
+  else if (state.warming) $content.append(spinnerWithNote());
   else if (!state.ranked.length && !state.weaker.length && !state.hiddenTotal) $content.append(nothingFound());
   else if (groupingActive() && state.onlyGroups && !state.groups?.length) {
     $content.append(centered(element("div", "tier-note", "No look-alikes at this difference.")));
@@ -4535,7 +4573,6 @@ $("settings").onclick = () => invoke("open_settings").catch(failed);
 $("settings").title = `Settings (${MOD},)`;
 $("more").onmousedown = (event) => event.preventDefault();
 $("more").onclick = () => ($menu.hidden ? showMainMenu() : hideMenu());
-$("status-line").onclick = () => invoke("choose_folders").catch(failed);
 $more.onmousedown = (event) => event.preventDefault();
 $more.onclick = () => loadMore(false);
 $content.addEventListener("scroll", maybeLoadMore, { passive: true });

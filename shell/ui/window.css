@@ -679,6 +679,7 @@ svg { display: block; }
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.startup-note { margin-top: 10px; font-size: 12px; color: var(--secondary); text-align: center; font-variant-numeric: tabular-nums; }
 
 /* The preview pane */
 
@@ -963,8 +964,7 @@ svg { display: block; }
   font-size: 11px;
   color: var(--secondary);
 }
-.status-line { border: 0; padding: 0; background: none; font-size: 11px; color: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
-.status-line:hover { color: var(--text); }
+.status-line { border: 0; padding: 0; background: none; font-size: 11px; color: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status .spacer { flex: 1; }
 .status .more-results { flex: none; padding: 2px 9px; font-size: 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: inherit; white-space: nowrap; cursor: pointer; }
 .status .more-results:hover:not(:disabled) { background: var(--fill); }
